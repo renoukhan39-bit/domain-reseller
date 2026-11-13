@@ -55,9 +55,12 @@ class Command(BaseCommand):
                     raise CommandError("Order changed during reconciliation")
                 domain, _ = ManagedDomain.objects.get_or_create(name=order.domain, defaults={
                     "owner_id": order.owner_id, "provider_id": provider_id, "expires_at": expiry, "status": "active"})
+                domain = ManagedDomain.objects.select_for_update().get(pk=domain.pk)
                 if (domain.owner_id != current.owner_id or domain.provider_id != provider_id
                         or (current.managed_domain_id and current.managed_domain_id != domain.pk)):
                     raise CommandError("Local ownership or registrar identity collision")
+                if domain.expires_at is not None and expiry < domain.expires_at:
+                    raise CommandError("Registrar lookup would replace a newer expiry; reconcile manually")
                 domain.status, domain.expires_at = "active", expiry
                 domain.save(update_fields=["status", "expires_at", "updated_at"])
                 current.managed_domain, current.provider_result_id, current.status = domain, provider_id, DomainOrder.ACTIVE

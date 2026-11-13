@@ -6,7 +6,7 @@ The worker commits a durable `paid → processing` claim before any registrar wr
 
 Contact-handle creation is serialized per customer so different paid domain orders do not concurrently create conflicting handles. The handle remains that customer's own registrant handle. Registration retains any known returned registrar ID before the subsequent GET. Completion requires a read-back matching domain name, registrar ID and owner handle; `ACT` and a valid returned expiry are required for active completion. Pending status remains review. No local expiry is guessed.
 
-Renewal requires a known baseline expiry and matching ownership before the POST. It becomes complete only after an authoritative GET confirms the same domain/ID/owner, active status and an expiry strictly greater than the baseline. Missing, unchanged or decreasing dates and explicit pending results remain review. Neither a timeout nor review state automatically reissues a registration/renewal.
+Renewal requires a known local expiry and a matching active registrar GET before the POST. The authoritative pre-renewal expiry is recorded in the audit trail. Completion requires a second GET confirming the same domain/ID/owner, active status and an expiry strictly greater than that registrar baseline. A stale local date cannot turn an unchanged remote expiry into apparent success. Missing, unchanged or decreasing dates and explicit pending results remain review. Neither a timeout nor review state automatically reissues a registration/renewal.
 
 ## Stale worker escalation
 

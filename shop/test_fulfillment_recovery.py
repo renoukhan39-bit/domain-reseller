@@ -40,6 +40,7 @@ class RegistrarDouble:
         }
         self.register_result = deepcopy(self.details)
         self.renew_result = deepcopy(self.details)
+        self.get_responses = []
         self.calls = {"create_contact": 0, "register": 0, "renew": 0, "get_domain": 0}
         self.lock = Lock()
 
@@ -65,9 +66,11 @@ class RegistrarDouble:
 
     def get_domain(self, provider_id):
         self.count("get_domain")
-        if isinstance(self.details, Exception):
-            raise self.details
-        return deepcopy(self.details)
+        with self.lock:
+            details = self.get_responses.pop(0) if self.get_responses else self.details
+        if isinstance(details, Exception):
+            raise details
+        return deepcopy(details)
 
 
 class FulfillmentFixtures:
@@ -164,6 +167,9 @@ class FulfillmentSafetyTests(FulfillmentFixtures, TestCase):
         order, managed = self.make_renewal()
         before = managed.expires_at
         registrar = RegistrarDouble(managed.name, provider_id=managed.provider_id)
+        remote_before = deepcopy(registrar.details)
+        remote_before["expiration_date"] = before.isoformat()
+        registrar.get_responses = [remote_before, deepcopy(registrar.details)]
         self.assertTrue(fulfill_one(order.pk, registrar))
         order.refresh_from_db()
         managed.refresh_from_db()
@@ -181,6 +187,8 @@ class FulfillmentSafetyTests(FulfillmentFixtures, TestCase):
                 order, managed = self.make_renewal()
                 before = managed.expires_at
                 registrar = RegistrarDouble(managed.name, provider_id=managed.provider_id)
+                remote_before = deepcopy(registrar.details)
+                remote_before["expiration_date"] = before.isoformat()
                 if case == "missing":
                     registrar.details.pop("expiration_date")
                 elif case == "unchanged":
@@ -188,6 +196,7 @@ class FulfillmentSafetyTests(FulfillmentFixtures, TestCase):
                 else:
                     registrar.details["status"] = "REQ"
                     registrar.renew_result["status"] = "REQ"
+                registrar.get_responses = [remote_before, deepcopy(registrar.details)]
                 self.assertFalse(fulfill_one(order.pk, registrar))
                 self.assertFalse(fulfill_one(order.pk, registrar))
                 order.refresh_from_db()
@@ -195,6 +204,45 @@ class FulfillmentSafetyTests(FulfillmentFixtures, TestCase):
                 self.assertEqual(order.status, DomainOrder.REVIEW)
                 self.assertEqual(managed.expires_at, before)
                 self.assertEqual(registrar.calls["renew"], 1)
+
+    def test_already_advanced_remote_expiry_does_not_falsely_confirm_this_renewal(self):
+        order, managed = self.make_renewal()
+        local_before = managed.expires_at
+        registrar = RegistrarDouble(managed.name, provider_id=managed.provider_id)
+        # The remote date is already later than stale local data BEFORE the POST,
+        # and the provider returns that same date afterwards: this is not proof
+        # that this particular renewal completed.
+        self.assertFalse(fulfill_one(order.pk, registrar))
+        self.assertFalse(fulfill_one(order.pk, registrar))
+        order.refresh_from_db()
+        managed.refresh_from_db()
+        self.assertEqual(order.status, DomainOrder.REVIEW)
+        self.assertEqual(managed.expires_at, local_before)
+        self.assertEqual(registrar.calls["renew"], 1)
+        self.assertTrue(AuditEntry.objects.filter(order=order, action="renewal_baseline_verified").exists())
+
+    def test_renewal_can_complete_only_after_advancing_the_current_remote_baseline(self):
+        order, managed = self.make_renewal()
+        registrar = RegistrarDouble(managed.name, provider_id=managed.provider_id)
+        advanced = deepcopy(registrar.details)
+        advanced["expiration_date"] = "2030-03-01 00:00:00"
+        registrar.get_responses = [deepcopy(registrar.details), advanced]
+        self.assertTrue(fulfill_one(order.pk, registrar))
+        order.refresh_from_db()
+        managed.refresh_from_db()
+        self.assertEqual(order.status, DomainOrder.ACTIVE)
+        self.assertEqual(managed.expires_at.year, 2030)
+        self.assertEqual(registrar.calls["get_domain"], 2)
+        self.assertEqual(registrar.calls["renew"], 1)
+
+    def test_remote_baseline_older_than_local_expiry_requires_review_before_renewal_post(self):
+        order, managed = self.make_renewal()
+        ManagedDomain.objects.filter(pk=managed.pk).update(expires_at=timezone.now() + timedelta(days=2000))
+        registrar = RegistrarDouble(managed.name, provider_id=managed.provider_id)
+        self.assertFalse(fulfill_one(order.pk, registrar))
+        order.refresh_from_db()
+        self.assertEqual(order.status, DomainOrder.REVIEW)
+        self.assertEqual(registrar.calls["renew"], 0)
 
     def test_renewal_without_baseline_expiry_or_customer_ownership_does_not_call_provider(self):
         for changes in ({"expires_at": None}, {"owner": self.other}):
@@ -330,6 +378,18 @@ class RegistrationReconciliationTests(FulfillmentFixtures, TestCase):
         order.refresh_from_db()
         self.assertEqual(order.status, DomainOrder.ACTIVE)
         self.assertEqual(registrar.calls["register"], 1)
+
+    def test_reconciliation_never_replaces_a_newer_local_expiry(self):
+        future = timezone.now() + timedelta(days=3650)
+        managed = ManagedDomain.objects.create(owner=self.user, name="localexample.com", provider_id=1001,
+                                              status="pending", expires_at=future)
+        order = self.make_order(status=DomainOrder.REVIEW, managed_domain=managed, provider_result_id=1001)
+        with self.assertRaises(CommandError):
+            self.reconcile(order, RegistrarDouble())
+        managed.refresh_from_db()
+        order.refresh_from_db()
+        self.assertEqual(managed.expires_at, future)
+        self.assertEqual(order.status, DomainOrder.REVIEW)
 
     def test_reconciliation_rejects_unpaid_pending_refund_or_foreign_remote_identity(self):
         for changes, remote_changes in (

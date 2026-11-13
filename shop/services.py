@@ -175,12 +175,21 @@ def fulfill_one(order_id, provider=None):
         if (managed.owner_id != order.owner_id or managed.name != order.domain or managed.status != "active"
                 or baseline is None or not contact.openprovider_handle):
             raise OrderError("Renewal ownership, contact or expiry is not verified")
+        before = provider.get_domain(managed.provider_id)
+        before_status, remote_baseline = _registrar_identity(before, managed.provider_id, order.domain, contact.openprovider_handle)
+        if before_status != "ACT" or remote_baseline is None or remote_baseline < baseline:
+            raise OrderError("Registrar renewal baseline is not verified")
+        with transaction.atomic():
+            current = DomainOrder.objects.select_for_update().get(pk=order.pk)
+            if current.status != DomainOrder.PROCESSING:
+                return False
+            AuditEntry.objects.create(order=current, action="renewal_baseline_verified", detail=remote_baseline.isoformat())
         result = provider.renew(managed.provider_id)
         if not isinstance(result, dict) or (result.get("status") and str(result["status"]).upper() != "ACT"):
             raise OrderError("Renewal response requires review")
         details = provider.get_domain(managed.provider_id)
         status, expiry = _registrar_identity(details, managed.provider_id, order.domain, contact.openprovider_handle)
-        if status != "ACT" or expiry is None or expiry <= baseline:
+        if status != "ACT" or expiry is None or expiry <= remote_baseline:
             raise OrderError("Renewal completion is not confirmed")
         with transaction.atomic():
             current = DomainOrder.objects.select_for_update().get(pk=order.pk)
