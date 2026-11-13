@@ -1,0 +1,67 @@
+id,title,team,priority,status,acceptance
+M0-01,Set up Django 5.2-based application and dependency manifest,ENG,P0,source-written/verify,project starts with `manage.py`.
+M0-02,Add PostgreSQL configuration,ENG,P0,source-written/verify,runtime requires Postgres outside local debugging.
+M0-03,Add Dockerfile and local Compose,ENG,P0,source-written/verify,"web, DB, worker defined."
+M0-04,Add environment template and secret exclusions,ENG,P0,source-written/verify,no actual secrets in Git.
+M0-05,Add fail-closed payment and fulfillment feature switches,ENG,P0,source-written/verify,defaults false.
+M0-06,Add database schema migration,ENG,P0,source-written/verify,initial tables and constraints included.
+M0-07,Add automated GitHub Actions pipeline,ENG,P0,source-written/verify,"install, checks, migrations, tests."
+M0-08,"Add product goal, architecture and runbook",ENG,P0,source-written/verify,docs in `docs/`.
+M0-09,Run CI successfully after GitHub push,ENG,P0,open,evidence: green workflow on PR.
+M0-10,Provision secure stage in eligible cloud,OPS,P0,open,stage TLS URL and restricted DB verified.
+M1-01,Sign-up with email and strong password,ENG,P0,source-written/verify,account stays inactive until verified.
+M1-02,Time-limited signed email verification,ENG,P0,source-written/verify,expired/forged link denied.
+M1-03,Sign-in/sign-out using Django authentication,ENG,P0,source-written/verify,no anonymous order access.
+M1-04,Email-based password reset,ENG,P0,source-written/verify,reset token uses Django auth.
+M1-05,Collect actual registrant identity/address/phone,ENG,P0,source-written/verify,profile saved per user.
+M1-06,Enforce domain/order ownership in views,ENG,P0,source-written/verify,cross-account detail returns 404.
+M1-07,Create real registrar customer handle,ENG,P0,source-written/verify,registrant owns their domain.
+M1-08,Add email verification resend and provider-backed email delivery,ENG,P0,open,real SMTP tested.
+M1-09,Provide lawful data export/correction/erasure workflows and privacy notices,ENG,P0,open,jurisdiction-reviewed process.
+M2-01,Validate supported ASCII domains,ENG,P0,source-written/verify,reject bad names and unsupported multi-part suffixes.
+M2-02,Query Openprovider availability live,ENG,P0,source-written/verify,no fabricated search results.
+M2-03,Reject premium-priced names from fixed-price checkout,ENG,P0,source-written/verify,no below-cost premium sale.
+M2-04,Configure TLD registration and renewal pricing in admin,ENG,P0,source-written/verify,disabled until operator enables.
+M2-05,Display INR price in simple responsive pages,ENG,P0,source-written/verify,user sees price before paying.
+M2-06,Compute order amount on server,ENG,P0,source-written/verify,no browser-submitted amount trusted.
+M2-07,"Collect real wholesale costs, payment fees and taxes for each TLD",BIZ,P0,open,profit margin verified.
+M2-08,Sync price/currency changes from supplier and detect premium restrictions,ENG,P1,open,mismatches alert operator.
+M2-09,Handle IDNs and multi-part suffixes after registry-specific validation,ENG,P1,open,"tests for `.co.uk`, etc."
+M3-01,Create local UUID orders with per-user idempotency key,ENG,P0,source-written/verify,retries identify same purchase.
+M3-02,Create Razorpay Orders server-side,ENG,P0,source-written/verify,gateway gets verified server amount.
+M3-03,Display Razorpay checkout button,ENG,P0,source-written/verify,customer pays through hosted payment UI.
+M3-04,Verify raw-body webhook HMAC,ENG,P0,source-written/verify,invalid signatures blocked.
+M3-05,"Match captured payment order, amount and currency",ENG,P0,source-written/verify,mismatches never fulfill.
+M3-06,Store webhook event IDs and prevent duplicate capture,ENG,P0,source-written/verify,unique event constraint.
+M3-07,"Build manual refund command, restricted by status",ENG,P0,source-written/verify,explicit external reconciliation required.
+M3-08,"Prove sandbox webhook delivery, retries and out-of-order events",ENG,P0,open,test-mode evidence.
+M3-09,Add explicit gateway reconciliation for stuck/unmatched payments and refund states,ENG,P0,open,audited results.
+M3-10,"Add tax-compliant receipts/invoices, refund/terms pages, business/KYC approvals",BIZ,P0,open,sign-off.
+M4-01,Authenticate Openprovider via HTTPS bearer token,ENG,P0,source-written/verify,cache token securely.
+M4-02,Register domain after paid status with owner handle,ENG,P0,source-written/verify,provider ID stored locally.
+M4-03,Process renewals for owned domains only,ENG,P0,source-written/verify,expiry fetched from registrar.
+M4-04,Allow authenticated nameserver updates,ENG,P0,source-written/verify,"registry PUT, audit entry."
+M4-05,Require explicit worker enablement,ENG,P0,source-written/verify,no automatic live calls by default.
+M4-06,Avoid blind retries on uncertain registrar response,ENG,P0,source-written/verify,manual review state.
+M4-07,Prove Openprovider sandbox availability/contact/register/renew/NS workflow,ENG,P0,open,verified IDs.
+M4-08,Add API timeout/crash reconciliation and monitor stuck `processing` orders,OPS,P0,open,no duplicates.
+M4-09,Support transferred-in domains and EPP auth codes,ENG,P1,open,ownership verified.
+M4-10,"Add domain lifecycle synchronization, expiry notices and renewability checks",ENG,P1,open,schedule tested.
+M5-01,"Secure cookies, TLS redirects and CSRF production settings",ENG,P0,source-written/verify,default protections present.
+M5-02,Record account/payment/registrar actions in audit table,ENG,P0,source-written/verify,traceable events.
+M5-03,Add basic input and per-process request throttles,ENG,P0,source-written/verify,code present; not sufficient for distributed prod.
+M5-04,Add DB-backed health check,ENG,P0,source-written/verify,non-200 if database down.
+M5-05,"Implement shared Redis/WAF throttling including login, SMTP abuse and bots",OPS,P0,open,load tests pass.
+M5-06,"Configure secret storage, role access, encryption, network rules and TLS",OPS,P0,open,security review passes.
+M5-07,"Set up encrypted backups, recovery drills, alerts and provider incident monitoring",OPS,P0,open,restoration proven.
+M5-08,Conduct adversarial auth/payment/provider review and dependency scanning,ENG,P0,open,no critical findings.
+M5-09,Add multi-worker crash recovery/manual review alerts and a reconciliation SOP,OPS,P0,open,on-call drill passes.
+M6-01,"Validate registrar reseller and merchant eligibility, contracts and customer identity policy",BIZ,P0,open,approvals recorded.
+M6-02,Establish supplier funding and money-flow settlement plan,BIZ,P0,open,no negative-margin orders.
+M6-03,"Confirm cloud credit validity, quotas, AWS Budgets notifications and domain/DNS TLS",OPS,P0,open,no surprise spend.
+M6-04,Pass 20 release acceptance tests below,ENG,P0,open,artifacts and screenshots attached to PR.
+M6-05,Run supervised real customer payment and live registration only after sign-off,OPS,P0,open,reconcile both providers.
+M6-06,"Rehearse disable/rollback, webhook replay and refund incident",OPS,P0,open,operations sign off.
+M6-07,"Add DNS records dashboard, DNSSEC controls and proper propagation checks",ENG,P1,open,no unauthorized changes.
+M6-08,"Build support, reporting, customer receipts and admin reconciliation dashboards",ENG,P1,open,accurate ledger.
+M6-09,"Expand eligible TLDs, currencies, localizations and transfer support",BIZ,P2,open,reviewed launch gates.

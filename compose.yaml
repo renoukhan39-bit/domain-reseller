@@ -1,0 +1,32 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-reseller}
+      POSTGRES_USER: ${POSTGRES_USER:-reseller}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set_in_env_file}
+    volumes: ["pgdata:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+  worker:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    command: ["sh", "-c", "while true; do python manage.py process_orders --limit 10; sleep 30; done"]
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  pgdata:

@@ -1,0 +1,3 @@
+{% extends 'shop/base.html' %}{% block title %}Nameservers{% endblock %}{% block content %}
+<h1>Update nameservers: {{ domain.name }}</h1><p>Changes can take time to propagate. Two unique, valid nameserver hosts are required.</p>
+<div class="box"><form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Send update</button></form></div>{% endblock %}

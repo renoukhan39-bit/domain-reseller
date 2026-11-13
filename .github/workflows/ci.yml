@@ -1,0 +1,39 @@
+name: Python CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: reseller
+          POSTGRES_USER: reseller
+          POSTGRES_PASSWORD: testing-only
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U reseller -d reseller" --health-interval 5s --health-timeout 5s --health-retries 5
+    env:
+      DJANGO_DEBUG: "true"
+      DJANGO_SECRET_KEY: "ci-only-not-for-production"
+      POSTGRES_HOST: localhost
+      POSTGRES_DB: reseller
+      POSTGRES_USER: reseller
+      POSTGRES_PASSWORD: testing-only
+      POSTGRES_SSLMODE: disable
+      EMAIL_BACKEND: django.core.mail.backends.locmem.EmailBackend
+      SALES_ENABLED: "false"
+      FULFILLMENT_ENABLED: "false"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python -m pip install -e .
+      - run: python manage.py check
+      - run: python manage.py makemigrations --check --dry-run
+      - run: python manage.py migrate --noinput
+      - run: python manage.py test shop --verbosity 2
+      - run: python -m compileall -q config shop

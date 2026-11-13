@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "domain-reseller"
+version = "0.1.0"
+description = "Domain reseller platform with Openprovider and Razorpay integrations"
+requires-python = ">=3.12"
+dependencies = [
+ "Django>=5.2,<6.0",
+ "requests>=2.32,<3.0",
+ "psycopg[binary]>=3.2,<4.0",
+ "gunicorn>=23,<25",
+ "whitenoise>=6.9,<7.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["config*", "shop*"]
+
+[tool.setuptools.package-data]
+shop = ["templates/shop/*.html", "templates/registration/*.html"]
