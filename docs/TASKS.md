@@ -48,7 +48,7 @@
 - [x] **M3-05** (ENG/P0) Match captured payment order, amount and currency — mismatches never fulfill.
 - [x] **M3-06** (ENG/P0) Store webhook event IDs and prevent duplicate capture — unique event constraint.
 - [x] **M3-07** (ENG/P0) Build manual refund command, restricted by status — explicit external reconciliation required.
-- [ ] **M3-08** (ENG/P0) Prove sandbox webhook delivery, retries and out-of-order events — test-mode evidence.
+- [ ] **M3-08** (ENG/P0) Prove sandbox webhook delivery, retries and out-of-order events — deterministic signed-webhook replay, malformed-payload and PostgreSQL race tests added in `shop/test_webhook_replay.py`; external Razorpay test-mode delivery/retry evidence still required. See `docs/WEBHOOK_REPLAY.md`.
 - [ ] **M3-09** (ENG/P0) Add explicit gateway reconciliation for stuck/unmatched payments and refund states — audited results.
 - [ ] **M3-10** (BIZ/P0) Add tax-compliant receipts/invoices, refund/terms pages, business/KYC approvals — sign-off.
 
