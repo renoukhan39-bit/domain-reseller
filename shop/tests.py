@@ -126,7 +126,7 @@ class PaymentAndFulfillmentTests(TestCase):
         body = json.dumps({'event':'payment.captured','payload':{'payment':{'entity':{
           'id':'pay_verified_999','status':'captured','amount':129900,'currency':'INR'}}}}).encode()
         sig = hmac.new(b'webhook-test-only',body,hashlib.sha256).hexdigest()
-        self.assertEqual(receive_razorpay_webhook(body,sig,'evt_no_order'),'ignored')
+        self.assertEqual(receive_razorpay_webhook(body,sig,'evt_no_order'),'unmatched_payment_review')
         unrelated.refresh_from_db()
         self.assertEqual(unrelated.status,DomainOrder.AWAITING)
 
