@@ -12,7 +12,7 @@
 - [x] **M0-06** (ENG/P0) Add database schema migration — initial tables and constraints included.
 - [x] **M0-07** (ENG/P0) Add automated GitHub Actions pipeline — install, checks, migrations, tests.
 - [x] **M0-08** (ENG/P0) Add product goal, architecture and runbook — docs in `docs/`.
-- [ ] **M0-09** (ENG/P0) Run CI successfully after GitHub push — evidence: green workflow on PR.
+- [ ] **M0-09** (ENG/P0) Run CI successfully after GitHub push — [main-branch CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170); confirm the required PR check also runs green before marking fully accepted.
 - [ ] **M0-10** (OPS/P0) Provision secure stage in eligible cloud — stage TLS URL and restricted DB verified.
 
 ## M1 — Customer identity and registrant data (9)

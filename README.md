@@ -25,7 +25,7 @@ With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obta
 ## Production readiness status
 
 - **Implemented:** core Django application, database schema, profile/email verification, authenticated customer pages, registrar API adapter, Razorpay Orders + signed webhook, manual refund command, guarded fulfillment worker, nameserver updates, unit/integration-style tests, PostgreSQL compose, CI workflow.
-- **Not verified:** running Django tests in this environment (dependencies unavailable), registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, rate limits across workers, backup restore, financial and legal compliance.
+- **Verified:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite).\n- **Not verified:** local Docker setup in this environment, registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, rate limits across workers, backup restore, financial and legal compliance.
 - **Not implemented:** customer invoices/tax calculations, account email-resend flow, supplier price sync, web-based support/refund system, transfers, automated expiries/renewal reminders, DNS record editor, reconciliation dashboard, reporting/ledger, production rate limiting, data deletion/export, observability alerts. These are explicit tasks, **not** silently called complete.
 
 ## Important business safeguards

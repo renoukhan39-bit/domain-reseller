@@ -4,7 +4,7 @@
 
 | Capability | Status | Location / follow-up |
 | --- | --- | --- |
-| Django project + PostgreSQL + Docker + CI definition | Written/unverified | `config`, `compose.yaml`, `.github/workflows/ci.yml` |
+| Django project + PostgreSQL + Docker + CI definition | CI passed; deployment unverified | `config`, `compose.yaml`, `.github/workflows/ci.yml`; [green CI](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) |
 | Accounts, verification, profile, login/reset | Written/unverified | `shop/forms.py`, `shop/views.py` |
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |

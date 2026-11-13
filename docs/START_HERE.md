@@ -8,7 +8,7 @@ Develop our own independently operated, branded, domain and web-services platfor
 ## Current foundation and architecture
 - **One repo**, original Django/Python modular application, PostgreSQL, container setup, server-rendered pages. Keep a modular monolith until scaling requires services. No PNLCS/Laravel migration is approved.
 - Code includes a first draft of signup/login and registrant profiles, TLD catalog, Openprovider integration, Razorpay order/webhook verification, safe fulfillment worker, domain dashboard, nameserver management, admin screens, migration and test cases.
-- **Not verified:** actual Django test execution, deployment, registrar sandbox compatibility, Razorpay real test webhooks, real SMTP, financial compliance and recovery drills. **Not complete:** DNS editing, transfers, invoice reconciliation, multi-registrar routing, public reseller APIs, hosting/email/SSL/website-builder. See `FEATURE_MATRIX.md` and `TASKS.md`.
+- **Verified:** the initial [GitHub Actions Python CI run](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) passed checks, migrations and Django tests. **Not verified:** independent local Docker reproduction, deployment, registrar sandbox compatibility, Razorpay real test webhooks, real SMTP, financial compliance and recovery drills. **Not complete:** DNS editing, transfers, invoice reconciliation, multi-registrar routing, public reseller APIs, hosting/email/SSL/website-builder. See `FEATURE_MATRIX.md` and `TASKS.md`.
 - Sales and fulfillment disabled by default. Never perform real domain purchase or paid cloud provisioning without explicit owner approval.
 
 ## Read next
