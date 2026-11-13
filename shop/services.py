@@ -1,16 +1,14 @@
 """Order/payment business rules and a conservative fulfillment state machine."""
-import hashlib
-import json
 from django.conf import settings
 from django.db import IntegrityError, transaction
 from django.utils import timezone
-from .models import AuditEntry, DomainOrder, ManagedDomain, PaymentEvent, RegistrantContact
-from .payments import Razorpay, PaymentError, verify_webhook
-from .providers import Openprovider, ProviderError, parse_expiry
+from .models import AuditEntry, DomainOrder, ManagedDomain, RegistrantContact
+from .payments import Razorpay, PaymentError
+from .providers import Openprovider, parse_expiry
 
 
-class OrderError(Exception):
-    pass
+from .exceptions import OrderError
+from .payment_events import gateway_identifier, receive_razorpay_webhook, replay_payment_events
 
 
 def sales_ready():
@@ -30,102 +28,75 @@ def fulfillment_ready():
 
 
 def create_checkout_order(*, owner, domain, operation, price, key, managed_domain=None):
-    """Idempotent local order; gateway HTTP timeout leaves order for operator reconciliation."""
+    """Reserve one payable operation before HTTP; uncertain POSTs are never retried."""
+    from .forms import normalize_domain
+    from django.core.exceptions import ValidationError
+    try:
+        domain = normalize_domain(domain)
+    except (ValidationError, TypeError):
+        raise OrderError("Invalid domain") from None
+    if operation not in (DomainOrder.REGISTER, DomainOrder.RENEW):
+        raise OrderError("Unsupported operation")
+    if type(price) is not int or not 0 < price <= 2147483647:
+        raise OrderError("Invalid server price")
+    if not isinstance(key, str) or not key.strip() or len(key) > 64:
+        raise OrderError("Invalid checkout request")
     if not sales_ready():
         raise OrderError("Sales are not enabled")
-    if not RegistrantContact.objects.filter(owner=owner).exists():
+    if not owner.is_active or not RegistrantContact.objects.filter(owner=owner).exists():
         raise OrderError("Complete your registrant information first")
-    if not key or len(key) > 64:
-        raise OrderError("Invalid checkout request")
-    # Return the original order before any duplicate-domain guard. The per-user
-    # unique constraint still protects concurrent retries of the same request.
-    existing = DomainOrder.objects.filter(owner=owner, idempotency_key=key).first()
-    if existing:
-        if existing.domain != domain or existing.operation != operation:
+    if operation == DomainOrder.REGISTER and managed_domain is not None:
+        raise OrderError("Invalid registration request")
+    if operation == DomainOrder.RENEW:
+        if (managed_domain is None or managed_domain.owner_id != owner.pk
+                or managed_domain.name != domain or managed_domain.status != "active"):
+            raise OrderError("Domain not owned by this customer or not active")
+    def original():
+        existing = DomainOrder.objects.filter(owner=owner, idempotency_key=key).first()
+        if existing and (existing.domain != domain or existing.operation != operation
+                         or (operation == DomainOrder.RENEW and existing.managed_domain_id != getattr(managed_domain, "pk", None))):
             raise OrderError("Checkout key was already used for another request")
         return existing
-    if operation == DomainOrder.REGISTER:
-        if ManagedDomain.objects.filter(name=domain).exists():
-            raise OrderError("This domain already has an owner in this store")
-        # Do not accept a second payment while an earlier registration is unresolved.
-        if DomainOrder.objects.filter(domain=domain, operation=DomainOrder.REGISTER).exclude(
-            status__in=[DomainOrder.REFUNDED]
-        ).exists():
-            raise OrderError("An order already exists for this domain; contact support")
-    else:
-        if managed_domain is None or managed_domain.owner_id != owner.pk:
-            raise OrderError("Domain not owned by this customer")
-        if DomainOrder.objects.filter(managed_domain=managed_domain, operation=DomainOrder.RENEW).exclude(
-            status__in=[DomainOrder.REFUNDED, DomainOrder.ACTIVE]
-        ).exists():
-            raise OrderError("A renewal is already pending")
-    with transaction.atomic():
-        existing = DomainOrder.objects.filter(owner=owner, idempotency_key=key).first()
+    existing = original()
+    if existing:
+        return existing
+    try:
+        with transaction.atomic():
+            if operation == DomainOrder.RENEW:
+                current = ManagedDomain.objects.select_for_update().filter(pk=managed_domain.pk).first()
+                if current is None or current.owner_id != owner.pk or current.name != domain or current.status != "active":
+                    raise OrderError("Domain not owned by this customer or not active")
+            if operation == DomainOrder.REGISTER and ManagedDomain.objects.filter(name=domain).exists():
+                raise OrderError("This domain already has an owner in this store")
+            order = DomainOrder.objects.create(owner=owner, domain=domain, operation=operation,
+                amount_paise=price, idempotency_key=key, managed_domain=managed_domain)
+    except IntegrityError:
+        existing = original()
         if existing:
-            if existing.domain != domain or existing.operation != operation:
-                raise OrderError("Checkout key was already used for another request")
             return existing
-        order = DomainOrder.objects.create(owner=owner, domain=domain,
-            operation=operation, amount_paise=price, idempotency_key=key,
-            managed_domain=managed_domain)
+        raise OrderError("An unresolved order already exists; contact support") from None
     try:
         gateway_order = Razorpay().create_order(order)
-        if (gateway_order.get("amount") != price or gateway_order.get("currency") != "INR"
-                or not str(gateway_order.get("id", "")).startswith("order_")):
+        if (not isinstance(gateway_order, dict) or type(gateway_order.get("amount")) is not int
+                or gateway_order["amount"] != price or gateway_order.get("currency") != "INR"
+                or not gateway_identifier(gateway_order.get("id"), "order")):
             raise PaymentError("Unexpected payment gateway order response")
-        order.razorpay_order_id = gateway_order["id"]
-        order.save(update_fields=["razorpay_order_id", "updated_at"])
-        AuditEntry.objects.create(actor=owner, order=order, action="checkout_created")
+        with transaction.atomic():
+            order = DomainOrder.objects.select_for_update().get(pk=order.pk)
+            if order.razorpay_order_id and order.razorpay_order_id != gateway_order["id"]:
+                raise PaymentError("Conflicting gateway order identifier")
+            order.razorpay_order_id = gateway_order["id"]
+            order.save(update_fields=["razorpay_order_id", "updated_at"])
+            AuditEntry.objects.create(actor=owner, order=order, action="checkout_created")
+        replay_payment_events(order.razorpay_order_id)
+        order.refresh_from_db()
         return order
-    except PaymentError as exc:
-        order.status = DomainOrder.REVIEW
-        order.provider_message = "Payment order initiation uncertain; reconcile gateway receipt"
-        order.save(update_fields=["status", "provider_message", "updated_at"])
-        raise OrderError(str(exc)) from exc
-
-
-def receive_razorpay_webhook(body, signature, event_id):
-    """The sole automatic payment->paid transition. Verify original request bytes."""
-    if not verify_webhook(body, signature, settings.RAZORPAY_WEBHOOK_SECRET):
-        raise OrderError("Invalid webhook signature")
-    if not event_id or len(event_id) > 130:
-        raise OrderError("Missing event identifier")
-    try:
-        message = json.loads(body)
-    except (ValueError, UnicodeDecodeError) as exc:
-        raise OrderError("Invalid webhook payload") from exc
-    event_type = message.get("event", "")
-    digest = hashlib.sha256(body).hexdigest()
-    with transaction.atomic():
-        event, created = PaymentEvent.objects.get_or_create(event_id=event_id,
-            defaults={"event_type": event_type[:60], "payload_sha256": digest})
-        if not created:
-            if event.payload_sha256 != digest:
-                raise OrderError("Event ID collision")
-            return "duplicate"
-        event.outcome = "ignored"
-        if event_type == "payment.captured":
-            payment = message.get("payload", {}).get("payment", {}).get("entity", {})
-            external_order = payment.get("order_id", "")
-            order = (DomainOrder.objects.select_for_update().filter(
-                razorpay_order_id=external_order).first()
-                if isinstance(external_order, str) and external_order.startswith("order_")
-                else None)
-            if (order and order.status == DomainOrder.AWAITING and
-                payment.get("status") == "captured" and
-                payment.get("amount") == order.amount_paise and
-                payment.get("currency") == "INR" and
-                str(payment.get("id", "")).startswith("pay_")):
-                order.status = DomainOrder.PAID
-                order.razorpay_payment_id = payment["id"]
-                order.save(update_fields=["status", "razorpay_payment_id", "updated_at"])
-                AuditEntry.objects.create(actor=order.owner, order=order, action="payment_captured")
-                event.outcome = "paid"
-            elif order:
-                event.outcome = "unmatched_payment_review"
-        event.processed_at = timezone.now()
-        event.save(update_fields=["outcome", "processed_at"])
-    return event.outcome
+    except (PaymentError, IntegrityError):
+        DomainOrder.objects.filter(pk=order.pk, status=DomainOrder.AWAITING).update(
+            status=DomainOrder.REVIEW, provider_message="Payment initiation uncertain; reconcile gateway receipt",
+            updated_at=timezone.now())
+        AuditEntry.objects.create(actor=owner, order=order, action="payment_initiation_review")
+        raise OrderError("Payment initiation uncertain; contact support before retrying") from None
 
 
 def fulfill_one(order_id, provider=None):

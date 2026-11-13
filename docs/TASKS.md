@@ -49,7 +49,7 @@
 - [x] **M3-06** (ENG/P0) Store webhook event IDs and prevent duplicate capture — unique event constraint.
 - [x] **M3-07** (ENG/P0) Build manual refund command, restricted by status — explicit external reconciliation required.
 - [ ] **M3-08** (ENG/P0) Prove sandbox webhook delivery, retries and out-of-order events — test-mode evidence.
-- [ ] **M3-09** (ENG/P0) Add explicit gateway reconciliation for stuck/unmatched payments and refund states — audited results.
+- [ ] **M3-09** (ENG/P0) Add explicit gateway reconciliation for stuck/unmatched payments and refund states — local signed-event replay, receipt-checked gateway lookup and durable refund lifecycle implemented; real test-mode gateway evidence remains outstanding. See `PAYMENT_RECONCILIATION.md` and `REFUNDS.md`.
 - [ ] **M3-10** (BIZ/P0) Add tax-compliant receipts/invoices, refund/terms pages, business/KYC approvals — sign-off.
 
 ## M4 — Registrar operations (10)

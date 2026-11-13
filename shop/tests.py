@@ -11,7 +11,7 @@ from .forms import DomainSearchForm, NameServerForm
 from .models import DomainOrder, ManagedDomain, PaymentEvent, RegistrantContact, TLDPrice
 from .payments import verify_webhook
 from .providers import Openprovider, ProviderError
-from .services import create_checkout_order, fulfill_one, receive_razorpay_webhook, sales_ready
+from .services import OrderError, create_checkout_order, fulfill_one, receive_razorpay_webhook, sales_ready
 
 
 @override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
@@ -128,7 +128,8 @@ class PaymentAndFulfillmentTests(TestCase):
         body = json.dumps({'event':'payment.captured','payload':{'payment':{'entity':{
           'id':'pay_verified_999','status':'captured','amount':129900,'currency':'INR'}}}}).encode()
         sig = hmac.new(b'webhook-test-only',body,hashlib.sha256).hexdigest()
-        self.assertEqual(receive_razorpay_webhook(body,sig,'evt_no_order'),'ignored')
+        with self.assertRaises(OrderError):
+            receive_razorpay_webhook(body,sig,'evt_no_order')
         unrelated.refresh_from_db()
         self.assertEqual(unrelated.status,DomainOrder.AWAITING)
 

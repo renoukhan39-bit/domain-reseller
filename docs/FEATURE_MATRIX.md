@@ -9,6 +9,7 @@
 | Verification resend, single-use links, shared send throttles | Implemented; automated local verification; external SMTP unverified | `shop/email_verification.py`, migration `0002`; `docs/EMAIL_VERIFICATION.md`; M1-08 remains open |
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
+| Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/payment_events.py`, `shop/refunds.py`, migration `0003`; `docs/PAYMENT_RECONCILIATION.md` |
 | Openprovider register/renew/NS + worker | Written/unverified | `shop/providers.py`, `shop/management/commands` |
 | Basic dashboard and operator admin | Written/unverified | `shop/templates`, `shop/admin.py` |
 | Domain transfers, DNS record editor, DNSSEC | Missing | R3 |

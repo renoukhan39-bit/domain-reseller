@@ -1,6 +1,7 @@
 """Razorpay HTTP integration. Never accept payment evidence from browser alone."""
 import hashlib
 import hmac
+import re
 import requests
 from django.conf import settings
 
@@ -10,10 +11,23 @@ class PaymentError(Exception):
 
 
 def verify_webhook(body: bytes, signature: str, secret: str) -> bool:
-    if not secret or not signature:
+    if (not isinstance(body, bytes) or not isinstance(secret, str) or not secret
+            or not isinstance(signature, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", signature)):
         return False
     expected = hmac.new(secret.encode("utf-8"), body, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature)
+    return hmac.compare_digest(expected, signature.lower())
+
+
+def valid_gateway_id(value, prefix):
+    """Gateway IDs are path segments, never caller-supplied URL paths."""
+    return (isinstance(value, str) and len(value) <= 80
+            and re.fullmatch(re.escape(prefix) + r"[A-Za-z0-9_]+", value) is not None)
+
+
+def _identifier(value, prefix):
+    if not valid_gateway_id(value, prefix):
+        raise PaymentError("Invalid payment gateway identifier")
+    return value
 
 
 class Razorpay:
@@ -28,10 +42,16 @@ class Razorpay:
     def _request(self, method, path, payload=None):
         try:
             response = self.session.request(method, self.ROOT + path,
-                                            auth=self.auth, json=payload, timeout=20)
+                                            auth=self.auth, json=payload, timeout=20,
+                                            allow_redirects=False)
+            if not 200 <= response.status_code < 300:
+                raise PaymentError("Payment gateway returned an unsuccessful response")
             response.raise_for_status()
-            return response.json()
-        except (requests.RequestException, ValueError) as exc:
+            result = response.json()
+            if not isinstance(result, dict):
+                raise PaymentError("Unexpected payment gateway response")
+            return result
+        except (requests.RequestException, ValueError, TypeError) as exc:
             raise PaymentError("Payment gateway operation failed") from exc
 
     def create_order(self, order):
@@ -42,11 +62,23 @@ class Razorpay:
         })
 
     def fetch_payment(self, payment_id):
-        if not payment_id.startswith("pay_") or len(payment_id) > 80:
-            raise PaymentError("Invalid payment identifier")
+        _identifier(payment_id, "pay_")
         return self._request("GET", f"/payments/{payment_id}")
 
+    def fetch_order(self, order_id):
+        _identifier(order_id, "order_")
+        return self._request("GET", f"/orders/{order_id}")
+
+    def fetch_order_payments(self, order_id):
+        _identifier(order_id, "order_")
+        return self._request("GET", f"/orders/{order_id}/payments")
+
+    def fetch_refund(self, refund_id):
+        _identifier(refund_id, "rfnd_")
+        return self._request("GET", f"/refunds/{refund_id}")
+
     def refund_payment(self, payment_id, amount_paise):
-        if not payment_id.startswith("pay_"):
-            raise PaymentError("Invalid payment identifier")
+        _identifier(payment_id, "pay_")
+        if type(amount_paise) is not int or amount_paise <= 0:
+            raise PaymentError("Invalid refund amount")
         return self._request("POST", f"/payments/{payment_id}/refund", {"amount": amount_paise})

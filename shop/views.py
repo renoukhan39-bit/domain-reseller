@@ -179,7 +179,7 @@ def renew(request, domain_id):
 def order_detail(request, order_id):
     order = get_object_or_404(DomainOrder, pk=order_id, owner=request.user)
     return render(request, "shop/order.html", {
-        "order": order, "key_id": settings.RAZORPAY_KEY_ID,
+        "order": order, "key_id": settings.RAZORPAY_KEY_ID, "checkout_enabled": sales_ready(),
     })
 
 
