@@ -7,6 +7,19 @@ from django.db import models
 DOMAIN_LABEL = RegexValidator(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$", "Use valid ASCII domain labels")
 
 
+class EmailVerification(models.Model):
+    """Explicit pending signup; inactive administrative accounts are not eligible."""
+    user = models.OneToOneField(settings.AUTH_USER_MODEL, on_delete=models.CASCADE)
+    nonce = models.UUIDField(default=uuid.uuid4)
+
+
+class EmailVerificationThrottle(models.Model):
+    """Shared fixed-window counters; keys are HMACs, never email/IP addresses."""
+    key = models.CharField(max_length=64, primary_key=True)
+    window_start = models.DateTimeField()
+    count = models.PositiveIntegerField(default=0)
+
+
 class TLDPrice(models.Model):
     extension = models.CharField(max_length=63, unique=True, validators=[DOMAIN_LABEL])
     registration_paise = models.PositiveIntegerField(validators=[MinValueValidator(1)])

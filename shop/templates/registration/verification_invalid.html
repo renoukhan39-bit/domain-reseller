@@ -1,0 +1,4 @@
+{% extends 'shop/base.html' %}{% block title %}Verification link unavailable{% endblock %}{% block content %}
+<h1>Invalid or expired verification link</h1>
+<p>Verification links can be used once. Request a new email if you still need to verify your account.</p>
+<p><a href="{% url 'resend_verification' %}">Resend verification email</a> · <a href="{% url 'login' %}">Sign in</a></p>{% endblock %}
