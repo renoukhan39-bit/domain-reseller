@@ -171,6 +171,18 @@ class SafePasswordResetTests(TestCase):
         self.assertIn("https://accounts.example.test/accounts/reset/", mail.outbox[0].body)
         self.assertNotIn("attacker.example.test", mail.outbox[0].body)
 
+    def test_customer_reset_pages_use_customer_templates(self):
+        for route, template in (("password_reset", "shop/password_reset_form.html"),
+                                ("password_reset_done", "shop/password_reset_done.html"),
+                                ("password_reset_complete", "shop/password_reset_complete.html")):
+            with self.subTest(route=route):
+                response = self.client.get(reverse(route))
+                self.assertEqual(response.status_code, 200)
+                self.assertTemplateUsed(response, template)
+                self.assertContains(response, "Domain Reseller")
+        invalid = self.client.get(reverse("password_reset_confirm", args=["invalid", "invalid"]))
+        self.assertTemplateUsed(invalid, "shop/password_reset_confirm.html")
+
     def test_transport_and_config_errors_do_not_expose_eligible_accounts(self):
         for error in (SMTPException("private recipient and password"), OSError("private credential"),
                       ValueError("private config"), ImproperlyConfigured("private backend")):

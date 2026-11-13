@@ -20,15 +20,15 @@ Read **[`docs/START_HERE.md`](docs/START_HERE.md)** for the complete mission, de
 8. Add eligible TLD prices through Django admin. Use **actual** supplier cost + margin + payment fees + taxes; no invented demo pricing is loaded.
 9. Use `docker compose exec web python manage.py test shop` to run the test suite.
 
-With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obtain separate Openprovider sandbox credentials, set `OPENPROVIDER_BASE_URL=https://api.sandbox.openprovider.nl/v1beta`, and Razorpay **test** keys and webhook secret. Only when setup is correct set `SALES_ENABLED=true` to exercise the payment sandbox. Set `FULFILLMENT_ENABLED=true` only after checking webhook delivery and registrar credentials. Do **not** use live Razorpay keys with sandbox registrar credentials.
+With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obtain separate Openprovider sandbox credentials, set `OPENPROVIDER_BASE_URL=https://api.sandbox.openprovider.nl/v1`, and Razorpay **test** keys and webhook secret. Only when setup is correct set `SALES_ENABLED=true` to exercise the payment sandbox. Set `FULFILLMENT_ENABLED=true` only after checking webhook delivery and registrar credentials. Do **not** use live Razorpay keys with sandbox registrar credentials.
 
 ## Production readiness status
 
 - **Implemented:** core Django application, database schema, profile/email verification, authenticated customer pages, registrar API adapter, Razorpay Orders + signed webhook, manual refund command, guarded fulfillment worker, nameserver updates, unit/integration-style tests, PostgreSQL compose, CI workflow.
-- **Verified:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite). Local PostgreSQL 16 and Docker validation with the cloud CA override passed all 39 tests for M1-08; see [verification evidence](docs/EMAIL_VERIFICATION.md#verification-boundaries).
+- **Verified:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite). Local PostgreSQL 16 and Docker validation with the cloud CA override passed all 166 application tests, including payment/refund reconciliation, registrar recovery and shared throttling; see [verification evidence](docs/THROTTLING.md).
 - **Not verified:** registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, rate limits across workers, backup restore, financial and legal compliance.
 - **Email verification:** [resend and SMTP configuration](docs/EMAIL_VERIFICATION.md) are implemented with single-use expiring links and database send throttles; external provider delivery remains unverified.
-- **Not implemented:** customer invoices/tax calculations, supplier price sync, web-based support/refund system, transfers, automated expiries/renewal reminders, DNS record editor, reconciliation dashboard, reporting/ledger, production rate limiting for other endpoints, data deletion/export, observability alerts. These are explicit tasks, **not** silently called complete.
+- **Not implemented:** customer invoices/tax calculations, supplier price sync, web-based support/refund system, transfers, automated expiries/renewal reminders, DNS record editor, reconciliation dashboard, reporting/ledger, production edge throttling and bot controls, data deletion/export, observability alerts. These are explicit tasks, **not** silently called complete.
 
 ## Important business safeguards
 
