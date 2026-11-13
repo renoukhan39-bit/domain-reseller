@@ -6,6 +6,7 @@
 | --- | --- | --- |
 | Django project + PostgreSQL + Docker + CI definition | CI passed; deployment unverified | `config`, `compose.yaml`, `.github/workflows/ci.yml`; [green CI](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) |
 | Accounts, verification, profile, login/reset | Written/unverified | `shop/forms.py`, `shop/views.py` |
+| Verification resend, single-use links, shared send throttles | Implemented; automated local verification; external SMTP unverified | `shop/email_verification.py`, migration `0002`; `docs/EMAIL_VERIFICATION.md`; M1-08 remains open |
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
 | Openprovider register/renew/NS + worker | Written/unverified | `shop/providers.py`, `shop/management/commands` |

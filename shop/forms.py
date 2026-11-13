@@ -38,6 +38,10 @@ class SignupForm(UserCreationForm):
         return user
 
 
+class ResendVerificationForm(forms.Form):
+    email = forms.EmailField(max_length=254)
+
+
 class DomainSearchForm(forms.Form):
     domain = forms.CharField(max_length=253)
     def clean_domain(self):
