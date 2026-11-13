@@ -85,47 +85,87 @@ def create_checkout_order(*, owner, domain, operation, price, key, managed_domai
 
 
 def receive_razorpay_webhook(body, signature, event_id):
-    """The sole automatic payment->paid transition. Verify original request bytes."""
+    """Accept only signed captures; safely reprocess a previously unmatched replay.
+
+    A valid capture can arrive before the gateway order ID is attached locally.
+    Keep the signed event's digest and allow an identical gateway redelivery to
+    reconcile it once the order is known. Never trust a changed payload or a
+    browser callback, and never invoke registrar fulfillment from this path.
+    """
     if not verify_webhook(body, signature, settings.RAZORPAY_WEBHOOK_SECRET):
         raise OrderError("Invalid webhook signature")
     if not event_id or len(event_id) > 130:
         raise OrderError("Missing event identifier")
     try:
         message = json.loads(body)
-    except (ValueError, UnicodeDecodeError) as exc:
+    except (ValueError, UnicodeDecodeError, TypeError) as exc:
         raise OrderError("Invalid webhook payload") from exc
+    if not isinstance(message, dict) or not isinstance(message.get("event", ""), str):
+        raise OrderError("Invalid webhook payload")
     event_type = message.get("event", "")
+    payment = None
+    if event_type == "payment.captured":
+        payload = message.get("payload")
+        payment_wrapper = payload.get("payment") if isinstance(payload, dict) else None
+        payment = payment_wrapper.get("entity") if isinstance(payment_wrapper, dict) else None
+        if not isinstance(payment, dict):
+            raise OrderError("Invalid captured payment payload")
+
     digest = hashlib.sha256(body).hexdigest()
     with transaction.atomic():
-        event, created = PaymentEvent.objects.get_or_create(event_id=event_id,
-            defaults={"event_type": event_type[:60], "payload_sha256": digest})
+        event, created = PaymentEvent.objects.select_for_update().get_or_create(
+            event_id=event_id,
+            defaults={"event_type": event_type[:60], "payload_sha256": digest},
+        )
         if not created:
             if event.payload_sha256 != digest:
                 raise OrderError("Event ID collision")
-            return "duplicate"
-        event.outcome = "ignored"
+            # An earlier signed capture might not have matched a local order.
+            # Reprocess only that exact immutable event; all others are no-ops.
+            if (event_type != "payment.captured" or
+                    event.outcome not in {"unmatched_payment_review", "ignored"}):
+                return "duplicate"
+
+        outcome = "ignored"
         if event_type == "payment.captured":
-            payment = message.get("payload", {}).get("payment", {}).get("entity", {})
-            external_order = payment.get("order_id", "")
+            external_order = payment.get("order_id")
             order = (DomainOrder.objects.select_for_update().filter(
                 razorpay_order_id=external_order).first()
                 if isinstance(external_order, str) and external_order.startswith("order_")
                 else None)
-            if (order and order.status == DomainOrder.AWAITING and
-                payment.get("status") == "captured" and
-                payment.get("amount") == order.amount_paise and
-                payment.get("currency") == "INR" and
-                str(payment.get("id", "")).startswith("pay_")):
+            capture_matches = bool(
+                order and payment.get("status") == "captured"
+                and payment.get("amount") == order.amount_paise
+                and payment.get("currency") == order.currency == "INR"
+                and isinstance(payment.get("id"), str)
+                and payment["id"].startswith("pay_")
+            )
+            if capture_matches and order.status == DomainOrder.AWAITING:
                 order.status = DomainOrder.PAID
                 order.razorpay_payment_id = payment["id"]
                 order.save(update_fields=["status", "razorpay_payment_id", "updated_at"])
                 AuditEntry.objects.create(actor=order.owner, order=order, action="payment_captured")
-                event.outcome = "paid"
-            elif order:
-                event.outcome = "unmatched_payment_review"
+                outcome = "paid"
+            elif (capture_matches and order.razorpay_payment_id == payment["id"]
+                  and order.status in {
+                      DomainOrder.PAID, DomainOrder.PROCESSING, DomainOrder.ACTIVE,
+                      DomainOrder.REVIEW, DomainOrder.REFUNDED,
+                  }):
+                # A second event ID for the same captured payment is harmless.
+                outcome = "already_recorded"
+            else:
+                # Includes unknown gateway order IDs, wrong amounts/currencies,
+                # second payment IDs and captures for an ineligible order.
+                # Operators must investigate; do not automatically retry a charge.
+                outcome = "unmatched_payment_review"
+                if order is not None and created:
+                    AuditEntry.objects.create(
+                        actor=order.owner, order=order, action="payment_reconciliation_needed"
+                    )
+        event.outcome = outcome
         event.processed_at = timezone.now()
         event.save(update_fields=["outcome", "processed_at"])
-    return event.outcome
+    return outcome
 
 
 def fulfill_one(order_id, provider=None):
