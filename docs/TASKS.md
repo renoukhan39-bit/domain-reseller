@@ -73,7 +73,7 @@
 - [x] **M5-04** (ENG/P0) Add DB-backed health check — non-200 if database down.
 - [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — shared PostgreSQL application budgets implemented and concurrency-tested for login/reset/verification/customer actions; production edge/bot controls and load acceptance remain outstanding. See `THROTTLING.md`.
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
-- [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — restoration proven.
+- [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — encrypted local PostgreSQL backup/empty-target restore tooling and isolated synthetic-data recovery drill verified; production offsite retention, alerts and clean staging acceptance remain outstanding. See `BACKUP_RESTORE.md`.
 - [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
 - [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — on-call drill passes.
 

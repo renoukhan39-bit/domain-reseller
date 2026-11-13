@@ -38,3 +38,14 @@ jobs:
       - run: python manage.py collectstatic --noinput
       - run: python manage.py test shop --verbosity 2
       - run: python -m compileall -q config shop
+  backup-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: command -v gpg
+      - run: python -m unittest scripts.test_database_backup -v
+      - run: docker pull postgres:16-alpine
+      - run: python scripts/backup_restore_drill.py

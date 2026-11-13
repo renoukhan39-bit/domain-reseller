@@ -22,5 +22,6 @@
 | Hosting/VPS/email/SSL/website builder | Missing | R4 |
 | Support portal, monitoring and advanced analytics | Missing | R4 |
 | Verified staging, backup restore, real sandbox credentials | Unverified external work | R0–R2 |
+| Encrypted local PostgreSQL backup and isolated recovery drill | Local tool/guard tests and synthetic ownership/payment restore verified; production offsite/staging unverified | `scripts/database_backup.py`, `scripts/backup_restore_drill.py`; `docs/BACKUP_RESTORE.md` |
 
 **Rule:** Promote a row to tested only with linked CI/sandbox/review evidence. The 66-task checklist is planning data, not verified release status.
