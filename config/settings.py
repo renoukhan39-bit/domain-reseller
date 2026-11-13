@@ -105,7 +105,7 @@ SECURE_HSTS_PRELOAD = False
 # BOTH toggles must be true, plus credentials, before orders can be fulfilled.
 SALES_ENABLED = os.getenv("SALES_ENABLED", "false").lower() == "true"
 FULFILLMENT_ENABLED = os.getenv("FULFILLMENT_ENABLED", "false").lower() == "true"
-OPENPROVIDER_BASE_URL = os.getenv("OPENPROVIDER_BASE_URL", "https://api.sandbox.openprovider.nl/v1beta").rstrip("/")
+OPENPROVIDER_BASE_URL = os.getenv("OPENPROVIDER_BASE_URL", "https://api.sandbox.openprovider.nl/v1").rstrip("/")
 OPENPROVIDER_USERNAME = os.getenv("OPENPROVIDER_USERNAME", "")
 OPENPROVIDER_PASSWORD = os.getenv("OPENPROVIDER_PASSWORD", "")
 OPENPROVIDER_CONTACT_ADMIN = os.getenv("OPENPROVIDER_CONTACT_ADMIN", "")

@@ -52,14 +52,14 @@ class ValidationTests(TestCase):
     @override_settings(OPENPROVIDER_USERNAME='tester', OPENPROVIDER_PASSWORD='secret',
         OPENPROVIDER_BASE_URL='https://api.sandbox.openprovider.nl/v1beta')
     def test_registrar_availability_and_premium_safety(self):
-        with patch.object(Openprovider, '_request', return_value={'results':[{'status':'free', 'is_premium':False}]}):
+        with patch.object(Openprovider, '_request', return_value={'results':[{'domain':'example.com', 'status':'free', 'is_premium':False}]}):
             self.assertTrue(Openprovider().check('example.com'))
-        with patch.object(Openprovider, '_request', return_value={'results':[{'status':'in use'}]}):
+        with patch.object(Openprovider, '_request', return_value={'results':[{'domain':'example.com', 'status':'in use', 'is_premium':False}]}):
             self.assertFalse(Openprovider().check('example.com'))
-        with patch.object(Openprovider, '_request', return_value={'results':[{'status':'free', 'is_premium':True}]}):
+        with patch.object(Openprovider, '_request', return_value={'results':[{'domain':'premium.com', 'status':'free', 'is_premium':True}]}):
             with self.assertRaises(ProviderError):
                 Openprovider().check('premium.com')
-        with patch.object(Openprovider, '_request', return_value={'results':[{'status':'mystery'}]}):
+        with patch.object(Openprovider, '_request', return_value={'results':[{'domain':'example.com', 'status':'mystery', 'is_premium':False}]}):
             with self.assertRaises(ProviderError):
                 Openprovider().check('example.com')
 
@@ -147,6 +147,9 @@ class PaymentAndFulfillmentTests(TestCase):
             def register(inner,domain,handle):
                 inner.calls += 1
                 return {'id':100500,'status':'ACT','expiration_date':'2028-12-30 00:00:00'}
+            def get_domain(inner,provider_id):
+                return {'id':provider_id,'domain':{'name':'safeexample','extension':'com'},
+                        'owner_handle':'BP123-IN','status':'ACT','expiration_date':'2028-12-30 00:00:00'}
         registrar = Registrar()
         self.assertTrue(fulfill_one(self.order.id,registrar))
         self.assertFalse(fulfill_one(self.order.id,registrar))

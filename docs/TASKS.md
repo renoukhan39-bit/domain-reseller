@@ -61,7 +61,7 @@
 - [x] **M4-05** (ENG/P0) Require explicit worker enablement — no automatic live calls by default.
 - [x] **M4-06** (ENG/P0) Avoid blind retries on uncertain registrar response — manual review state.
 - [ ] **M4-07** (ENG/P0) Prove Openprovider sandbox availability/contact/register/renew/NS workflow — verified IDs.
-- [ ] **M4-08** (OPS/P0) Add API timeout/crash reconciliation and monitor stuck `processing` orders — no duplicates.
+- [ ] **M4-08** (OPS/P0) Add API timeout/crash reconciliation and monitor stuck `processing` orders — durable claims, stale escalation and read-only registration reconciliation implemented with local fixtures; sandbox/operator drills outstanding. See `FULFILLMENT_RECOVERY.md`.
 - [ ] **M4-09** (ENG/P1) Support transferred-in domains and EPP auth codes — ownership verified.
 - [ ] **M4-10** (ENG/P1) Add domain lifecycle synchronization, expiry notices and renewability checks — schedule tested.
 

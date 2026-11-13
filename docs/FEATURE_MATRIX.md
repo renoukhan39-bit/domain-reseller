@@ -11,6 +11,7 @@
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
 | Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/payment_events.py`, `shop/refunds.py`, migration `0003`; `docs/PAYMENT_RECONCILIATION.md` |
 | Openprovider register/renew/NS + worker | Written/unverified | `shop/providers.py`, `shop/management/commands` |
+| Registrar identity validation, durable claims, stale escalation and read-only registration recovery | Implemented; local fixtures; sandbox acceptance outstanding | `docs/PROVIDER_COMPATIBILITY.md`, `docs/FULFILLMENT_RECOVERY.md` |
 | Basic dashboard and operator admin | Written/unverified | `shop/templates`, `shop/admin.py` |
 | Domain transfers, DNS record editor, DNSSEC | Missing | R3 |
 | Premium domains, IDNs, price sync | Missing | R3 |
