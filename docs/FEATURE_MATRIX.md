@@ -7,6 +7,7 @@
 | Django project + PostgreSQL + Docker + CI definition | CI passed; deployment unverified | `config`, `compose.yaml`, `.github/workflows/ci.yml`; [green CI](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) |
 | Accounts, verification, profile, login/reset | Written/unverified | `shop/forms.py`, `shop/views.py` |
 | Verification resend, single-use links, shared send throttles | Implemented; automated local verification; external SMTP unverified | `shop/email_verification.py`, migration `0002`; `docs/EMAIL_VERIFICATION.md`; M1-08 remains open |
+| Shared login/reset/search/checkout abuse budgets and safe reset email errors | Implemented; local concurrency and endpoint tests; production load/edge controls unverified | `shop/throttling.py`, `shop/middleware.py`; `docs/THROTTLING.md` |
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
 | Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/payment_events.py`, `shop/refunds.py`, migration `0003`; `docs/PAYMENT_RECONCILIATION.md` |

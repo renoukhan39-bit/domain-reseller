@@ -15,19 +15,12 @@ from .forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerif
 from .models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
 from .providers import Openprovider, ProviderError
 from .services import OrderError, create_checkout_order, receive_razorpay_webhook, sales_ready
+from .throttling import limit_customer_request
 
 
 def rate_limited(request, key_prefix, limit=12):
-    """Best-effort app limit; deploy with shared Redis cache and edge throttling in production."""
-    from django.core.cache import cache
-    # Use authenticated user identity, not attacker-controlled forwarded IP headers.
-    actor = str(request.user.pk) if request.user.is_authenticated else request.META.get("REMOTE_ADDR", "unknown")
-    key = f"throttle:{key_prefix}:{actor}"
-    count = cache.get(key, 0)
-    if count >= limit:
-        return True
-    cache.set(key, count + 1, 60)
-    return False
+    """Use the same shared database budget from every application worker."""
+    return limit_customer_request(request, key_prefix, limit)
 
 
 @require_GET

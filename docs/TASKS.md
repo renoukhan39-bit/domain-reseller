@@ -71,7 +71,7 @@
 - [x] **M5-02** (ENG/P0) Record account/payment/registrar actions in audit table — traceable events.
 - [x] **M5-03** (ENG/P0) Add basic input and per-process request throttles — code present; not sufficient for distributed prod.
 - [x] **M5-04** (ENG/P0) Add DB-backed health check — non-200 if database down.
-- [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — load tests pass.
+- [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — shared PostgreSQL application budgets implemented and concurrency-tested for login/reset/verification/customer actions; production edge/bot controls and load acceptance remain outstanding. See `THROTTLING.md`.
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
 - [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — restoration proven.
 - [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
