@@ -139,6 +139,7 @@ def receive_razorpay_webhook(body, signature, event_id):
                 and payment.get("currency") == order.currency == "INR"
                 and isinstance(payment.get("id"), str)
                 and payment["id"].startswith("pay_")
+                and len(payment["id"]) <= 80
             )
             if capture_matches and order.status == DomainOrder.AWAITING:
                 order.status = DomainOrder.PAID
