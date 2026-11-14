@@ -75,7 +75,7 @@
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
 - [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — encrypted local PostgreSQL backup/empty-target restore tooling and isolated synthetic-data recovery drill verified; production offsite retention, alerts and clean staging acceptance remain outstanding. See `BACKUP_RESTORE.md`.
 - [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
-- [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — on-call drill passes.
+- [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — read-only JSON backlog monitor with nonzero alert exit and privacy-safe operator SOP added; deployment alert routing and actual on-call drill remain pending. See `RECONCILIATION_MONITORING.md`.
 
 ## M6 — Production and scale (9)
 
