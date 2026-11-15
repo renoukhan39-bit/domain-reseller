@@ -24,7 +24,7 @@
 - [x] **M1-05** (ENG/P0) Collect actual registrant identity/address/phone — profile saved per user.
 - [x] **M1-06** (ENG/P0) Enforce domain/order ownership in views — cross-account detail returns 404.
 - [x] **M1-07** (ENG/P0) Create real registrar customer handle — registrant owns their domain.
-- [ ] **M1-08** (ENG/P0) Add email verification resend and provider-backed email delivery — real SMTP tested.
+- [ ] **M1-08** (ENG/P0) Add email verification resend and provider-backed email delivery — resend, single-use expiring tokens, database throttles and SMTP configuration implemented; real provider delivery remains unverified. See `EMAIL_VERIFICATION.md`; retain this open acceptance gate until real SMTP is tested.
 - [ ] **M1-09** (ENG/P0) Provide lawful data export/correction/erasure workflows and privacy notices — jurisdiction-reviewed process.
 
 ## M2 — Search, prices and storefront (9)

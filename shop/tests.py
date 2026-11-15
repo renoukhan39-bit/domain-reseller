@@ -4,7 +4,7 @@ import hmac
 import json
 from unittest.mock import patch
 from django.contrib.auth import get_user_model
-from django.core import mail, signing
+from django.core import mail
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from .forms import DomainSearchForm, NameServerForm
@@ -14,7 +14,8 @@ from .providers import Openprovider, ProviderError
 from .services import create_checkout_order, fulfill_one, receive_razorpay_webhook, sales_ready
 
 
-@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+                   EMAIL_VERIFICATION_BASE_URL='https://accounts.example.test')
 class AccountTests(TestCase):
     def test_signup_email_verification(self):
         response = self.client.post(reverse('signup'), {'username':'alice','email':'alice@example.test',
@@ -23,8 +24,9 @@ class AccountTests(TestCase):
         user = get_user_model().objects.get(username='alice')
         self.assertFalse(user.is_active)
         self.assertEqual(len(mail.outbox), 1)
-        token = signing.dumps({'uid':user.pk}, salt='registrant-email-verify')
-        self.client.get(reverse('verify_email', args=[token]))
+        link = mail.outbox[0].body.split()[-1]
+        self.client.get(link)
+        self.client.post(link)
         user.refresh_from_db()
         self.assertTrue(user.is_active)
 

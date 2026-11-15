@@ -1,0 +1,3 @@
+{% extends 'shop/base.html' %}{% block title %}Verify your email{% endblock %}{% block content %}
+<h1>Verify your email</h1><p>Confirm to activate the account associated with this verification link.</p>
+<form method="post">{% csrf_token %}<button type="submit">Verify email</button></form>{% endblock %}

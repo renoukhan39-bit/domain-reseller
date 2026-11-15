@@ -3,17 +3,16 @@ import json
 import secrets
 from django.conf import settings
 from django.contrib import messages
-from django.contrib.auth import login
 from django.contrib.auth.decorators import login_required
-from django.core import signing
-from django.core.mail import send_mail
-from django.http import Http404, HttpResponse, HttpResponseBadRequest
+from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
-from django.urls import reverse
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
-from .forms import DomainSearchForm, NameServerForm, RegistrantForm, SignupForm, normalize_domain
-from .models import AuditEntry, DomainOrder, ManagedDomain, RegistrantContact, TLDPrice
+from django.views.decorators.cache import never_cache
+from django.db import transaction
+from .email_verification import RESEND_MESSAGE, consume_verification, request_verification, verification_pending
+from .forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerificationForm, SignupForm, normalize_domain
+from .models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
 from .providers import Openprovider, ProviderError
 from .services import OrderError, create_checkout_order, receive_razorpay_webhook, sales_ready
 
@@ -61,30 +60,43 @@ def signup(request):
         return HttpResponse("Please try again in a minute", status=429)
     form = SignupForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        user = form.save()
-        token = signing.dumps({"uid": user.pk}, salt="registrant-email-verify")
-        link = request.build_absolute_uri(reverse("verify_email", args=[token]))
-        send_mail("Verify your domain reseller account", f"Verify your email: {link}",
-                  settings.DEFAULT_FROM_EMAIL, [user.email], fail_silently=False)
+        with transaction.atomic():
+            user = form.save()
+            EmailVerification.objects.create(user=user)
+        request_verification(user.email, request.META.get("REMOTE_ADDR", "unknown"))
         messages.success(request, "Account created. Check your email to activate it.")
         return redirect("login")
     return render(request, "shop/signup.html", {"form": form})
 
 
+@never_cache
+@require_http_methods(["GET", "POST"])
+def resend_verification(request):
+    form = ResendVerificationForm(request.POST if request.method == "POST" else None)
+    if request.method == "POST" and form.is_valid():
+        request_verification(form.cleaned_data["email"], request.META.get("REMOTE_ADDR", "unknown"))
+        return redirect("resend_verification_done")
+    return render(request, "registration/resend_verification.html", {"form": form})
+
+
+@never_cache
 @require_GET
+def resend_verification_done(request):
+    return render(request, "registration/resend_verification_done.html", {"notice": RESEND_MESSAGE})
+
+
+@never_cache
+@require_http_methods(["GET", "POST"])
 def verify_email(request, token):
-    try:
-        data = signing.loads(token, salt="registrant-email-verify", max_age=86400)
-        from django.contrib.auth import get_user_model
-        user = get_user_model().objects.get(pk=data["uid"])
-    except Exception:
-        return HttpResponseBadRequest("Invalid or expired verification link")
-    if not user.is_active:
-        user.is_active = True
-        user.save(update_fields=["is_active"])
-    login(request, user)
-    messages.success(request, "Email verified. Complete your registrant profile before purchasing.")
-    return redirect("contact")
+    if request.method == "GET" and verification_pending(token):
+        response = render(request, "registration/verification_confirm.html")
+    elif request.method == "POST" and consume_verification(token):
+        messages.success(request, "Email verified. Sign in to complete your registrant profile.")
+        response = redirect("login")
+    else:
+        response = render(request, "registration/verification_invalid.html", status=400)
+    response["Referrer-Policy"] = "no-referrer"
+    return response
 
 
 @login_required
