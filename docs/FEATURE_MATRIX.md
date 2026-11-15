@@ -11,7 +11,7 @@
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
 | Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/payment_events.py`, `shop/refunds.py`, migration `0003`; `docs/PAYMENT_RECONCILIATION.md` |
-| Openprovider register/renew/NS + worker | Written/unverified | `shop/providers.py`, `shop/management/commands` |
+| Openprovider register/renew/NS + worker | Source implemented; offline fixtures; external sandbox unverified | `shop/providers.py`, `shop/services.py`, worker commands; M5-08 branch hardens customer NS updates with registrar identity read-back and full feature-switch pairing, `shop/test_nameserver_safety.py` |
 | Registrar identity validation, durable claims, stale escalation and read-only registration recovery | Implemented; local fixtures; sandbox acceptance outstanding | `docs/PROVIDER_COMPATIBILITY.md`, `docs/FULFILLMENT_RECOVERY.md` |
 | Basic dashboard and operator admin | Written/unverified | `shop/templates`, `shop/admin.py` |
 | Domain transfers, DNS record editor, DNSSEC | Missing | R3 |
@@ -24,4 +24,4 @@
 | Verified staging, backup restore, real sandbox credentials | Unverified external work | R0–R2 |
 | Encrypted local PostgreSQL backup and isolated recovery drill | Local tool/guard tests and synthetic ownership/payment restore verified; production offsite/staging unverified | `scripts/database_backup.py`, `scripts/backup_restore_drill.py`; `docs/BACKUP_RESTORE.md` |
 
-**Rule:** Promote a row to tested only with linked CI/sandbox/review evidence. The 66-task checklist is planning data, not verified release status.
+**Rule:** Promote a row to tested only with linked CI/sandbox/review evidence. The 66-task checklist is planning data, not verified release status. The focused M5-08 nameserver safety change is not completion of all M5-08 adversarial review work. See `CODEBASE_AUDIT.md`, `TWO_PRIMARY_REPO_COMPARISON.md` and `MASTER_BUILD_PLAN.md` for the verified source inventory, upstream SHA pins and blockers.
