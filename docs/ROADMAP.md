@@ -35,4 +35,4 @@ The goal is a competitive domain and web-services platform, **not** an assertion
 - [ ] Customer self-service, multilingual storefront, marketing, affiliates.
 - [ ] Independent security audit, availability and disaster recovery targets.
 
-**Releases are evidence-based, not time promises.** The 5-day plan is an initial staging sprint, not a 5-day full competitor build. See `TASKS.md` for detailed work IDs, owner and acceptance tests.
+**Releases are evidence-based, not time promises.** The 5-day plan is an initial staging sprint, not a 5-day full competitor build. See `TASKS.md` for detailed work IDs, owner and acceptance tests. The 2026-11-15 current-code audit, two primary upstream SHA pins, prioritized gaps and revised engineer-day estimates are in `CODEBASE_AUDIT.md`, `TWO_PRIMARY_REPO_COMPARISON.md` and `MASTER_BUILD_PLAN.md`; no release gate is waived by these documents.
