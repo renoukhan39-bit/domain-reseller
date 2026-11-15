@@ -14,7 +14,8 @@ from .email_verification import RESEND_MESSAGE, consume_verification, request_ve
 from .forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerificationForm, SignupForm, normalize_domain
 from .models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
 from .providers import Openprovider, ProviderError
-from .services import OrderError, create_checkout_order, receive_razorpay_webhook, sales_ready
+from .services import (OrderError, _registrar_identity, create_checkout_order,
+                       fulfillment_ready, receive_razorpay_webhook, sales_ready)
 from .throttling import limit_customer_request
 
 
@@ -184,18 +185,30 @@ def nameservers(request, domain_id):
         raise Http404()
     form = NameServerForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        if not settings.FULFILLMENT_ENABLED:
+        if not fulfillment_ready():
             messages.error(request, "Registrar management is currently disabled")
         elif rate_limited(request, "nameservers", 5):
             return HttpResponse("Please try again shortly", status=429)
         else:
             try:
-                Openprovider().update_nameservers(domain.provider_id, form.cleaned_data["nameservers"])
+                # A local domain row is not proof of current registrar ownership.
+                # Fail closed if the provider reports another registrant or an inactive domain.
+                contact_handle = RegistrantContact.objects.filter(owner=request.user).values_list(
+                    "openprovider_handle", flat=True).first()
+                if not contact_handle:
+                    raise OrderError("Registrar contact identity is not verified")
+                provider = Openprovider()
+                details = provider.get_domain(domain.provider_id)
+                status, _expiry = _registrar_identity(
+                    details, domain.provider_id, domain.name, contact_handle)
+                if status != "ACT":
+                    raise OrderError("Registrar domain is not active")
+                provider.update_nameservers(domain.provider_id, form.cleaned_data["nameservers"])
                 AuditEntry.objects.create(actor=request.user, domain=domain, action="nameservers_changed")
                 messages.success(request, "Nameserver update sent to registrar")
                 return redirect("dashboard")
-            except ProviderError:
-                messages.error(request, "Update uncertain; check registrar status before retry")
+            except (ProviderError, OrderError):
+                messages.error(request, "Registrar identity or update uncertain; check registrar before retry")
     return render(request, "shop/nameservers.html", {"domain": domain, "form": form})
 
 
