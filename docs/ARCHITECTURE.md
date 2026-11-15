@@ -24,7 +24,7 @@ Customer browser --TLS--> Django templates/auth/CSRF --> PostgreSQL
 - `shop/models.py`: durable records and unique constraints.
 - `shop/payments.py`: gateway API and constant-time webhook verification.
 - `shop/providers.py`: registrar REST methods and conservative availability parsing.
-- `shop/services.py`: payment state transitions and at-most-one automatic registrar attempt.
+- `shop/services.py`: payment state transitions, at-most-one automatic registrar attempt, and registrar identity read-back validation; the M5-08 branch reuses this validation before customer nameserver PUT.
 - `shop/management/commands/process_orders.py`: scheduled worker, safe by default.
 - `shop/management/commands/refund_order.py`: explicit operator reconciliation before refunds.
 
@@ -42,7 +42,7 @@ Django CSRF for all customer POSTs; secure cookies in production; HSTS; HTTP->HT
 ### Remaining critical production work
 
 1. Use hosted Postgres with encrypted storage and network restrictions; no public database access. Set managed TLS (`POSTGRES_SSLMODE=require/verify-full`) and verify CA.
-2. Shared Redis/edge throttling for login, search, email verification, purchase and webhook; the current in-memory cache throttle is **per worker**, not distributed.
+2. Configure edge/WAF bot protection and production load tests for login, search, email verification and purchase. **Current application budgets are shared PostgreSQL-backed counters** in `shop/throttling.py`, not the old per-worker in-memory cache; see `docs/THROTTLING.md`. Payment webhooks rely on HMAC/event idempotency and intentionally bypass customer throttling so retries can be processed.
 3. Wrap multi-worker reconciliation and provider retries in a reviewed operator workflow. A crash after sending a registrar request can leave `processing` indefinitely — this is intentionally not retried, but MUST alert an operator.
 4. Credential rotation and IAM least privilege; use AWS Secrets Manager or Azure Key Vault, never GitHub code/secrets in plain text.
 5. Configure TLS termination with trusted headers, bot protection, secure SMTP, structured logs (redact PII), error metrics, backups and restore drills.
@@ -50,4 +50,4 @@ Django CSRF for all customer POSTs; secure cookies in production; HSTS; HTTP->HT
 7. Complete provider reconciliation: an unknown `payment.captured` event is recorded but cannot auto-fulfill. Review each unmatched event.
 8. Implement stock/price change process, provider balance thresholds, refund status reconciliation and a robust ledger before broad launch.
 
-This is a deployable codebase but **not a production-certified finished service**. A third-party security review is recommended before handling live money and personal data.
+This is a deployable codebase but **not a production-certified finished service**. A third-party security review is recommended before handling live money and personal data. See the dated evidence and architecture decision in `CODEBASE_AUDIT.md` and the phased gates in `MASTER_BUILD_PLAN.md`.
