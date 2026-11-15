@@ -1,6 +1,6 @@
 # Developer checklist — 66 tasks, 20 release acceptance tests
 
-**Status legend:** `[x]` = source/configuration written in this package (not equivalent to successful sandbox or production testing); `[ ]` = not complete. **No end-to-end provider, payment, cloud or CI test is claimed as executed.** Each task has an owner (ENG engineer, OPS operations, BIZ business owner) and a concise exit condition. Priority P0 blocks launch, P1 is needed before scale, P2 is expansion.
+**Status legend:** `[x]` = source/configuration written (not equivalent to complete sandbox or production acceptance); `[ ]` = acceptance not complete. Historical GitHub Actions and local PostgreSQL tests have passed (see `README.md` and `docs/THROTTLING.md`), but **real Razorpay/Openprovider sandbox transactions and public production deployment remain unverified**. Each task has an owner (ENG engineer, OPS operations, BIZ business owner) and an exit condition. Priority P0 blocks launch, P1 is needed before scale, P2 is expansion.
 
 ## M0 — Foundation (10)
 
@@ -57,7 +57,7 @@
 - [x] **M4-01** (ENG/P0) Authenticate Openprovider via HTTPS bearer token — cache token securely.
 - [x] **M4-02** (ENG/P0) Register domain after paid status with owner handle — provider ID stored locally.
 - [x] **M4-03** (ENG/P0) Process renewals for owned domains only — expiry fetched from registrar.
-- [x] **M4-04** (ENG/P0) Allow authenticated nameserver updates — registry PUT, audit entry.
+- [x] **M4-04** (ENG/P0) Allow authenticated nameserver updates — registry PUT, audit entry; proposed M5-08 branch additionally requires matching registrar ID/domain/customer handle/ACT before PUT and compatible enablement; real sandbox acceptance remains M4-07.
 - [x] **M4-05** (ENG/P0) Require explicit worker enablement — no automatic live calls by default.
 - [x] **M4-06** (ENG/P0) Avoid blind retries on uncertain registrar response — manual review state.
 - [ ] **M4-07** (ENG/P0) Prove Openprovider sandbox availability/contact/register/renew/NS workflow — verified IDs.
@@ -74,7 +74,7 @@
 - [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — shared PostgreSQL application budgets implemented and concurrency-tested for login/reset/verification/customer actions; production edge/bot controls and load acceptance remain outstanding. See `THROTTLING.md`.
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
 - [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — encrypted local PostgreSQL backup/empty-target restore tooling and isolated synthetic-data recovery drill verified; production offsite retention, alerts and clean staging acceptance remain outstanding. See `BACKUP_RESTORE.md`.
-- [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
+- [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings. **Partial P0 hardening proposed:** `fix/M5-08-nameserver-registrar-identity` verifies Openprovider identity before NS PUT, adds regression tests and audit documents (`CODEBASE_AUDIT.md`, `TWO_PRIMARY_REPO_COMPARISON.md`, `MASTER_BUILD_PLAN.md`); full adversarial review and dependency advisory scan are **not completed**.
 - [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — read-only JSON backlog monitor with nonzero alert exit and privacy-safe operator SOP added; deployment alert routing and actual on-call drill remain pending. See `RECONCILIATION_MONITORING.md`.
 
 ## M6 — Production and scale (9)
@@ -116,4 +116,4 @@
 
 ## Developer handoff rules
 
-Each incomplete task must result in: a focused branch/PR, tests for success+failure, updated docs and an explicit risk statement. Do not enable live payment or registration in a development PR. Start with **M0-09**, then M1-08, M3-08, M4-07 and the remaining P0 launch blockers. The task list is a roadmap and is not evidence of a completed production integration.
+Each incomplete task must result in: a focused branch/PR, tests for success+failure, updated docs and an explicit risk statement. Do not enable live payment or registration in a development PR. Start by reviewing **M0-09** current PR CI, then M4-07 (Openprovider sandbox), M3-08 (Razorpay test-mode webhook), and remaining P0 launch blockers. The checklist is a roadmap and does not prove a live production integration. See `CODEBASE_AUDIT.md` and `MASTER_BUILD_PLAN.md` for current research and sequencing.
