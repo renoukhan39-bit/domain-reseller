@@ -7,9 +7,12 @@
 | Django project + PostgreSQL + Docker + CI definition | CI passed; deployment unverified | `config`, `compose.yaml`, `.github/workflows/ci.yml`; [green CI](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) |
 | Accounts, verification, profile, login/reset | Written/unverified | `shop/forms.py`, `shop/views.py` |
 | Verification resend, single-use links, shared send throttles | Implemented; automated local verification; external SMTP unverified | `shop/email_verification.py`, migration `0002`; `docs/EMAIL_VERIFICATION.md`; M1-08 remains open |
+| Shared login/reset/search/checkout abuse budgets and safe reset email errors | Implemented; local concurrency and endpoint tests; production load/edge controls unverified | `shop/throttling.py`, `shop/middleware.py`; `docs/THROTTLING.md` |
 | Domain search + basic TLD pricing | Written/unverified | `shop/providers.py`, `shop/models.py` |
 | Razorpay Orders + signed captured-payment webhooks | Written/unverified | `shop/payments.py`, `shop/services.py` |
+| Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/payment_events.py`, `shop/refunds.py`, migration `0003`; `docs/PAYMENT_RECONCILIATION.md` |
 | Openprovider register/renew/NS + worker | Written/unverified | `shop/providers.py`, `shop/management/commands` |
+| Registrar identity validation, durable claims, stale escalation and read-only registration recovery | Implemented; local fixtures; sandbox acceptance outstanding | `docs/PROVIDER_COMPATIBILITY.md`, `docs/FULFILLMENT_RECOVERY.md` |
 | Basic dashboard and operator admin | Written/unverified | `shop/templates`, `shop/admin.py` |
 | Domain transfers, DNS record editor, DNSSEC | Missing | R3 |
 | Premium domains, IDNs, price sync | Missing | R3 |
@@ -19,5 +22,6 @@
 | Hosting/VPS/email/SSL/website builder | Missing | R4 |
 | Support portal, monitoring and advanced analytics | Missing | R4 |
 | Verified staging, backup restore, real sandbox credentials | Unverified external work | R0–R2 |
+| Encrypted local PostgreSQL backup and isolated recovery drill | Local tool/guard tests and synthetic ownership/payment restore verified; production offsite/staging unverified | `scripts/database_backup.py`, `scripts/backup_restore_drill.py`; `docs/BACKUP_RESTORE.md` |
 
 **Rule:** Promote a row to tested only with linked CI/sandbox/review evidence. The 66-task checklist is planning data, not verified release status.

@@ -87,8 +87,10 @@ class DomainOrder(models.Model):
     ACTIVE = "active"
     REVIEW = "needs_review"
     REFUNDED = "refunded"
+    REFUND_PENDING = "refund_pending"
+    REFUND_REVIEW = "refund_review"
     STATUS_CHOICES = [(x, x.replace("_", " ").title()) for x in
-                      (AWAITING, PAID, PROCESSING, ACTIVE, REVIEW, REFUNDED)]
+                      (AWAITING, PAID, PROCESSING, ACTIVE, REVIEW, REFUNDED, REFUND_PENDING, REFUND_REVIEW)]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     owner = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="orders")
@@ -104,12 +106,20 @@ class DomainOrder(models.Model):
     provider_result_id = models.BigIntegerField(null=True, blank=True)
     provider_message = models.TextField(blank=True)
     refund_id = models.CharField(max_length=80, unique=True, blank=True, null=True)
+    refund_attempted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["owner", "idempotency_key"], name="unique_order_request_per_user"),
+            models.UniqueConstraint(fields=["domain"], condition=models.Q(operation="register") & ~models.Q(status="refunded"),
+                                    name="unique_unresolved_registration_domain"),
+            models.UniqueConstraint(fields=["managed_domain"], condition=models.Q(operation="renew") & ~models.Q(status__in=["active", "refunded"]),
+                                    name="unique_pending_renewal_domain"),
+            models.CheckConstraint(condition=models.Q(amount_paise__gt=0), name="order_amount_positive"),
+            models.CheckConstraint(condition=models.Q(operation__in=["register", "renew"]), name="order_operation_supported"),
+            models.CheckConstraint(condition=models.Q(currency="INR"), name="order_currency_inr"),
         ]
         ordering = ["-created_at"]
 
@@ -124,6 +134,12 @@ class PaymentEvent(models.Model):
     received_at = models.DateTimeField(auto_now_add=True)
     processed_at = models.DateTimeField(null=True, blank=True)
     outcome = models.CharField(max_length=80, blank=True)
+    # Minimal evidence from HMAC-verified captured events; never retain raw PII payloads.
+    gateway_order_id = models.CharField(max_length=80, blank=True, db_index=True)
+    payment_id = models.CharField(max_length=80, blank=True)
+    amount_paise = models.PositiveBigIntegerField(null=True, blank=True)
+    currency = models.CharField(max_length=3, blank=True)
+    payment_status = models.CharField(max_length=20, blank=True)
 
 
 class AuditEntry(models.Model):

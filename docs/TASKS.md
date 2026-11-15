@@ -49,7 +49,7 @@
 - [x] **M3-06** (ENG/P0) Store webhook event IDs and prevent duplicate capture — unique event constraint.
 - [x] **M3-07** (ENG/P0) Build manual refund command, restricted by status — explicit external reconciliation required.
 - [ ] **M3-08** (ENG/P0) Prove sandbox webhook delivery, retries and out-of-order events — test-mode evidence.
-- [ ] **M3-09** (ENG/P0) Add explicit gateway reconciliation for stuck/unmatched payments and refund states — audited results.
+- [ ] **M3-09** (ENG/P0) Add explicit gateway reconciliation for stuck/unmatched payments and refund states — local signed-event replay, receipt-checked gateway lookup and durable refund lifecycle implemented; real test-mode gateway evidence remains outstanding. See `PAYMENT_RECONCILIATION.md` and `REFUNDS.md`.
 - [ ] **M3-10** (BIZ/P0) Add tax-compliant receipts/invoices, refund/terms pages, business/KYC approvals — sign-off.
 
 ## M4 — Registrar operations (10)
@@ -61,7 +61,7 @@
 - [x] **M4-05** (ENG/P0) Require explicit worker enablement — no automatic live calls by default.
 - [x] **M4-06** (ENG/P0) Avoid blind retries on uncertain registrar response — manual review state.
 - [ ] **M4-07** (ENG/P0) Prove Openprovider sandbox availability/contact/register/renew/NS workflow — verified IDs.
-- [ ] **M4-08** (OPS/P0) Add API timeout/crash reconciliation and monitor stuck `processing` orders — no duplicates.
+- [ ] **M4-08** (OPS/P0) Add API timeout/crash reconciliation and monitor stuck `processing` orders — durable claims, stale escalation and read-only registration reconciliation implemented with local fixtures; sandbox/operator drills outstanding. See `FULFILLMENT_RECOVERY.md`.
 - [ ] **M4-09** (ENG/P1) Support transferred-in domains and EPP auth codes — ownership verified.
 - [ ] **M4-10** (ENG/P1) Add domain lifecycle synchronization, expiry notices and renewability checks — schedule tested.
 
@@ -71,11 +71,11 @@
 - [x] **M5-02** (ENG/P0) Record account/payment/registrar actions in audit table — traceable events.
 - [x] **M5-03** (ENG/P0) Add basic input and per-process request throttles — code present; not sufficient for distributed prod.
 - [x] **M5-04** (ENG/P0) Add DB-backed health check — non-200 if database down.
-- [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — load tests pass.
+- [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — shared PostgreSQL application budgets implemented and concurrency-tested for login/reset/verification/customer actions; production edge/bot controls and load acceptance remain outstanding. See `THROTTLING.md`.
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
-- [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — restoration proven.
+- [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — encrypted local PostgreSQL backup/empty-target restore tooling and isolated synthetic-data recovery drill verified; production offsite retention, alerts and clean staging acceptance remain outstanding. See `BACKUP_RESTORE.md`.
 - [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
-- [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — on-call drill passes.
+- [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — read-only JSON backlog monitor with nonzero alert exit and privacy-safe operator SOP added; deployment alert routing and actual on-call drill remain pending. See `RECONCILIATION_MONITORING.md`.
 
 ## M6 — Production and scale (9)
 

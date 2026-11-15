@@ -1,7 +1,6 @@
 """Single-use signup verification using Django signing, email and database locks."""
 import logging
 import uuid
-from datetime import timedelta
 from smtplib import SMTPException
 from urllib.parse import urlsplit
 
@@ -13,28 +12,13 @@ from django.core.mail import send_mail
 from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
-from django.utils.crypto import salted_hmac
 
-from .models import AuditEntry, EmailVerification, EmailVerificationThrottle
+from .models import AuditEntry, EmailVerification
+from .throttling import _allow_attempt
 
 logger = logging.getLogger(__name__)
 TOKEN_SALT = "registrant-email-verify-v2"
 RESEND_MESSAGE = "If this address has an account awaiting verification, we will send an activation link. Please check your inbox or try again later."
-
-
-def _allow_attempt(scope, identity, limit, seconds):
-    key = salted_hmac("email-verification-throttle", f"{scope}:{identity}", algorithm="sha256").hexdigest()
-    now = timezone.now()
-    with transaction.atomic():
-        counter, _ = EmailVerificationThrottle.objects.select_for_update().get_or_create(
-            key=key, defaults={"window_start": now})
-        if counter.window_start <= now - timedelta(seconds=seconds):
-            counter.window_start, counter.count = now, 0
-        if counter.count >= limit:
-            return False
-        counter.count += 1
-        counter.save(update_fields=["window_start", "count"])
-    return True
 
 
 def request_verification(email, remote_addr):

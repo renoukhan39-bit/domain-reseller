@@ -1,7 +1,7 @@
 {% extends 'shop/base.html' %}{% load money %}{% block title %}Order{% endblock %}{% block content %}
 <h1>Order {{ order.domain }}</h1><div class="box"><p>{{ order.get_operation_display }} — ₹{{ order.amount_paise|inr }}</p>
 <p>Status: <strong>{{ order.get_status_display }}</strong></p>
-{% if order.status == 'awaiting_payment' and order.razorpay_order_id and key_id %}
+{% if checkout_enabled and order.status == 'awaiting_payment' and order.razorpay_order_id and key_id %}
 <button id="pay-btn" type="button">Pay securely with Razorpay</button>
 <p class="muted">Do not close your browser before completing payment. Your dashboard updates after payment webhook confirmation.</p>
 <script src="https://checkout.razorpay.com/v1/checkout.js"></script>
