@@ -6,6 +6,8 @@ A real Django + PostgreSQL domain reseller codebase designed for a guarded, incr
 
 ## New developer / Codex? Start here
 
+**Long-chat continuity and research archive:** [docs/PROJECT_CONTINUITY_MASTER.md](docs/PROJECT_CONTINUITY_MASTER.md) consolidates the available project history, architecture diagrams, source/research links, current issues, release gates and copyable Codex restart instructions. [docs/PROJECT_SESSION_LOG.md](docs/PROJECT_SESSION_LOG.md) is the append-only record of future work. These documents are searchable in GitHub, so no new agent needs the full original ChatGPT conversation.
+
 Read **[`docs/START_HERE.md`](docs/START_HERE.md)** for the complete mission, development workflow, feature inventory and roadmap. No prior chat is needed. This is the official project home.
 
 ## Quick start (local development, no domain purchase)

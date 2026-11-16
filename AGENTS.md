@@ -1,5 +1,7 @@
 # Codex/Astra engineering instructions for this repository
 
+**MANDATORY CONTINUITY FIRST:** Read [docs/PROJECT_CONTINUITY_MASTER.md](docs/PROJECT_CONTINUITY_MASTER.md) and [docs/PROJECT_SESSION_LOG.md](docs/PROJECT_SESSION_LOG.md) at the start of every new AI/developer session. They preserve the available project discussion, pinned upstream research, charts, verified GitHub evidence, open PRs, outstanding decisions, and a restart prompt. Check current main HEAD/PRs before trusting snapshot SHAs; never rely on chat memory alone. At the end of substantive work update the append-only session log with evidence and next tasks; do not copy secrets or private customer data.
+
 ## Goal
 Build an actual, secure domain reseller service, NOT a mock or demo. Read `docs/PROJECT_GOAL.md`, then `docs/TASKS.md`; complete one P0 task at a time.
 
