@@ -90,9 +90,9 @@ The project conversation summaries available for this consolidation identify the
 
 ### Detailed research completed in outstanding PR #34
 
-- [CODEBASE_AUDIT.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/fix/M5-08-nameserver-registrar-identity/docs/CODEBASE_AUDIT.md): source-by-source audit, evidence/severity, business-state boundaries, vulnerabilities/gaps.
-- [TWO_PRIMARY_REPO_COMPARISON.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/fix/M5-08-nameserver-registrar-identity/docs/TWO_PRIMARY_REPO_COMPARISON.md): pinned PNLCS/Openprovider code, license differences, migration decision, exact paths.
-- [MASTER_BUILD_PLAN.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/fix/M5-08-nameserver-registrar-identity/docs/MASTER_BUILD_PLAN.md): 4-phase plan plus phase 0, prioritized risks, dependencies, engineer-day **estimates** (not guarantees).
+- [CODEBASE_AUDIT.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a/docs/CODEBASE_AUDIT.md): source-by-source audit, evidence/severity, business-state boundaries, vulnerabilities/gaps.
+- [TWO_PRIMARY_REPO_COMPARISON.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a/docs/TWO_PRIMARY_REPO_COMPARISON.md): pinned PNLCS/Openprovider code, license differences, migration decision, exact paths.
+- [MASTER_BUILD_PLAN.md — read on PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a/docs/MASTER_BUILD_PLAN.md): 4-phase plan plus phase 0, prioritized risks, dependencies, engineer-day **estimates** (not guarantees).
 - [PR #34 review and test evidence](https://github.com/renoukhan39-bit/domain-reseller/pull/34).
 
 ## 4. Architecture diagrams — browser to ownership and revenue safety
@@ -272,7 +272,7 @@ These are **priority and dependency recommendations**, not findings that the una
 
 ## 9. Milestones, effort and operating costs
 
-The estimates are indicative **one-engineer hands-on days**, **not dates or commitments**. They do not include waiting for provider credentials, legal reviews or external lead times. The canonical plan is [MASTER_BUILD_PLAN.md in PR #34](https://github.com/renoukhan39-bit/domain-reseller/blob/fix/M5-08-nameserver-registrar-identity/docs/MASTER_BUILD_PLAN.md).
+The estimates are indicative **one-engineer hands-on days**, **not dates or commitments**. They do not include waiting for provider credentials, legal reviews or external lead times. The canonical plan is [MASTER_BUILD_PLAN.md in PR #34](https://github.com/renoukhan39-bit/domain-reseller/blob/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a/docs/MASTER_BUILD_PLAN.md).
 
 | Phase | Scope and prerequisites | Rough incremental effort | Definition of done |
 | --- | --- | --- | --- |
@@ -299,7 +299,7 @@ The estimates are indicative **one-engineer hands-on days**, **not dates or comm
 11. **Operational security:** no credentials or PII in Git, logs/PRs or chat; trusted TLS proxy, vault/secret rotation, edge throttling, backups, alerts and legal review before launch.
 12. **No overstated assurance:** CI mocks/fixtures and provider sandboxes are different; actual successful paid checkout, domain ownership and compliant invoices need explicit evidence.
 
-Read [CODEBASE_AUDIT.md on the PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/fix/M5-08-nameserver-registrar-identity/docs/CODEBASE_AUDIT.md) for confirmed findings and proof. Do not report a hypothetical issue as a confirmed exploit.
+Read [CODEBASE_AUDIT.md on the PR branch](https://github.com/renoukhan39-bit/domain-reseller/blob/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a/docs/CODEBASE_AUDIT.md) for confirmed findings and proof. Do not report a hypothetical issue as a confirmed exploit.
 
 ## 11. Release acceptance test catalog — existing IDs unchanged
 
