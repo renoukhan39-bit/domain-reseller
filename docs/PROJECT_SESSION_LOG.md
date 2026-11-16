@@ -51,7 +51,8 @@ Never overwrite earlier entries merely to make a plan look complete; add a dated
 
 - Owner request: push research, charts, project links, decisions, prior chat context and implementation status into a GitHub document so new ChatGPT or Codex sessions can continue without loading long conversation history.
 - Starting default branch inspected: main remains [6b522210ee47a38abc14868b0f26dcabc910dd83](https://github.com/renoukhan39-bit/domain-reseller/commit/6b522210ee47a38abc14868b0f26dcabc910dd83); PR #34 was still open.
-- Dedicated docs-only branch: docs/project-continuity-master-2026-11-16.
+- Dedicated docs-only branch: docs/project-continuity-master-2026-11-16; [documentation PR #35](https://github.com/renoukhan39-bit/domain-reseller/pull/35) opened, **not merged**.
+- Documentation branch commit before this log update: [0e7765db8b68fb4662409c52a69b149582b54938](https://github.com/renoukhan39-bit/domain-reseller/commit/0e7765db8b68fb4662409c52a69b149582b54938). Future agents must check actual current HEAD.
 - Deliverable: [PROJECT_CONTINUITY_MASTER.md](PROJECT_CONTINUITY_MASTER.md), this append-only session log, and onboarding entry-point updates.
 - Scope: full linked document index, 13 upstream URLs, pinned two-repo analysis, architecture/revenue flow diagrams, 66 task source, 20 acceptance tests, code inventory, test evidence, risks, cost/release roadmap, owner approvals and a copy/paste Codex restart prompt.
 - Provenance limitation: full older ChatGPT transcripts are **not available** to reconstruct verbatim. If the owner exports and sanitizes them, add further factual decisions here with links instead of treating summaries as exact raw chat records.
