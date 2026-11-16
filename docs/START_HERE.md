@@ -2,6 +2,8 @@
 
 **Official repo:** https://github.com/renoukhan39-bit/domain-reseller. This file replaces the need to know any previous chat.
 
+**FIRST READ FOR NEW CHAT / CODEX:** [PROJECT_CONTINUITY_MASTER.md](PROJECT_CONTINUITY_MASTER.md) is the long-term master handoff with the project history available at consolidation, architecture/flow diagrams, all 13 upstream repository links, tested vs unverified status, task priorities, GitHub/CI references and a copyable next-session prompt. [PROJECT_SESSION_LOG.md](PROJECT_SESSION_LOG.md) is the append-only record for future work. Older chats cannot be fully reconstructed automatically; preserve only verified non-secret facts. Before coding, check current main SHA and open PRs. The M5-08 security work is in [unmerged PR #34](https://github.com/renoukhan39-bit/domain-reseller/pull/34) at the 2026-11-16 snapshot.
+
 ## Mission
 Develop our own independently operated, branded, domain and web-services platform aspiring to GoDaddy/Namecheap customer experiences and WHMCS-class administration. Start as a **reseller using accredited registrar APIs** (not an ICANN-accredited registrar). Build a reliable business before expanding to hosted email, website builder, SSL, hosting, AI-assisted domain discovery, multi-registrar routing and white-label wholesale reseller APIs.
 
