@@ -1,5 +1,9 @@
 # Developer and operations runbook
 
+See [REPOSITORY_STRUCTURE.md](REPOSITORY_STRUCTURE.md) for the active Django layout. Material under `AnalyseFuture/` is preserved for analysis and must not be started or deployed as part of this workflow. The [project idea and future roadmap](PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) describes proposed expansion, not deployment readiness.
+
+Cloud onboarding verified local Docker/PostgreSQL startup and restarts, checks/migrations/static collection, 174 application tests, 17 backup guard tests, and an isolated synthetic-data encrypted restore drill. This does not establish real provider/payment/SMTP acceptance, staging or production deployment, or production recovery.
+
 ## Development (local Compose)
 
 1. Copy `.env.example` to `.env`, generate a fresh random `DJANGO_SECRET_KEY`, set a long random `POSTGRES_PASSWORD`; never commit `.env`.
@@ -12,10 +16,10 @@
 
 ## Sandbox integrations
 
-- Openprovider: create a separate account at `https://cp.sandbox.openprovider.nl/signup`, enable its API user, use `https://api.sandbox.openprovider.nl/v1beta` with separate credentials. Keep live registrar account unfunded during initial tests.
+- Openprovider: create a separate account at `https://cp.sandbox.openprovider.nl/signup`, enable its API user, use `https://api.sandbox.openprovider.nl/v1` with separate credentials. Follow [PROVIDER_COMPATIBILITY.md](PROVIDER_COMPATIBILITY.md) for the current endpoint policy and required sandbox contract checks; offline tests do not establish that the sandbox accepts every operation. Keep live registrar account unfunded during initial tests.
 - Razorpay: create test key ID/secret, set a **separate** webhook secret, register `https://staging.example.com/webhooks/razorpay/` for `payment.captured`, and trigger real test-mode webhook deliveries; synthetic headers are only for unit tests.
 - Email: configure verified SMTP and test sign-up and password reset end to end.
-- Starting state: `SALES_ENABLED=false` and `FULFILLMENT_ENABLED=false`. Set sales true only in controlled test environments after inspecting gateway/registrar identity. Enable fulfillment only after verifying signed webhook delivery.
+- Starting state: `SALES_ENABLED=false` and `FULFILLMENT_ENABLED=false`. Enable either gate only with explicit owner authorization and operator review under `AGENTS.md`. For an approved controlled sandbox test, inspect gateway/registrar identity and verify signed webhook delivery before enabling fulfillment.
 - **Never mix live payment credentials with sandbox registrar credentials**; customers could pay real money for non-existent domains.
 
 ## Real live deployment (after acceptance)

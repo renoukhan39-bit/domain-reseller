@@ -8,7 +8,9 @@ Develop our own independently operated, branded, domain and web-services platfor
 ## Current foundation and architecture
 - **One repo**, original Django/Python modular application, PostgreSQL, container setup, server-rendered pages. Keep a modular monolith until scaling requires services. No PNLCS/Laravel migration is approved.
 - Code includes a first draft of signup/login and registrant profiles, TLD catalog, Openprovider integration, Razorpay order/webhook verification, safe fulfillment worker, domain dashboard, nameserver management, admin screens, migration and test cases.
-- **Verified:** the initial [GitHub Actions Python CI run](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) passed checks, migrations and Django tests. **Not verified:** independent local Docker reproduction, deployment, registrar sandbox compatibility, Razorpay real test webhooks, real SMTP, financial compliance and recovery drills. **Not complete:** DNS editing, transfers, invoice reconciliation, multi-registrar routing, public reseller APIs, hosting/email/SSL/website-builder. See `FEATURE_MATRIX.md` and `TASKS.md`.
+- **Verified locally:** cloud onboarding built and started the Docker/PostgreSQL 16 workflow, passed Django checks, migrations, static collection and all 174 application tests, and verified HTTP readiness and service restarts. All 17 backup guard tests and the isolated encrypted restore drill with synthetic data also passed. The initial [GitHub Actions Python CI run](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) is separate historical CI evidence; it does not establish CI success for later commits.
+- **Not verified externally:** protected staging or production deployment, registrar sandbox compatibility, Razorpay real test webhooks/settlement, real SMTP delivery, financial/legal compliance, production offsite backups and recovery. **Not complete:** DNS editing, transfers, tax invoices, multi-registrar routing, public reseller APIs, hosting/email/SSL/website-builder. Existing payment/refund reconciliation tooling has local fixture coverage; actual gateway acceptance remains open. See `FEATURE_MATRIX.md` and `TASKS.md`.
+- **Repository layout:** the Django application remains the active product. Upstream PNLCS and WHMCS source is preserved under `AnalyseFuture/` for future analysis and is not part of the running application. Read [the repository map](REPOSITORY_STRUCTURE.md) before moving files.
 - Sales and fulfillment disabled by default. Never perform real domain purchase or paid cloud provisioning without explicit owner approval.
 
 ## Read next
@@ -19,6 +21,7 @@ Develop our own independently operated, branded, domain and web-services platfor
 5. `docs/TASKS.md` and `docs/ISSUE_BACKLOG.csv` — 66 item checklist and importable task backlog.
 6. `docs/ROADMAP.md` and `docs/REUSE_FIRST_STRATEGY.md` — long-term product differentiation and reuse assessment.
 7. `docs/CODEX_CLOUD.md`, `docs/DEPLOYMENT.md`, `docs/FREE_RESOURCES.md`, `CONTRIBUTING.md`, `SECURITY.md` — operations.
+8. [Repository structure](REPOSITORY_STRUCTURE.md) and [detailed project idea and future roadmap](PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) — active files, preserved references, practical delivery stages and speculative future features.
 
 ## First developer steps
 ```sh

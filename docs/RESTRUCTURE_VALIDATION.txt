@@ -1,0 +1,71 @@
+REPOSITORY REORGANIZATION - VALIDATION EVIDENCE
+Date: 17 November 2026 (Asia/Kolkata)
+Baseline: 594d2907ca3aaf65c1bba3491b0cd72a5c0be083
+Scope: preserved reference-tree relocation, additive Docker build exclusions,
+documentation clarification and detailed product idea. No app logic changes.
+
+PRESERVATION: PASSED
+- Compared the staged Git tree with all 5,129 original tracked entries.
+- Every original blob and mode exists at its retained or preserved destination.
+- 5,019 upstream files/links relocated intact into AnalyseFuture.
+- Openprovider original/new subtree: f73a2e623464ef6ab41de89ea15e06cb65d4db38.
+- PNLCS original/new subtree: 655e3889f74d2a0ed3fa0f2743c055d85da7c90f.
+- Original README and four clarified docs have identical archived Git blobs.
+- config/, shop/, scripts/ and .github/ Git trees are unchanged.
+- PNLCS themes symlink and upstream executable modes/notices are preserved.
+- The two previously removed ZIPs remain absent; no source history was reset.
+
+BUILD AND DATABASE: PASSED
+- Rebuilt the app image with the repository context and new .dockerignore.
+- Used the tested cloud Dockerfile outside the checkout and executor CA bundle
+  mounted as a BuildKit secret; TLS verification remained enabled.
+- Build reused valid layers. Context transfer was 4.01 kB with cache; this is
+  incremental transfer evidence, not the total size of all allowed source files.
+- Started PostgreSQL/web/worker through the tested startup helper.
+- Migrations: no pending migrations; makemigrations --check: no changes.
+- Django system check: no issues. Static collection and compileall passed.
+- Database is PostgreSQL 16. Sales and fulfillment both remain false.
+
+APPLICATION TESTS: PASSED
+Command: docker compose exec -T web python manage.py test shop --verbosity 1
+Result: Ran 174 tests in 21.164s, OK; no skips or expected failures reported.
+The test database was destroyed normally after the run.
+Password-reset origin rejection messages are expected negative-case coverage;
+the runner reported a successful suite, not an unresolved setup failure.
+
+HTTP CHECKS: PASSED
+- GET /health/: 200 and body 'ok', including the app's database SELECT check.
+- GET /: 200, storefront form present in startup readiness check.
+- GET /accounts/login/: 200.
+- Anonymous GET /dashboard/: 302 to login.
+- POST /signup/ without CSRF: 403.
+- process_orders --limit 10: fulfillment disabled, no registrar calls made.
+
+BACKUP TOOLING: PASSED
+Command: .venv/bin/python -m unittest scripts.test_database_backup -v
+Result: Ran 17 tests in 11.289s, OK.
+Command: .venv/bin/python scripts/backup_restore_drill.py
+Result: isolated PostgreSQL synthetic customer/domain/order/payment/audit data
+restored with matching ownership and sequences; constraints enforced; wrong key,
+corruption and occupied targets refused; existing archive preserved.
+This is not a restore of production/customer data or proof of offsite retention.
+
+PUBLICATION AND REMOTE CHECKS
+The owner requested a normal direct push to main, with no PR or extra branch.
+This record is prepared before that push and does not claim remote publication
+or a new GitHub Actions result. The final task response reports the verified push.
+Historical CI links in other docs are not evidence for this new commit.
+
+LIMITS AND OUTSTANDING WORK
+- GitHub account control, audit logs and attacker attribution were not verified.
+- Pattern scanning is limited and is not a forensic/security certification.
+- Upstream snapshots were preserved, not installed, executed or commercially
+  adopted; no framework migration has been approved by this reorganization.
+- Real Openprovider sandbox, Razorpay webhook delivery, SMTP, staging/production,
+  tax/legal acceptance and production recovery still require their own evidence.
+- No credentials, real customer data, admin accounts or invented prices added.
+- No live purchases, deployment or feature-gate enablement performed.
+
+See REPOSITORY_STRUCTURE.md and ../AnalyseFuture/PRESERVATION_MANIFEST.json for
+the audit scope and preservation map. See PROJECT_IDEA_AND_FUTURE_ROADMAP.txt
+for the requested proposal, conditional timelines, limits and responsible roles.

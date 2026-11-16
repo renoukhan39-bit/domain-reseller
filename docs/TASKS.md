@@ -1,6 +1,10 @@
 # Developer checklist — 66 tasks, 20 release acceptance tests
 
-**Status legend:** `[x]` = source/configuration written in this package (not equivalent to successful sandbox or production testing); `[ ]` = not complete. **No end-to-end provider, payment, cloud or CI test is claimed as executed.** Each task has an owner (ENG engineer, OPS operations, BIZ business owner) and a concise exit condition. Priority P0 blocks launch, P1 is needed before scale, P2 is expansion.
+**Status legend:** `[x]` = source/configuration written in this package (not equivalent to successful sandbox or production testing); `[ ]` = not complete. Each task has an owner (ENG engineer, OPS operations, BIZ business owner) and a concise exit condition. Priority P0 blocks launch, P1 is needed before scale, P2 is expansion.
+
+**Evidence boundary:** cloud onboarding verified the local Docker/PostgreSQL 16 workflow, Django checks/migrations/static collection, 174 application tests, 17 backup guard tests and an isolated encrypted restore drill using synthetic data. The linked initial CI run below is historical evidence, not a claim that a later commit has passed GitHub Actions. Actual registrar/payment sandbox acceptance, SMTP delivery, staging/production deployment, legal/financial review and production recovery remain open. Local verification does not close acceptance criteria requiring those external checks; existing checkboxes remain unchanged.
+
+Use [REPOSITORY_STRUCTURE.md](REPOSITORY_STRUCTURE.md) to locate active work and preserved `AnalyseFuture` material. The [detailed project idea and future roadmap](PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) is planning guidance; future concepts do not replace this acceptance checklist.
 
 ## M0 — Foundation (10)
 

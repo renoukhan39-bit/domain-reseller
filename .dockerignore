@@ -1,0 +1,16 @@
+# The build uses only the active Django application and its manifest.
+.git
+.env
+.env.*
+!.env.example
+.venv
+AnalyseFuture
+__pycache__
+**/__pycache__
+*.py[cod]
+*.sqlite3
+*.log
+staticfiles
+.pytest_cache
+.idea
+.vscode
