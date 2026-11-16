@@ -1,0 +1,3146 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Constants\Permissions;
+use App\Contracts\TokenizableGatewayInterface;
+use App\Http\Controllers\Api\ClientApiController;
+use App\Http\Controllers\Api\DomainApiController;
+use App\Http\Controllers\Api\InvoiceApiController;
+use App\Http\Controllers\Api\OrderApiController;
+use App\Http\Controllers\Api\ServiceApiController;
+use App\Http\Controllers\Api\SystemApiController;
+use App\Http\Controllers\Api\TicketApiController;
+use App\Http\Controllers\Controller;
+use App\Http\Traits\CsvExportable;
+use App\Models\ActivityLog;
+use App\Models\Admin;
+use App\Models\AdminRole;
+use App\Models\Announcement;
+use App\Models\ApiCredential;
+use App\Models\BannedEmail;
+use App\Models\BannedIp;
+use App\Models\BillableItem;
+use App\Models\Client;
+use App\Models\ClientGroup;
+use App\Models\ConfigOption;
+use App\Models\ConfigOptionGroup;
+use App\Models\ConfigOptionLink;
+use App\Models\ConfigOptionSub;
+use App\Models\Credit;
+use App\Models\Currency;
+use App\Models\CustomField;
+use App\Models\DomainPricing;
+use App\Models\Download;
+use App\Models\DownloadCategory;
+use App\Models\EmailTemplate;
+use App\Models\GatewaySettings;
+use App\Models\KbArticle;
+use App\Models\KbCategory;
+use App\Models\Language;
+use App\Models\NetworkIssue;
+use App\Models\NotificationProvider;
+use App\Models\NotificationRule;
+use App\Models\Pricing;
+use App\Models\Product;
+use App\Models\ProductAddon;
+use App\Models\ProductBundle;
+use App\Models\Promotion;
+use App\Models\Quote;
+use App\Models\RegistrarSettings;
+use App\Models\Server;
+use App\Models\ServerGroup;
+use App\Models\Service;
+use App\Models\Setting;
+use App\Models\SslModuleSettings;
+use App\Models\TaxRule;
+use App\Models\TicketDepartment;
+use App\Models\TicketEscalation;
+use App\Models\TicketSpamFilter;
+use App\Models\TicketStatus;
+use App\Models\TodoItem;
+use App\Models\Transaction;
+use App\Services\Module\ModuleRegistry;
+use App\Services\NotificationService;
+use App\Services\ServerAccountSync;
+use App\Support\ApiReference;
+use App\Support\AutoCharge;
+use App\Support\ContentTranslations;
+use App\Support\CustomerCurrency;
+use App\Support\IpAllowList;
+use App\Support\ModuleSettings;
+use App\Support\ServerAddress;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Artisan;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Lang;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\ValidationException;
+use Modules\Servers\Proxmox\Ipv4Pool;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+
+class ConfigController extends Controller
+{
+    use CsvExportable;
+
+    // ===== STAFF =====
+
+    public function admins()
+    {
+        return view('admin.config.admins', [
+            'admins' => Admin::with('role')->get(),
+            'roles' => AdminRole::all(),
+            'departments' => TicketDepartment::orderBy('sort_order')->get(),
+        ]);
+    }
+
+    /**
+     * Who is told about a new ticket, from the staff form.
+     *
+     * Admin has carried support_departments and ticket_notifications since
+     * the first release, and nothing set or read them: the new-ticket alert
+     * went to the company address and nowhere else. The form sends
+     * notification_settings with both fields, so a request that does not
+     * carry them (an older form, a script) leaves them as they are.
+     */
+    private function ticketAlertSettings(Request $request): array
+    {
+        if (! $request->has('notification_settings')) {
+            return [];
+        }
+
+        $request->validate([
+            'support_departments' => 'nullable|array',
+            'support_departments.*' => 'integer|exists:ticket_departments,id',
+        ]);
+
+        return [
+            'support_departments' => array_values(array_unique(array_map('intval', (array) $request->input('support_departments', [])))),
+            'ticket_notifications' => $request->boolean('ticket_notifications'),
+        ];
+    }
+
+    /**
+     * The rights an operator can hand out are capped at the rights they hold.
+     *
+     * Staff management used to be enough to become a full administrator:
+     * create a colleague on the full-admin role, or a role with every right,
+     * then sign in as that. A full administrator may grant anything; anyone
+     * else may only grant a subset of their own permissions, and never the
+     * full-admin flag.
+     */
+    private function canGrant(AdminRole $role): bool
+    {
+        $self = auth('admin')->user();
+
+        if (! $self || ! $self->role) {
+            return false;
+        }
+
+        if ($self->role->is_full_admin) {
+            return true;
+        }
+
+        if ($role->is_full_admin) {
+            return false;
+        }
+
+        return array_diff($role->permissions ?? [], $self->role->permissions ?? []) === [];
+    }
+
+    /** A validation rule for a role_id the acting operator is allowed to assign. */
+    private function grantableRole(): \Closure
+    {
+        return function (string $attribute, $value, \Closure $fail) {
+            $role = AdminRole::find($value);
+
+            if ($role && ! $this->canGrant($role)) {
+                $fail(__('messages.error.role_beyond_your_rights'));
+            }
+        };
+    }
+
+    public function storeAdmin(Request $request)
+    {
+        $v = $request->validate([
+            'username' => 'required|unique:admins',
+            'email' => 'required|email|unique:admins',
+            'password' => 'required|min:6',
+            'first_name' => 'required',
+            'last_name' => 'required',
+            'role_id' => ['required', 'exists:admin_roles,id', $this->grantableRole()],
+        ]);
+        $v['password'] = Hash::make($v['password']);
+        Admin::create($v + $this->ticketAlertSettings($request));
+
+        return back()->with('success', __('messages.success.admin_created_successfully'));
+    }
+
+    public function updateAdmin(Request $request, Admin $admin)
+    {
+        // Editing an account - its password included - is taking it over.
+        // Only somebody who could have granted that account's role may.
+        abort_unless($admin->role && $this->canGrant($admin->role), 403);
+
+        $v = $request->validate([
+            'username' => 'required|unique:admins,username,'.$admin->id,
+            'email' => 'required|email|unique:admins,email,'.$admin->id,
+            'first_name' => 'required',
+            'last_name' => 'required',
+            'role_id' => ['required', 'exists:admin_roles,id', $this->grantableRole()],
+            'password' => 'nullable|min:6',
+        ]);
+        if (empty($v['password'])) {
+            unset($v['password']);
+        } else {
+            $v['password'] = Hash::make($v['password']);
+        }
+        $admin->update($v + $this->ticketAlertSettings($request));
+
+        return back()->with('success', __('messages.success.admin_updated_successfully'));
+    }
+
+    public function destroyAdmin(Admin $admin)
+    {
+        // The same check as editing: only somebody who could have granted the
+        // account's role may remove it. Staff management alone used to be
+        // enough to delete a full administrator.
+        abort_if($admin->role && ! $this->canGrant($admin->role), 403);
+
+        if ($admin->id === auth('admin')->id()) {
+            return back()->with('error', __('messages.error.you_cannot_delete_your_own_account'));
+        }
+        $admin->delete();
+
+        return back()->with('success', __('messages.success.admin_deleted_successfully'));
+    }
+
+    // ===== ADMIN ROLES =====
+
+    public function adminRoles()
+    {
+        return view('admin.config.admin-roles', [
+            'roles' => AdminRole::withCount('admins')->get(),
+            'permissionGroups' => Permissions::grouped(),
+        ]);
+    }
+
+    public function storeRole(Request $request)
+    {
+        $v = $request->validate($this->roleRules());
+        $v['is_full_admin'] = $request->boolean('is_full_admin');
+        $v['permissions'] = $v['is_full_admin'] ? [] : ($v['permissions'] ?? []);
+
+        if ($error = $this->roleBeyondRights($v)) {
+            return back()->withInput()->withErrors($error);
+        }
+        AdminRole::create($v);
+
+        return back()->with('success', __('messages.success.role_created_successfully'));
+    }
+
+    public function updateRole(Request $request, AdminRole $role)
+    {
+        // A role one could not have created is not one to rewrite either.
+        abort_unless($this->canGrant($role), 403);
+
+        $v = $request->validate($this->roleRules($role));
+        $v['is_full_admin'] = $request->boolean('is_full_admin');
+        $v['permissions'] = $v['is_full_admin'] ? [] : ($v['permissions'] ?? []);
+
+        if ($error = $this->roleBeyondRights($v)) {
+            return back()->withInput()->withErrors($error);
+        }
+
+        // Editing your own role down to something that cannot administer roles
+        // leaves the installation with no way back in but the database.
+        $self = auth('admin')->user();
+
+        if ($self && $self->role_id === $role->id
+            && ! $v['is_full_admin']
+            && ! in_array(Permissions::MANAGE_ROLES, $v['permissions'], true)) {
+            return back()->withInput()->withErrors([
+                'permissions' => __('messages.error.cannot_remove_own_role_management'),
+            ]);
+        }
+
+        $role->update($v);
+
+        return back()->with('success', __('messages.success.role_updated_successfully'));
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    /**
+     * The field a role definition oversteps the acting operator's rights on,
+     * or null when it does not.
+     *
+     * @return array<string, string>|null
+     */
+    private function roleBeyondRights(array $v): ?array
+    {
+        $self = auth('admin')->user();
+
+        if ($self?->role?->is_full_admin) {
+            return null;
+        }
+
+        if ($v['is_full_admin']) {
+            return ['is_full_admin' => __('messages.error.role_beyond_your_rights')];
+        }
+
+        if (array_diff($v['permissions'] ?? [], $self?->role?->permissions ?? []) !== []) {
+            return ['permissions' => __('messages.error.role_beyond_your_rights')];
+        }
+
+        return null;
+    }
+
+    private function roleRules(?AdminRole $role = null): array
+    {
+        return [
+            'name' => 'required|unique:admin_roles'.($role ? ',name,'.$role->id : ''),
+            'description' => 'nullable|string',
+            'is_full_admin' => 'boolean',
+            'permissions' => 'nullable|array',
+            'permissions.*' => Rule::in(Permissions::all()),
+        ];
+    }
+
+    public function destroyRole(AdminRole $role)
+    {
+        // As for editing a role: one beyond your own rights is not yours to remove.
+        abort_unless($this->canGrant($role), 403);
+
+        if ($role->admins()->count() > 0) {
+            return back()->with('error', __('messages.error.cannot_delete_role_it_still_has_admins_assigned'));
+        }
+        $role->delete();
+
+        return back()->with('success', __('messages.success.role_deleted_successfully'));
+    }
+
+    // ===== API CREDENTIALS =====
+
+    public function apiCredentials()
+    {
+        return view('admin.config.api-credentials', [
+            'credentials' => ApiCredential::with('admin')->get(),
+        ]);
+    }
+
+    public function storeApiCredential(Request $request)
+    {
+        $validated = $request->validate([
+            'description' => 'required|string|max:255',
+            'allowed_ips' => 'nullable|string|max:5000',
+        ]);
+        $allowed = $this->allowedIpsFrom($validated['allowed_ips'] ?? null);
+
+        $secret = Str::random(64);
+        ApiCredential::create([
+            'admin_id' => auth('admin')->id(),
+            'identifier' => Str::random(32),
+            'secret' => ApiCredential::hashSecret($secret),
+            'description' => $validated['description'],
+            'allowed_ips' => $allowed ?: null,
+            'active' => true,
+        ]);
+
+        return back()->with('success', __('messages.success.api_credential_generated'))->with('new_secret', $secret);
+    }
+
+    /**
+     * Change a credential's description, the addresses it may be used from,
+     * and whether it works at all. The secret never changes: a new secret is a
+     * new credential.
+     */
+    public function updateApiCredential(Request $request, ApiCredential $credential)
+    {
+        $validated = $request->validate([
+            'description' => 'required|string|max:255',
+            'allowed_ips' => 'nullable|string|max:5000',
+        ]);
+        $allowed = $this->allowedIpsFrom($validated['allowed_ips'] ?? null);
+
+        $credential->update([
+            'description' => $validated['description'],
+            'allowed_ips' => $allowed ?: null,
+            'active' => $request->boolean('active'),
+        ]);
+
+        return back()->with('success', __('messages.success.api_credential_updated'));
+    }
+
+    /** The allow-list from the form, or back to it with the entry that is not an address. */
+    private function allowedIpsFrom(?string $input): array
+    {
+        [$list, $bad] = IpAllowList::parse($input);
+
+        if ($list === null) {
+            throw ValidationException::withMessages([
+                'allowed_ips' => __('admin.api_credentials.invalid_ip', ['value' => $bad]),
+            ]);
+        }
+
+        return $list;
+    }
+
+    public function destroyApiCredential(ApiCredential $credential)
+    {
+        $credential->delete();
+
+        return back()->with('success', __('messages.success.api_credential_revoked'));
+    }
+
+    // ===== CURRENCIES =====
+
+    public function currencies()
+    {
+        return view('admin.config.currencies', [
+            'currencies' => Currency::all(),
+            'customerChoice' => (string) Setting::get(CustomerCurrency::SETTING, '0') === '1',
+            'currencyByRegion' => (string) Setting::get(CustomerCurrency::REGION_SETTING, '0') === '1',
+            'autoUpdateRates' => (string) Setting::get('currency_auto_update', '1') === '1',
+            'clientsPerCurrency' => $this->clientsPerCurrency(),
+        ]);
+    }
+
+    /**
+     * How many customers are billed in each currency. An account with no
+     * currency of its own is in the default one.
+     *
+     * @return array<int, int>
+     */
+    private function clientsPerCurrency(): array
+    {
+        $counts = Client::whereNotNull('currency_id')
+            ->selectRaw('currency_id, count(*) as total')
+            ->groupBy('currency_id')
+            ->pluck('total', 'currency_id')
+            ->map(fn ($n) => (int) $n)
+            ->all();
+
+        $default = Currency::getDefault();
+
+        if ($default) {
+            $counts[$default->id] = ($counts[$default->id] ?? 0) + Client::whereNull('currency_id')->count();
+        }
+
+        return $counts;
+    }
+
+    /**
+     * Whether customers choose their own currency, whether a visitor starts
+     * in the currency of their country, and whether the rates are fetched
+     * every day. Each is read where it acts: CustomerCurrency and
+     * pnlcs:currency-update.
+     */
+    public function updateCurrencySettings(Request $request)
+    {
+        $request->validate([
+            'customer_choice' => 'nullable|boolean',
+            'by_region' => 'nullable|boolean',
+            'auto_update_rates' => 'nullable|boolean',
+        ]);
+
+        Setting::set(CustomerCurrency::SETTING, $request->boolean('customer_choice') ? '1' : '0', 'billing');
+        Setting::set(CustomerCurrency::REGION_SETTING, $request->boolean('by_region') ? '1' : '0', 'billing');
+        Setting::set('currency_auto_update', $request->boolean('auto_update_rates') ? '1' : '0', 'billing');
+
+        return back()->with('success', __('admin.currencies.settings_saved'));
+    }
+
+    /**
+     * Fetch the rates now rather than at the next daily run. Runs whether or
+     * not the daily update is switched on: the operator asked for it.
+     */
+    public function updateCurrencyRates()
+    {
+        $code = Artisan::call('pnlcs:currency-update', ['--force' => true]);
+
+        return back()->with($code === 0 ? 'success' : 'error', $code === 0
+            ? __('admin.currencies.rates_updated')
+            : __('admin.currencies.rates_failed'));
+    }
+
+    public function storeCurrency(Request $request)
+    {
+        $v = $request->validate([
+            'code' => 'required|string|max:3|unique:currencies',
+            'prefix' => 'nullable|string|max:10',
+            'suffix' => 'nullable|string|max:10',
+            'format' => 'nullable|integer|in:'.implode(',', array_keys(Currency::FORMATS)),
+            'rate' => 'required|numeric|min:0.00001',
+        ]);
+        // DB columns are NOT NULL — convert null to empty string
+        $v['prefix'] = $v['prefix'] ?? '';
+        $v['suffix'] = $v['suffix'] ?? '';
+        $v['format'] = (int) ($v['format'] ?? 1);
+        Currency::create($v);
+
+        return back()->with('success', __('messages.success.currency_created'));
+    }
+
+    public function updateCurrency(Request $request, Currency $currency)
+    {
+        $v = $request->validate([
+            'code' => 'required|string|max:3|unique:currencies,code,'.$currency->id,
+            'prefix' => 'nullable|string|max:10',
+            'suffix' => 'nullable|string|max:10',
+            'format' => 'nullable|integer|in:'.implode(',', array_keys(Currency::FORMATS)),
+            'rate' => 'required|numeric|min:0.00001',
+        ]);
+        // DB columns are NOT NULL — convert null to empty string
+        $v['prefix'] = $v['prefix'] ?? '';
+        $v['suffix'] = $v['suffix'] ?? '';
+        $v['format'] = (int) ($v['format'] ?? 1);
+        $currency->update($v);
+
+        return back()->with('success', __('messages.success.currency_updated'));
+    }
+
+    public function destroyCurrency(Currency $currency)
+    {
+        if ($currency->is_default) {
+            return back()->with('error', __('messages.error.cannot_delete_the_default_currency'));
+        }
+
+        // Customers billed in it would drop back to the shop currency without
+        // anyone deciding so; their accounts are moved first.
+        $clients = Client::where('currency_id', $currency->id)->count();
+
+        if ($clients > 0) {
+            return back()->with('error', __('admin.currencies.in_use_by_clients', ['code' => $currency->code, 'count' => $clients]));
+        }
+
+        $currency->delete();
+
+        return back()->with('success', __('messages.success.currency_deleted'));
+    }
+
+    public function setDefaultCurrency(Currency $currency)
+    {
+        // Rates are stored against the default currency, which is 1. Only the
+        // flag moved before, so every rate stayed relative to the old default
+        // until the next rate update, and invoices and conversions in between
+        // used them. They are restated against the new one.
+        DB::transaction(function () use ($currency) {
+            $factor = (float) $currency->rate;
+            if (! $currency->is_default && $factor > 0 && $factor !== 1.0) {
+                foreach (Currency::where('id', '!=', $currency->id)->get() as $other) {
+                    $other->update(['rate' => round((float) $other->rate / $factor, 5)]);
+                }
+            }
+            // The TCMB bulletin details describe the lira rate as the bulletin
+            // gave it against the old default. Restated, it is no longer that
+            // figure, and a lira invoice would print a bulletin its rate did not
+            // come from; the rate update clears them in the same case.
+            if (! $currency->is_default) {
+                foreach (['ExchangeRateSource', 'ExchangeRateKind', 'ExchangeRateDate', 'ExchangeRateBulletin'] as $key) {
+                    Setting::set($key, '');
+                }
+            }
+            Currency::query()->update(['is_default' => false]);
+            $currency->update(['is_default' => true, 'rate' => 1]);
+        });
+
+        return back()->with('success', __('messages.success.currency_set_default'));
+    }
+
+    // ===== CUSTOM CLIENT FIELDS =====
+
+    public function customFields()
+    {
+        return view('admin.config.custom-fields', [
+            'customFields' => CustomField::where('type', 'client')->orderBy('sort_order')->orderBy('id')->get(),
+        ]);
+    }
+
+    public function storeCustomField(Request $request)
+    {
+        $v = $request->validate([
+            'field_name' => ['required', 'string', 'max:255'],
+            'field_type' => ['required', 'in:text,textarea,select,checkbox,number,date'],
+            'description' => ['nullable', 'string', 'max:255'],
+            'field_options' => ['nullable', 'string', 'max:1000'],
+            'regex' => ['nullable', 'string', 'max:255'],
+            'required' => ['nullable', 'boolean'],
+            'admin_only' => ['nullable', 'boolean'],
+            'show_on_order' => ['nullable', 'boolean'],
+            'show_on_invoice' => ['nullable', 'boolean'],
+            'sort_order' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        CustomField::create([
+            'type' => 'client',
+            'rel_id' => 0,
+            'field_name' => $v['field_name'],
+            'field_type' => $v['field_type'],
+            'description' => $v['description'] ?? null,
+            // One option per line, colon splits label from value: "Sp. z o.o. :Sp. z o.o."
+            'field_options' => $v['field_options'] ?? null,
+            'regex' => $v['regex'] ?? null,
+            'required' => (bool) ($v['required'] ?? false),
+            'admin_only' => (bool) ($v['admin_only'] ?? false),
+            'show_on_order' => (bool) ($v['show_on_order'] ?? false),
+            'show_on_invoice' => (bool) ($v['show_on_invoice'] ?? false),
+            'sort_order' => (int) ($v['sort_order'] ?? 0),
+        ]);
+
+        return back()->with('success', __('messages.success.custom_field_added'));
+    }
+
+    public function updateCustomField(Request $request, CustomField $customField)
+    {
+        $v = $request->validate([
+            'field_name' => ['required', 'string', 'max:255'],
+            'field_type' => ['required', 'in:text,textarea,select,checkbox,number,date'],
+            'description' => ['nullable', 'string', 'max:255'],
+            'field_options' => ['nullable', 'string', 'max:1000'],
+            'regex' => ['nullable', 'string', 'max:255'],
+            'required' => ['nullable', 'boolean'],
+            'admin_only' => ['nullable', 'boolean'],
+            'show_on_order' => ['nullable', 'boolean'],
+            'show_on_invoice' => ['nullable', 'boolean'],
+            'sort_order' => ['nullable', 'integer', 'min:0'],
+        ]);
+
+        $customField->update([
+            'field_name' => $v['field_name'],
+            'field_type' => $v['field_type'],
+            'description' => $v['description'] ?? null,
+            'field_options' => $v['field_options'] ?? null,
+            'regex' => $v['regex'] ?? null,
+            'required' => (bool) ($v['required'] ?? false),
+            'admin_only' => (bool) ($v['admin_only'] ?? false),
+            'show_on_order' => (bool) ($v['show_on_order'] ?? false),
+            'show_on_invoice' => (bool) ($v['show_on_invoice'] ?? false),
+            'sort_order' => (int) ($v['sort_order'] ?? 0),
+        ]);
+
+        return back()->with('success', __('messages.success.custom_field_updated'));
+    }
+
+    public function destroyCustomField(CustomField $customField)
+    {
+        $customField->values()->delete();
+        $customField->delete();
+
+        return back()->with('success', __('messages.success.custom_field_deleted'));
+    }
+
+    // ===== TAX RULES =====
+
+    public function tax()
+    {
+        $taxEnabled = TaxRule::enabled();
+        $taxInclusive = TaxRule::pricesIncludeTax();
+        $groups = TaxRule::orderBy('country')->orderBy('state')->orderByDesc('is_default')->orderBy('id')->get()
+            ->groupBy(fn ($r) => $r->country."\x1F".$r->state)
+            ->map(fn ($rules) => (object) [
+                'country' => $rules->first()->country,
+                'state' => $rules->first()->state,
+                'rules' => $rules,
+                'default' => $rules->firstWhere('is_default', true) ?? $rules->first(),
+            ])
+            ->values();
+
+        return view('admin.config.tax', ['groups' => $groups, 'taxEnabled' => $taxEnabled, 'taxInclusive' => $taxInclusive]);
+    }
+
+    public function storeTax(Request $request)
+    {
+        $data = $this->validateTaxGroup($request);
+        $this->saveGroupRates($data['country'], $data['state'], $data['rates'], $data['default_index']);
+
+        return back()->with('success', __('messages.success.tax_rule_added'));
+    }
+
+    public function updateTax(Request $request, string $country, ?string $state = '')
+    {
+        $country = $this->normaliseTaxCountry($country);
+        $data = $this->validateTaxGroup($request);
+
+        // The group is keyed by country+state; moving it drops the old group.
+        if ($data['country'] !== $country || $data['state'] !== ($state ?? '')) {
+            TaxRule::where('country', $country)->where('state', $state ?? '')->delete();
+        }
+
+        $this->saveGroupRates($data['country'], $data['state'], $data['rates'], $data['default_index']);
+
+        return back()->with('success', __('messages.success.tax_updated'));
+    }
+
+    public function destroyTax(string $country, ?string $state = '')
+    {
+        $country = $this->normaliseTaxCountry($country);
+        TaxRule::where('country', $country)->where('state', $state ?? '')->delete();
+
+        return back()->with('success', __('messages.success.tax_deleted'));
+    }
+
+    /**
+     * The empty-country (global) group is addressed as "@global" in URLs.
+     */
+    private function normaliseTaxCountry(string $country): string
+    {
+        return $country === '@global' ? '' : $country;
+    }
+
+    /**
+     * @return array{country: string, state: string, rates: array, default_index: int}
+     */
+    private function validateTaxGroup(Request $request): array
+    {
+        $v = $request->validate([
+            'country' => 'required|string|max:2',
+            'state' => 'nullable|string|max:255',
+            'rates' => 'required|array|min:1',
+            'rates.*.name' => 'required|string|max:255',
+            'rates.*.tax_rate' => 'required|numeric|min:0|max:100',
+            'default_index' => 'nullable|integer|min:0',
+        ]);
+
+        $v['state'] ??= '';
+        $v['default_index'] = (int) ($v['default_index'] ?? 0);
+
+        return $v;
+    }
+
+    /**
+     * Replace a group's rates; exactly one of them is its default.
+     */
+    private function saveGroupRates(string $country, string $state, array $rates, int $defaultIndex): void
+    {
+        TaxRule::where('country', $country)->where('state', $state)->delete();
+
+        foreach ($rates as $i => $row) {
+            TaxRule::create([
+                'name' => $row['name'],
+                'tax_rate' => $row['tax_rate'],
+                'country' => $country,
+                'state' => $state,
+                'is_default' => $i === $defaultIndex,
+            ]);
+        }
+    }
+
+    // ===== PROMOTIONS =====
+
+    public function promotions()
+    {
+        return view('admin.config.promotions', [
+            'promotions' => Promotion::orderBy('id', 'desc')->get(),
+            'products' => Product::orderBy('name')->get(['id', 'name']),
+        ]);
+    }
+
+    public function storePromotion(Request $request)
+    {
+        $v = $request->validate([
+            'code' => 'required|unique:promotions',
+            'type' => 'required|in:percentage,fixed_amount,free_setup,price_override,override_recurring',
+            'value' => 'required|numeric|min:0',
+            'max_uses' => 'nullable|integer|min:0',
+            'start_date' => 'nullable|date',
+            'expiration_date' => 'nullable|date|after_or_equal:start_date',
+            'recurring' => 'boolean',
+            'cycles' => 'nullable|integer|min:0|max:1000',
+            'billing_cycles' => 'nullable|array',
+            'billing_cycles.*' => 'in:'.implode(',', array_keys(Service::CYCLE_MONTHS)),
+            // Which products were discounted is not kept from one invoice to
+            // the next, so a limit cannot be carried into renewals.
+            'max_products' => ['nullable', 'integer', 'min:0', 'max:1000', function ($attribute, $value, $fail) use ($request) {
+                if ((int) $value > 0 && $request->boolean('recurring')) {
+                    $fail(__('admin.promotions.max_products_recurring'));
+                }
+            }],
+            'notes' => 'nullable|string',
+            'applies_to' => 'nullable|array',
+            'applies_to.*' => 'integer|exists:products,id',
+            'requires' => 'nullable|array',
+            'requires.*' => 'integer|exists:products,id',
+            'apply_once' => 'boolean',
+            'new_signups_only' => 'boolean',
+            'existing_client' => 'boolean',
+        ]);
+        $v['recurring'] = $request->boolean('recurring');
+        $v['cycles'] = (int) ($v['cycles'] ?? 0);
+        $v['max_products'] = (int) ($v['max_products'] ?? 0);
+        // None ticked: every billing period, as before.
+        $v['billing_cycles'] = implode(',', array_unique($request->input('billing_cycles', []))) ?: null;
+        $v['apply_once'] = $request->boolean('apply_once');
+        $v['new_signups_only'] = $request->boolean('new_signups_only');
+        $v['existing_client'] = $request->boolean('existing_client');
+        $v['applies_to'] = $request->filled('applies_to')
+            ? implode(',', $request->input('applies_to'))
+            : null;
+        $v['requires'] = $request->filled('requires')
+            ? implode(',', $request->input('requires'))
+            : null;
+        Promotion::create($v);
+
+        return back()->with('success', __('messages.success.promotion_created'));
+    }
+
+    public function updatePromotion(Request $request, Promotion $promotion)
+    {
+        $v = $request->validate([
+            'code' => 'required|unique:promotions,code,'.$promotion->id,
+            'type' => 'required|in:percentage,fixed_amount,free_setup,price_override,override_recurring',
+            'value' => 'required|numeric|min:0',
+            'max_uses' => 'nullable|integer|min:0',
+            'start_date' => 'nullable|date',
+            'expiration_date' => 'nullable|date|after_or_equal:start_date',
+            'recurring' => 'boolean',
+            'cycles' => 'nullable|integer|min:0|max:1000',
+            'billing_cycles' => 'nullable|array',
+            'billing_cycles.*' => 'in:'.implode(',', array_keys(Service::CYCLE_MONTHS)),
+            // Which products were discounted is not kept from one invoice to
+            // the next, so a limit cannot be carried into renewals.
+            'max_products' => ['nullable', 'integer', 'min:0', 'max:1000', function ($attribute, $value, $fail) use ($request) {
+                if ((int) $value > 0 && $request->boolean('recurring')) {
+                    $fail(__('admin.promotions.max_products_recurring'));
+                }
+            }],
+            'notes' => 'nullable|string',
+        ]);
+        $v['recurring'] = $request->boolean('recurring');
+        $v['cycles'] = (int) ($v['cycles'] ?? 0);
+        $v['max_products'] = (int) ($v['max_products'] ?? 0);
+        // None ticked: every billing period, as before.
+        $v['billing_cycles'] = implode(',', array_unique($request->input('billing_cycles', []))) ?: null;
+        $promotion->update($v);
+
+        return back()->with('success', __('messages.success.promotion_updated'));
+    }
+
+    public function destroyPromotion(Promotion $promotion)
+    {
+        $promotion->delete();
+
+        return back()->with('success', __('messages.success.promotion_deleted'));
+    }
+
+    // ===== SERVERS =====
+
+    public function servers()
+    {
+        $servers = Server::all();
+        $registry = app(ModuleRegistry::class);
+
+        // The type choices come from the modules installed and switched on,
+        // not a list typed into the page: that list offered CyberPanel, which
+        // has no module, and left out HestiaCP, Proxmox and Vultr, which do.
+        // A type an existing server already carries stays choosable, so
+        // editing that server does not silently change it.
+        // A module that keeps its account elsewhere (needsServerRecord) is not
+        // a kind of server: the Panelica license module is set up on its own
+        // page.
+        $types = array_filter($registry->serverModuleNames(), fn ($label, $key) => $registry->usesServerRecords($key), ARRAY_FILTER_USE_BOTH);
+        $all = $registry->serverModuleNames(true);
+        foreach ($servers->pluck('type')->filter()->map(fn ($t) => strtolower((string) $t))->unique() as $type) {
+            $types[$type] ??= $all[$type] ?? ucfirst($type);
+        }
+
+        return view('admin.config.servers', [
+            'servers' => $servers,
+            'groups' => ServerGroup::all(),
+            'serverTypes' => $types,
+            // The servers whose accounts the sync page lists and imports, by id.
+            'syncable' => $servers->filter(fn (Server $server) => app(ServerAccountSync::class)->moduleFor($server) !== null)
+                ->keyBy('id')->map(fn () => true)->all(),
+        ]);
+    }
+
+    public function storeServer(Request $request)
+    {
+        $v = $request->validate([
+            'name' => 'required|string',
+            'hostname' => 'required|string',
+            'ip_address' => 'nullable|string',
+            'port' => 'nullable|integer',
+            'type' => 'nullable|string',
+            'username' => 'nullable|string',
+            'password' => 'nullable|string',
+            'access_hash' => 'nullable|string',
+            'max_accounts' => 'nullable|integer|min:0',
+            'active' => 'boolean',
+            'nameserver1' => 'nullable|string',
+            'nameserver2' => 'nullable|string',
+        ]);
+        // The active checkbox sends nothing when unchecked.
+        $v['active'] = $request->boolean('active');
+        $v['hostname'] = $this->normaliseHostname($v['hostname'] ?? null);
+
+        if ($v['hostname'] === '') {
+            return back()->withInput()->withErrors(['hostname' => __('admin.servers.hostname_invalid')]);
+        }
+
+        if ($error = $this->credentialError($request)) {
+            return back()->withInput()->withErrors(['access_hash' => $error]);
+        }
+
+        $settings = $this->serverSettings($request);
+        if (is_string($settings)) {
+            return back()->withInput()->withErrors(['settings' => $settings]);
+        }
+        $v['settings'] = $settings;
+
+        $server = Server::create($v);
+
+        [$type, $notice] = $this->hostnameNotice($server->hostname, $server->ip_address) ?? ['ignored', null];
+
+        return back()
+            ->with('success', __('messages.success.server_created'))
+            ->with($type, $notice);
+    }
+
+    // ===== DOMAIN PRICING =====
+
+    /** The pricing columns that may be sorted by clicking a header. */
+    private const TLD_SORTABLE = [
+        'extension', 'register_price', 'transfer_price', 'renew_price', 'restore_price',
+        'category', 'auto_registrar', 'enabled', 'min_years', 'max_years', 'grace_period',
+    ];
+
+    public function domainPricing(Request $request)
+    {
+        $currency = Currency::getDefault();
+        $currencySymbol = $currency ? trim((string) ($currency->prefix ?: $currency->suffix)) : '$';
+
+        $sort = $this->tldSort($request);
+
+        return view('admin.config.domain-pricing', [
+            'tlds' => $this->tldQuery($request)->orderBy($sort['column'], $sort['direction'])->paginate(50)->withQueryString(),
+            'currencySymbol' => $currencySymbol,
+            'registrars' => $this->activeRegistrars(),
+            'sort' => $sort['column'],
+            'direction' => $sort['direction'],
+        ]);
+    }
+
+    /** The pricing query shared by the list, the export and the bulk delete. */
+    protected function tldQuery(Request $request)
+    {
+        $query = DomainPricing::query();
+
+        if ($search = trim((string) $request->input('search'))) {
+            $query->where('extension', 'like', '%'.$search.'%');
+        }
+
+        return $query;
+    }
+
+    /** The validated sort column and direction, defaulting to extension asc. */
+    protected function tldSort(Request $request): array
+    {
+        $column = (string) $request->query('sort', 'extension');
+        $direction = (string) $request->query('direction', 'asc');
+
+        if (! in_array($column, self::TLD_SORTABLE, true)) {
+            $column = 'extension';
+        }
+        if (! in_array($direction, ['asc', 'desc'], true)) {
+            $direction = 'asc';
+        }
+
+        return ['column' => $column, 'direction' => $direction];
+    }
+
+    /** Download the pricing table as a CSV, honouring the search and sort. */
+    public function exportTldCsv(Request $request): StreamedResponse
+    {
+        $sort = $this->tldSort($request);
+        $tlds = $this->tldQuery($request)->orderBy($sort['column'], $sort['direction'])->get();
+
+        $rows = $tlds->map(fn ($t) => [
+            $t->extension,
+            $t->register_price,
+            $t->transfer_price,
+            $t->renew_price,
+            $t->restore_price,
+            $t->privacy_price,
+            $t->grace_period,
+            $t->redemption_grace_period,
+            $t->min_years,
+            $t->max_years,
+            $t->category,
+            $t->auto_registrar,
+            $t->enabled ? 1 : 0,
+            $t->is_popular ? 1 : 0,
+            $t->sort_order,
+        ]);
+
+        return $this->streamCsvDownload(
+            'domain-pricing-'.now()->format('Y-m-d').'.csv',
+            ['extension', 'register_price', 'transfer_price', 'renew_price', 'restore_price', 'privacy_price', 'grace_period', 'redemption_grace_period', 'min_years', 'max_years', 'category', 'auto_registrar', 'enabled', 'is_popular', 'sort_order'],
+            $rows
+        );
+    }
+
+    /** Import the pricing table from a CSV, upserting by extension. */
+    public function importTldCsv(Request $request)
+    {
+        $request->validate([
+            'file' => 'required|file|mimes:csv,txt',
+        ]);
+
+        $handle = fopen($request->file('file')->getRealPath(), 'r');
+        if ($handle === false) {
+            return back()->with('error', __('admin.domain_pricing.import_failed'));
+        }
+
+        fgetcsv($handle); // header row
+
+        $columns = ['register_price', 'transfer_price', 'renew_price', 'restore_price', 'privacy_price', 'grace_period', 'redemption_grace_period', 'min_years', 'max_years', 'category', 'auto_registrar', 'enabled', 'is_popular', 'sort_order'];
+        $priceColumns = ['register_price', 'transfer_price', 'renew_price', 'restore_price', 'privacy_price'];
+        $imported = 0;
+        $skipped = 0;
+
+        while (($row = fgetcsv($handle)) !== false) {
+            $row = array_map('trim', $row);
+            $extension = ltrim((string) ($row[0] ?? ''), "'");
+            $extension = '.'.ltrim($extension, '.');
+            if ($extension === '.') {
+                continue;
+            }
+
+            // A non-numeric price cell is refused rather than cast to 0.0,
+            // which would put the TLD on sale for nothing.
+            $invalid = false;
+            foreach ($columns as $i => $column) {
+                if (! in_array($column, $priceColumns, true)) {
+                    continue;
+                }
+                $cell = trim((string) ($row[$i + 1] ?? ''));
+                if ($cell !== '' && ! is_numeric($cell)) {
+                    $invalid = true;
+                    break;
+                }
+            }
+            if ($invalid) {
+                $skipped++;
+
+                continue;
+            }
+
+            $data = [];
+            foreach ($columns as $i => $column) {
+                if (! isset($row[$i + 1]) || trim((string) $row[$i + 1]) === '') {
+                    continue; // empty = leave the field unchanged
+                }
+                $data[$column] = $this->castTldValue($column, $row[$i + 1]);
+            }
+
+            DomainPricing::updateOrCreate(['extension' => $extension], $data);
+            $imported++;
+        }
+
+        fclose($handle);
+
+        $message = __('admin.domain_pricing.import_success', ['count' => $imported]);
+        if ($skipped > 0) {
+            $message .= ' '.__('admin.domain_pricing.import_skipped', ['count' => $skipped]);
+        }
+
+        return back()->with('success', $message);
+    }
+
+    /** Delete the checked TLDs, or every TLD matching the search when "select all" was used. */
+    public function bulkDeleteTlds(Request $request)
+    {
+        if ($request->boolean('select_all')) {
+            $count = $this->tldQuery($request)->delete();
+        } else {
+            $ids = array_values(array_filter(array_map('intval', (array) $request->input('ids', []))));
+            if ($ids === []) {
+                return back()->with('error', __('admin.domain_pricing.select_none'));
+            }
+            $count = DomainPricing::whereIn('id', $ids)->delete();
+        }
+
+        return back()->with('success', __('admin.domain_pricing.deleted', ['count' => $count]));
+    }
+
+    /** Cast an imported CSV cell to the column's type. */
+    protected function castTldValue(string $column, string $value): mixed
+    {
+        return match ($column) {
+            'register_price', 'transfer_price', 'renew_price', 'restore_price', 'privacy_price' => (float) $value,
+            'grace_period', 'redemption_grace_period', 'min_years', 'max_years', 'sort_order' => (int) $value,
+            'enabled', 'is_popular' => in_array(strtolower($value), ['1', 'true', 'yes', 'on'], true),
+            'category' => in_array($value, ['generic', 'local', 'country', 'new'], true) ? $value : 'new',
+            default => $value,
+        };
+    }
+
+    /**
+     * The active registrars as [module key => display name], for the pricing
+     * screen's auto-registrar selector. Matches the registrars screen: a
+     * registrar is active when its "visible" setting is on (manual defaults on).
+     */
+    protected function activeRegistrars(): array
+    {
+        $registry = app(ModuleRegistry::class);
+        $visible = RegistrarSettings::where('setting', 'visible')->pluck('value', 'registrar');
+
+        return collect($registry->getRegistrarModules())
+            ->filter(function (string $name) use ($visible): bool {
+                // Manual is the "no auto registrar" case, offered by the empty option.
+                if ($name === 'manual') {
+                    return false;
+                }
+
+                return $visible->get($name) === '1';
+            })
+            ->mapWithKeys(function (string $name) use ($registry): array {
+                $module = $registry->getRegistrarModule($name);
+
+                return [$name => $module?->getModuleName() ?? ucfirst($name)];
+            })
+            ->sort()
+            ->toArray();
+    }
+
+    public function storeTld(Request $request)
+    {
+        $v = $request->validate([
+            'extension' => 'required|string|unique:domain_pricing',
+            'register_price' => 'required|numeric|min:0',
+            'transfer_price' => 'required|numeric|min:0',
+            'renew_price' => 'required|numeric|min:0',
+            'restore_price' => 'nullable|numeric|min:0',
+            // Per year; empty = not offered at order, 0 = free.
+            'privacy_price' => 'nullable|numeric|min:0',
+            'category' => 'nullable|in:generic,local,country,new',
+            'is_popular' => 'boolean',
+            'grace_period' => 'nullable|integer|min:0',
+            // Days in redemption after the grace period; domain sync and the
+            // renewal reminders count them, and no form set them.
+            'redemption_grace_period' => 'nullable|integer|min:0',
+            'min_years' => 'nullable|integer|min:1',
+            'max_years' => 'nullable|integer|min:1',
+            'auto_registrar' => 'nullable|string',
+            'sort_order' => 'nullable|integer',
+            'enabled' => 'boolean',
+        ]);
+        $v['enabled'] = $request->boolean('enabled');
+        $v['is_popular'] = $request->boolean('is_popular');
+        DomainPricing::create($v);
+
+        return back()->with('success', __('messages.success.tld_created'));
+    }
+
+    // ===== PAYMENT GATEWAYS / REGISTRARS =====
+
+    public function gateways(ModuleRegistry $registry)
+    {
+        $stored = GatewaySettings::all()->groupBy('gateway');
+
+        // Every installed module, each asking for the settings it actually
+        // reads. The screen used to list the gateways and their fields by
+        // hand, which is how PayPal came to be asked for an email address it
+        // never looks at.
+        $gateways = collect($registry->getGatewayModules())
+            ->map(function (string $name) use ($registry, $stored) {
+                $module = $registry->getGatewayModule($name);
+                $values = ($stored[$name] ?? collect())->pluck('value', 'setting');
+
+                return (object) [
+                    'name' => $name,
+                    'label' => payment_method_label($name) ?: ($module?->getModuleName() ?? ucfirst($name)),
+                    'fields' => $module?->getConfigFields() ?? [],
+                    'values' => $values->toArray(),
+                    'active' => (string) ($values['active'] ?? '0') === '1',
+                    // Automatic payment can only ever use a gateway that
+                    // stores cards, and its switch lives on another screen
+                    // entirely. Saying so here, on the card the operator is
+                    // already looking at, is the only place they would think
+                    // to look for it.
+                    'vaults_cards' => $module instanceof TokenizableGatewayInterface,
+                    // Switched on is not offered: checkout leaves out a gateway
+                    // whose required keys are empty (usableGateways). Named on
+                    // its card, so the operator who ticked it knows why the
+                    // customer does not see it.
+                    'missing' => $module ? $registry->missingGatewaySettings($module, $values->toArray()) : [],
+                ];
+            })
+            ->sortBy(fn ($gw) => [$gw->active ? 0 : 1, $gw->label])
+            ->values();
+
+        return view('admin.config.gateways', [
+            'gateways' => $gateways,
+            'autoChargeOn' => AutoCharge::enabled(),
+        ]);
+    }
+
+    public function registrars()
+    {
+        // The blade iterates $registrars; it used to receive nothing at all,
+        // so the page always claimed no registrars were configured. Mirrors the
+        // gateways() shape: every installed module, enriched with its settings.
+        $stored = RegistrarSettings::all()->groupBy('registrar');
+
+        $registrars = collect(app(ModuleRegistry::class)->getRegistrarModules())
+            ->merge($stored->keys())
+            ->unique()
+            ->map(function ($name) use ($stored) {
+                $module = app(ModuleRegistry::class)->getRegistrarModule($name);
+                $settings = ($stored[$name] ?? collect())->pluck('value', 'setting');
+
+                return (object) [
+                    'registrar_name' => $name,
+                    'label' => $settings->get('name', $module?->getModuleName() ?? ucfirst($name)),
+                    'fields' => $module?->getConfigFields() ?? [],
+                    'values' => $settings->toArray(),
+                    'help' => ($module && method_exists($module, 'getConfigHelp')) ? $module->getConfigHelp() : null,
+                    'testable' => $module && method_exists($module, 'testConnection'),
+                    'syncable' => $module && method_exists($module, 'syncPrices'),
+                    'importable' => $module && method_exists($module, 'importTlds'),
+                    // Manual works out of the box; every other registrar is
+                    // off until the operator switches it on.
+                    'active' => $name === 'manual'
+                        ? $settings->get('visible', '1') !== '0'
+                        : $settings->get('visible') === '1',
+                ];
+            })
+            ->sortBy(fn ($reg) => [$reg->active ? 0 : 1, $reg->label])
+            ->values();
+
+        return view('admin.config.registrars', ['registrars' => $registrars]);
+    }
+
+    // ===== EMAIL TEMPLATES =====
+
+    public function emailTemplates(Request $request)
+    {
+        $languages = Language::orderBy('sort_order')->get();
+
+        $lang = (string) $request->query('lang', '');
+        if ($lang === '' || ! $languages->contains('code', $lang)) {
+            $default = Language::getDefault();
+            $lang = $default->code ?? 'en';
+        }
+
+        $templates = EmailTemplate::where('language', $lang)->orderBy('type')->get();
+
+        return view('admin.config.email-templates', [
+            'templates' => $templates,
+            'languages' => $languages,
+            'selectedLang' => $lang,
+        ]);
+    }
+
+    // ===== TICKET DEPARTMENTS =====
+
+    public function ticketDepartments()
+    {
+        return view('admin.config.ticket-departments', [
+            'departments' => TicketDepartment::withCount('tickets')->orderBy('sort_order')->get(),
+        ]);
+    }
+
+    public function storeTicketDepartment(Request $request)
+    {
+        $v = $request->validate(['name' => 'required', 'email' => 'nullable|email', 'description' => 'nullable|string', 'hidden' => 'boolean']);
+        $v['hidden'] = $request->boolean('hidden');
+        TicketDepartment::create($v);
+
+        return back()->with('success', __('messages.success.department_created'));
+    }
+
+    // ===== TICKET STATUSES =====
+
+    public function ticketStatuses()
+    {
+        return view('admin.config.ticket-statuses', [
+            'statuses' => TicketStatus::orderBy('sort_order')->get(),
+        ]);
+    }
+
+    // ===== BANNED IPs =====
+
+    public function bannedIps()
+    {
+        return view('admin.config.banned-ips', [
+            'bannedIps' => BannedIp::orderByDesc('id')->get(),
+        ]);
+    }
+
+    public function storeBannedIp(Request $request)
+    {
+        BannedIp::create($request->validate(['ip' => 'required', 'reason' => 'nullable|string']));
+
+        return back()->with('success', __('messages.success.banned_ip_created'));
+    }
+
+    // ===== BANNED EMAILS =====
+
+    public function bannedEmails()
+    {
+        return view('admin.config.banned-emails', [
+            'bannedEmails' => BannedEmail::orderByDesc('id')->get(),
+        ]);
+    }
+
+    // ===== ANNOUNCEMENTS =====
+
+    /** The translations an announcement form may send, language => title and text. */
+    private const ANNOUNCEMENT_TRANSLATION_RULES = [
+        'translations' => 'nullable|array',
+        'translations.*.title' => 'nullable|string|max:255',
+        'translations.*.announcement' => 'nullable|string',
+    ];
+
+    public function announcements()
+    {
+        return view('admin.config.announcements', [
+            'announcements' => Announcement::with('translations')->orderBy('id', 'desc')->get(),
+            'translationLanguages' => ContentTranslations::languages(),
+            'categories' => Announcement::whereNotNull('category')->distinct()->orderBy('category')->pluck('category'),
+        ]);
+    }
+
+    public function storeAnnouncement(Request $request)
+    {
+        // The admin form posts the content as "body"; the API and older
+        // callers use "announcement". Accept either.
+        if (! $request->filled('announcement') && $request->filled('body')) {
+            $request->merge(['announcement' => $request->input('body')]);
+        }
+        $v = $request->validate(['title' => 'required', 'category' => 'nullable|string|max:60', 'announcement' => 'required|string', 'published' => 'boolean']
+            + self::ANNOUNCEMENT_TRANSLATION_RULES);
+        $announcement = Announcement::create([
+            'title' => $v['title'],
+            'category' => $v['category'] ?? null,
+            'announcement' => $v['announcement'],
+            'published' => $request->boolean('published'),
+        ]);
+        ContentTranslations::save($announcement->translations(), (array) ($v['translations'] ?? []), ['title', 'announcement']);
+
+        return back()->with('success', __('messages.success.announcement_published'));
+    }
+
+    // ===== DOWNLOADS =====
+
+    public function downloads()
+    {
+        return view('admin.config.downloads', [
+            'categories' => DownloadCategory::with('downloads.products')->get(),
+            'products' => Product::orderBy('name')->get(['id', 'name']),
+        ]);
+    }
+
+    // ===== KNOWLEDGE BASE =====
+
+    public function knowledgeBase()
+    {
+        return view('admin.config.knowledge-base', [
+            'categories' => KbCategory::with('translations')->orderBy('name')->get(),
+            'articles' => KbArticle::with('category', 'translations')->orderByDesc('id')->get(),
+            'translationLanguages' => ContentTranslations::languages(),
+        ]);
+    }
+
+    public function storeKbArticle(Request $request)
+    {
+        $v = $this->validateKbArticle($request);
+        $article = KbArticle::create($v);
+        ContentTranslations::save($article->translations(), (array) $request->input('translations', []), ['title', 'article']);
+
+        return back()->with('success', __('messages.success.article_created'));
+    }
+
+    private function validateKbArticle(Request $request): array
+    {
+        $v = $request->validate([
+            'category_id' => 'required|exists:kb_categories,id',
+            'title' => 'required|string',
+            'article' => 'required|string',
+            'published' => 'boolean',
+            'translations' => 'nullable|array',
+            'translations.*.title' => 'nullable|string|max:255',
+            'translations.*.article' => 'nullable|string',
+        ]);
+        unset($v['translations']);
+        // kb_articles has a "private" column; the form speaks in "published".
+        $v['private'] = ! $request->boolean('published');
+        unset($v['published']);
+
+        return $v;
+    }
+
+    // ===== NETWORK ISSUES =====
+
+    public function networkIssues()
+    {
+        return view('admin.config.network-issues', [
+            'networkIssues' => NetworkIssue::orderBy('id', 'desc')->get(),
+            // Offered as suggestions for "Affected"; any text is accepted.
+            'serverNames' => Server::orderBy('name')->pluck('name')->filter()->unique()->values(),
+        ]);
+    }
+
+    // ===== QUOTES =====
+
+    public function quotes()
+    {
+        return view('admin.config.quotes', [
+            'quotes' => Quote::with('client')->orderBy('id', 'desc')->paginate(25),
+        ]);
+    }
+
+    // ===== BILLABLE ITEMS =====
+
+    public function billableItems()
+    {
+        return view('admin.config.billable-items', [
+            'billableItems' => BillableItem::with('client')->orderBy('id', 'desc')->paginate(25),
+            'clients' => Client::orderBy('first_name')->get(['id', 'first_name', 'last_name', 'company_name']),
+        ]);
+    }
+
+    // ===== TRANSACTIONS =====
+
+    public function transactions()
+    {
+        return view('admin.config.transactions', [
+            'transactions' => Transaction::with('client')->orderBy('id', 'desc')->paginate(25),
+            // Credit staff added or took by hand (#307), with the reason and who did it. Kept out of the
+            // transactions above: no money moved, so it is not income.
+            'adjustments' => Credit::with(['client', 'admin'])->whereNotNull('admin_id')
+                ->orderBy('id', 'desc')->paginate(25, ['*'], 'adjustments_page'),
+        ]);
+    }
+
+    // ===== TODO =====
+
+    public function todoList(Request $request)
+    {
+        // "Assigned to me": the list a staff member works from.
+        $me = (string) auth('admin')->user()?->username;
+        $mine = $request->boolean('mine') && $me !== '';
+
+        return view('admin.config.todo', [
+            'items' => TodoItem::when($mine, fn ($q) => $q->where('admin', $me))->orderBy('id', 'desc')->get(),
+            'admins' => Admin::orderBy('username')->pluck('username'),
+            'mine' => $mine,
+        ]);
+    }
+
+    public function storeTodo(Request $request)
+    {
+        // The list had an "Admin" column that nothing could fill: a task could not be given to anyone.
+        TodoItem::create($request->validate(['title' => 'required', 'description' => 'nullable|string', 'due_date' => 'nullable|date',
+            'admin' => 'nullable|string|exists:admins,username']));
+
+        return back()->with('success', __('messages.success.todo_added'));
+    }
+
+    // ===== ACTIVITY LOG =====
+
+    public function activityLog()
+    {
+        return view('admin.config.activity-log', [
+            'logs' => ActivityLog::orderBy('id', 'desc')->paginate(50),
+        ]);
+    }
+
+    // ===== SYSTEM =====
+
+    public function systemDatabase()
+    {
+        return view('admin.config.system-database');
+    }
+
+    public function systemPhpInfo()
+    {
+        return view('admin.config.system-phpinfo');
+    }
+
+    // === Missing CRUD Methods ===
+
+    // Ticket Departments
+    public function updateTicketDepartment(Request $request, TicketDepartment $department)
+    {
+        $v = $request->validate([
+            'name' => 'required', 'description' => 'nullable|string', 'email' => 'nullable|email',
+            'clients_only' => 'boolean', 'hidden' => 'boolean', 'sort_order' => 'nullable|integer', 'feedback_request' => 'boolean',
+            'import_protocol' => 'nullable|in:imap,pop3', 'import_host' => 'nullable|string|max:255',
+            'import_port' => 'nullable|integer|min:1|max:65535', 'import_encryption' => 'nullable|in:ssl,tls,none',
+            'import_username' => 'nullable|string|max:255', 'import_password' => 'nullable|string|max:255',
+            'import_folder' => 'nullable|string|max:255',
+        ]);
+        $v['import_active'] = $request->boolean('import_active');
+        $v['import_delete'] = $request->boolean('import_delete');
+        $v['import_allow_unknown'] = $request->boolean('import_allow_unknown');
+        // Blank password = keep the stored one
+        if (($v['import_password'] ?? '') === '' || $v['import_password'] === null) {
+            unset($v['import_password']);
+        }
+        $department->update($v);
+
+        return back()->with('success', __('messages.success.department_updated'));
+    }
+
+    public function destroyTicketDepartment(TicketDepartment $department)
+    {
+        $department->delete();
+
+        return back()->with('success', __('messages.success.department_deleted'));
+    }
+
+    // Ticket Statuses
+    public function storeTicketStatus(Request $request)
+    {
+        $v = $request->validate(['title' => 'required', 'color' => 'nullable|string', 'sort_order' => 'nullable|integer', 'show_active' => 'boolean', 'show_awaiting' => 'boolean', 'auto_close' => 'boolean']);
+        $v['show_active'] = $request->boolean('show_active');
+        $v['auto_close'] = $request->boolean('auto_close');
+        TicketStatus::create($v);
+
+        return back()->with('success', __('messages.success.ticket_status_created'));
+    }
+
+    /** How long a ticket in an auto-close status may sit unanswered (pnlcs:ticket-auto-close). */
+    public function saveTicketAutoClose(Request $request)
+    {
+        $hours = (int) $request->validate(['hours' => 'required|integer|min:0|max:8760'])['hours'];
+        Setting::set('TicketAutoCloseHours', (string) $hours);
+
+        return back()->with('success', __('admin.ticket_statuses.auto_close_saved'));
+    }
+
+    public function updateTicketStatus(Request $request, TicketStatus $status)
+    {
+        $v = $request->validate(['title' => 'required', 'color' => 'nullable|string', 'sort_order' => 'nullable|integer', 'show_active' => 'boolean', 'show_awaiting' => 'boolean', 'auto_close' => 'boolean']);
+        $v['show_active'] = $request->boolean('show_active');
+        $v['auto_close'] = $request->boolean('auto_close');
+        $status->update($v);
+
+        return back()->with('success', __('messages.success.ticket_status_updated'));
+    }
+
+    public function destroyTicketStatus(TicketStatus $status)
+    {
+        $status->delete();
+
+        return back()->with('success', __('messages.success.ticket_status_deleted'));
+    }
+
+    // Email Templates
+    public function updateEmailTemplate(Request $request, EmailTemplate $template)
+    {
+        $validated = $request->validate(['type' => 'nullable|string', 'name' => 'nullable|string', 'subject' => 'nullable|string', 'message' => 'nullable|string', 'from_name' => 'nullable|string', 'from_email' => 'nullable|email', 'copy_to' => ['nullable', 'string', 'max:255', new \App\Rules\EmailList], 'disabled' => 'boolean']);
+
+        // Only a changed body makes the template the operator's own, which is
+        // what lets their wording replace the built-in email. The form always
+        // sends the stored text back, so marking every save as custom swapped
+        // the designed email for that seeded text the moment anyone changed a
+        // subject or switched a template off.
+        $normal = fn ($text) => trim(str_replace(["\r\n", "\r"], "\n", (string) $text));
+        $validated['custom'] = $template->custom
+            || (array_key_exists('message', $validated) && $normal($validated['message']) !== $normal($template->message));
+
+        $template->update($validated);
+
+        return back()->with('success', __('messages.success.template_updated'));
+    }
+
+    /**
+     * Back to the built-in email: the stored wording stays for later, but is no
+     * longer sent.
+     */
+    public function resetEmailTemplate(EmailTemplate $template)
+    {
+        $template->update(['custom' => false]);
+
+        return back()->with('success', __('messages.success.template_updated'));
+    }
+
+    // Servers
+    public function updateServer(Request $request, Server $server)
+    {
+        $v = $request->validate(['name' => 'required', 'hostname' => 'required', 'ip_address' => 'nullable', 'port' => 'nullable|integer', 'type' => 'nullable|string', 'username' => 'nullable|string', 'password' => 'nullable|string', 'access_hash' => 'nullable|string', 'max_accounts' => 'nullable|integer', 'active' => 'boolean', 'nameserver1' => 'nullable', 'nameserver2' => 'nullable']);
+        // Blank credential fields mean "keep the stored value" (the form promises this).
+        foreach (['password', 'access_hash'] as $secret) {
+            if (! $request->filled($secret)) {
+                unset($v[$secret]);
+            }
+        }
+        $v['active'] = $request->boolean('active');
+
+        if (array_key_exists('hostname', $v)) {
+            $v['hostname'] = $this->normaliseHostname($v['hostname']);
+
+            if ($v['hostname'] === '') {
+                return back()->withInput()->withErrors(['hostname' => __('admin.servers.hostname_invalid')]);
+            }
+        }
+
+        if ($error = $this->credentialError($request, $server)) {
+            return back()->withInput()->withErrors(['access_hash' => $error]);
+        }
+
+        $settings = $this->serverSettings($request, $server);
+        if (is_string($settings)) {
+            return back()->withInput()->withErrors(['settings' => $settings]);
+        }
+        $v['settings'] = $settings;
+
+        $server->update($v);
+
+        [$type, $notice] = $this->hostnameNotice($server->hostname, $server->ip_address) ?? ['ignored', null];
+
+        return back()
+            ->with('success', __('messages.success.server_updated'))
+            ->with($type, $notice);
+    }
+
+    /**
+     * Refuse a server record that cannot possibly sign in.
+     *
+     * Almost every module authenticates with the API key; a password in the
+     * other box is not a substitute and the panel used to accept it in
+     * silence, leaving provisioning to fail later with "Access denied".
+     */
+    /**
+     * The address as a module can use it.
+     *
+     * Operators paste what their browser shows them - a scheme, a port, a
+     * trailing slash - and every module builds its URL by hand from this
+     * field. Anything but the host itself produced a URL that could not
+     * resolve and an error that explained nothing.
+     */
+    private function normaliseHostname(?string $hostname): string
+    {
+        $hostname = trim((string) $hostname);
+
+        if ($hostname === '') {
+            return '';
+        }
+
+        // Scheme, path, credentials, trailing slash.
+        $hostname = preg_replace('#^[a-z][a-z0-9+.-]*://#i', '', $hostname) ?? $hostname;
+        $hostname = explode('/', $hostname, 2)[0];
+        $hostname = str_contains($hostname, '@') ? substr($hostname, strrpos($hostname, '@') + 1) : $hostname;
+
+        // A port on the end - but not the colons of an IPv6 address.
+        if (! str_contains($hostname, '[') && substr_count($hostname, ':') === 1) {
+            $hostname = explode(':', $hostname, 2)[0];
+        }
+
+        return trim($hostname, " \t\n\r\0\x0B.");
+    }
+
+    /**
+     * The type-specific settings from the form, or an error message.
+     *
+     * Only Proxmox has any today: the node, the resource pool, the VM ids
+     * PNLCS may use and the IPv4 addresses it hands out. Settings of a type
+     * the server no longer has are dropped, so switching the type does not
+     * leave a hidden pool behind.
+     */
+    private function serverSettings(Request $request, ?Server $existing = null): array|string|null
+    {
+        $settings = $existing?->settings ?? [];
+
+        $type = strtolower((string) $request->input('type'));
+
+        if ($type !== 'proxmox') {
+            $settings = array_diff_key($settings, array_flip(['node', 'pool', 'vmid_min', 'vmid_max', 'ipv4_pool', 'verify_tls', 'ci_vendor', 'backup_storage', 'capacity_alert']));
+
+            // A Panelica panel may have its TLS certificate checked too.
+            if ($type === 'panelica' && ! empty(((array) $request->input('settings', []))['verify_tls'])) {
+                $settings['verify_tls'] = true;
+            }
+
+            return $settings ?: null;
+        }
+
+        $in = (array) $request->input('settings', []);
+        $name = '/^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$/';
+        $node = trim((string) ($in['node'] ?? ''));
+        $pool = trim((string) ($in['pool'] ?? ''));
+        $min = (int) ($in['vmid_min'] ?? 0);
+        $max = (int) ($in['vmid_max'] ?? 0);
+        $ipv4 = trim(str_replace("\r\n", "\n", (string) ($in['ipv4_pool'] ?? '')));
+        $vendor = trim((string) ($in['ci_vendor'] ?? ''));
+        $backupStorage = trim((string) ($in['backup_storage'] ?? ''));
+        if ($backupStorage !== '' && ! preg_match($name, $backupStorage)) {
+            return __('proxmox.admin.backup_storage_invalid');
+        }
+
+        if ($vendor !== '' && ! preg_match('#^[A-Za-z0-9][A-Za-z0-9._-]*:snippets/[A-Za-z0-9._/-]+$#', $vendor)) {
+            return __('proxmox.admin.ci_vendor_invalid');
+        }
+
+        if ($node !== '' && ! preg_match($name, $node)) {
+            return __('proxmox.admin.node_invalid');
+        }
+        if ($pool !== '' && ! preg_match($name, $pool)) {
+            return __('proxmox.admin.pool_invalid');
+        }
+        if ($min !== 0 && ($min < 100 || $min > 999999999)) {
+            return __('proxmox.admin.vmid_invalid');
+        }
+        if ($max !== 0 && ($min === 0 || $max < $min)) {
+            return __('proxmox.admin.vmid_invalid');
+        }
+        try {
+            Ipv4Pool::ranges($ipv4);
+        } catch (\InvalidArgumentException $e) {
+            return __('proxmox.error.pool_invalid', ['line' => $e->getMessage()]);
+        }
+
+        return array_merge($settings, [
+            'node' => $node,
+            'pool' => $pool,
+            'vmid_min' => $min ?: null,
+            'vmid_max' => $max ?: null,
+            'ipv4_pool' => $ipv4,
+            'verify_tls' => ! empty($in['verify_tls']),
+            'ci_vendor' => $vendor,
+            'backup_storage' => $backupStorage,
+            // Per cent of a node's CPU, memory or disk given to guests past which staff are told (#303); empty = 80, 0 = never.
+            'capacity_alert' => ($in['capacity_alert'] ?? '') === '' ? null : max(0, min(1000, (int) $in['capacity_alert'])),
+        ]);
+    }
+
+    private function credentialError(Request $request, ?Server $existing = null): ?string
+    {
+        // A record still being set up can be saved inactive and finished
+        // later; an active one is a server the panel will try to provision on.
+        if (! $request->boolean('active')) {
+            return null;
+        }
+
+        $need = app(ModuleRegistry::class)->serverCredentialRequirement($request->input('type'));
+
+        $token = $request->filled('access_hash') ? $request->input('access_hash') : $existing?->access_hash;
+        $password = $request->filled('password') ? $request->input('password') : $existing?->password;
+
+        if ($need === 'token' && blank($token)) {
+            return __('admin.servers.needs_api_token', [
+                'type' => strtoupper((string) $request->input('type')),
+                'field' => $this->tokenFieldLabel((string) $request->input('type')),
+            ]);
+        }
+
+        if ($need === 'either' && blank($token) && blank($password)) {
+            return __('admin.servers.needs_credentials', ['type' => strtoupper((string) $request->input('type'))]);
+        }
+
+        return null;
+    }
+
+    /**
+     * What the server form calls the field the module signs in with, so the
+     * error names the field the operator actually sees.
+     */
+    private function tokenFieldLabel(string $type): string
+    {
+        return match (strtolower($type)) {
+            'panelica' => 'API Secret',
+            'cpanel' => 'API Token',
+            'proxmox' => __('proxmox.admin.token_secret'),
+            'aapanel' => __('aapanel.api_key'),
+            default => 'API Key',
+        };
+    }
+
+    /**
+     * A hostname that resolves somewhere other than the address beside it is
+     * the likeliest way to point a server record at the wrong machine.
+     *
+     * Unless the address is a private one and the hostname public: that is a
+     * server behind NAT, recorded the right way (#334), and is said as such.
+     *
+     * @return array{0: string, 1: string}|null [flash type, message]
+     */
+    private function hostnameNotice(?string $hostname, ?string $ip): ?array
+    {
+        $hostname = trim((string) $hostname);
+        $ip = trim((string) $ip);
+
+        if ($hostname === '' || $ip === '' || filter_var($hostname, FILTER_VALIDATE_IP)) {
+            return null;
+        }
+
+        $resolved = ServerAddress::resolve($hostname);
+
+        if ($resolved === []) {
+            return ['warning', __('admin.servers.hostname_unresolved', ['host' => $hostname])];
+        }
+
+        if (in_array($ip, $resolved, true)) {
+            return null;
+        }
+
+        $values = ['host' => $hostname, 'resolved' => implode(', ', $resolved), 'ip' => $ip];
+
+        return ServerAddress::behindNat($ip, $resolved)
+            ? ['info', __('admin.servers.hostname_behind_nat', $values)]
+            : ['warning', __('admin.servers.hostname_mismatch', $values)];
+    }
+
+    public function destroyServer(Server $server)
+    {
+        // Accounts that still exist somewhere. A terminated or cancelled
+        // service has nothing left on the machine, so it does not hold the
+        // record hostage.
+        $live = Service::where('server_id', $server->id)
+            ->whereNotIn('status', ['terminated', 'cancelled', 'fraud'])
+            ->count();
+
+        if ($live > 0) {
+            return back()->with('error', __('admin.servers.has_services', [
+                'count' => $live,
+                'name' => $server->name,
+            ]));
+        }
+
+        $server->delete();
+
+        return back()->with('success', __('messages.success.server_deleted'));
+    }
+
+    public function testServerConnection(Server $server)
+    {
+        $host = $server->hostname ?? $server->ip_address;
+        $port = $server->port ?: self::defaultServerPort((string) $server->type);
+        // Vultr is reached at api.vultr.com, never at the record's host:port,
+        // so opening a socket there tested something the module does not use.
+        $apiOnly = strtolower((string) $server->type) === 'vultr';
+        if (empty($host) && ! $apiOnly) {
+            return back()->with('error', __('admin.messages.no_hostname'));
+        }
+        $start = microtime(true);
+        $errno = 0;
+        $errstr = '';
+        $conn = $apiOnly ? true : @fsockopen($host, $port, $errno, $errstr, 5);
+        $elapsed = round((microtime(true) - $start) * 1000);
+        if ($conn) {
+            if (is_resource($conn)) {
+                fclose($conn);
+            }
+
+            // The port being open says nothing about the credentials. This
+            // used to stop here and report success, so a server that could
+            // never sign in was given a green light and provisioning failed
+            // later with nobody watching.
+            $module = app(ModuleRegistry::class)->getServerModule((string) $server->type);
+
+            // A module that can say more than yes or no (which rights are
+            // missing, which node is offline) shows its full report.
+            if ($module && method_exists($module, 'diagnose')) {
+                try {
+                    $report = $module->diagnose($server);
+                } catch (\Throwable $e) {
+                    return back()->with('error', __('admin.servers.auth_error', ['host' => $host, 'error' => $e->getMessage()]));
+                }
+
+                return back()
+                    ->with($report['ok'] ? 'success' : 'error', __($report['ok'] ? 'proxmox.admin.test_passed' : 'proxmox.admin.test_failed', ['name' => $server->name]))
+                    ->with('server_report', ['server_id' => $server->id, 'name' => $server->name] + $report);
+            }
+
+            if ($module) {
+                try {
+                    if (! $module->testConnection($server)) {
+                        return back()->with('error', __('admin.servers.auth_failed', [
+                            'host' => $host,
+                            'type' => strtoupper((string) $server->type),
+                        ]));
+                    }
+                } catch (\Throwable $e) {
+                    return back()->with('error', __('admin.servers.auth_error', [
+                        'host' => $host,
+                        'error' => $e->getMessage(),
+                    ]));
+                }
+            }
+
+            return back()->with('success', __('admin.messages.connection_success', ['host' => $host, 'port' => $port, 'elapsed' => $elapsed, 'module' => $server->type ?? 'custom']));
+        }
+
+        return back()->with('error', __('admin.messages.connection_failed', ['host' => $host, 'port' => $port, 'error' => $errstr, 'errno' => $errno, 'elapsed' => $elapsed]));
+    }
+
+    /**
+     * The port a server type answers on when the record has none, the same
+     * defaults the server form fills in. HestiaCP, aaPanel and CyberPanel
+     * were missing, so their test knocked on port 22.
+     */
+    public static function defaultServerPort(string $type): int
+    {
+        return match (strtolower($type)) {
+            'panelica', 'plesk' => 8443,
+            'cpanel' => 2087,
+            'directadmin' => 2222,
+            'proxmox' => 8006,
+            'hestiacp' => 8083,
+            'aapanel' => 8888,
+            'cyberpanel' => 8090,
+            'vultr' => 443,
+            default => 22,
+        };
+    }
+
+    // Server Groups
+    public function serverGroups()
+    {
+        return view('admin.config.server-groups', [
+            'serverGroups' => ServerGroup::with('servers:id,name,type')->withCount('servers')->get(),
+            'allServers' => Server::orderBy('name')->get(['id', 'name', 'type']),
+        ]);
+    }
+
+    public function storeServerGroup(Request $request)
+    {
+        $v = $this->validateServerGroup($request);
+        $group = ServerGroup::create($v);
+        $group->servers()->sync($v['server_ids'] ?? []);
+
+        return back()->with('success', __('messages.success.server_group_created'));
+    }
+
+    public function updateServerGroup(Request $request, ServerGroup $serverGroup)
+    {
+        $v = $this->validateServerGroup($request);
+        $serverGroup->update($v);
+        $serverGroup->servers()->sync($v['server_ids'] ?? []);
+
+        return back()->with('success', __('messages.success.server_group_updated'));
+    }
+
+    private function validateServerGroup(Request $request): array
+    {
+        return $request->validate([
+            'name' => 'required|string',
+            'fill_type' => 'required|in:fill,round_robin',
+            'server_ids' => 'nullable|array',
+            'server_ids.*' => 'integer|exists:servers,id',
+        ]);
+    }
+
+    public function destroyServerGroup(ServerGroup $serverGroup)
+    {
+        // A product selling from this group would fall back to "any server of
+        // that type" - quietly provisioning outside the group it was put in.
+        $products = Product::where('server_group_id', $serverGroup->id)->count();
+
+        if ($products > 0) {
+            return back()->with('error', __('admin.servers.group_in_use', [
+                'count' => $products,
+                'name' => $serverGroup->name,
+            ]));
+        }
+
+        $serverGroup->delete();
+
+        return back()->with('success', __('messages.success.server_group_deleted'));
+    }
+
+    // Announcements
+    public function updateAnnouncement(Request $request, Announcement $announcement)
+    {
+        $v = $request->validate(['title' => 'required', 'category' => 'nullable|string|max:60', 'published' => 'boolean']
+            + self::ANNOUNCEMENT_TRANSLATION_RULES);
+        $translations = (array) ($v['translations'] ?? []);
+        unset($v['translations']);
+        $v['announcement'] = $request->body ?? $request->announcement ?? $announcement->announcement;
+        $announcement->update($v);
+        ContentTranslations::save($announcement->translations(), $translations, ['title', 'announcement']);
+
+        return back()->with('success', __('messages.success.announcement_updated'));
+    }
+
+    public function destroyAnnouncement(Announcement $announcement)
+    {
+        $announcement->delete();
+
+        return back()->with('success', __('messages.success.announcement_deleted'));
+    }
+
+    // Knowledge Base
+    public function storeKbCategory(Request $request)
+    {
+        KbCategory::create($request->validate(['name' => 'required', 'description' => 'nullable|string', 'sort_order' => 'nullable|integer']));
+
+        return back()->with('success', __('messages.success.category_created'));
+    }
+
+    /**
+     * A category could be added and never changed: a typo in its name, or a
+     * name in the wrong language, stayed for good.
+     */
+    public function updateKbCategory(Request $request, KbCategory $category)
+    {
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'translations' => 'nullable|array',
+            'translations.*.name' => 'nullable|string|max:255',
+            'translations.*.description' => 'nullable|string',
+        ]);
+        $category->update(['name' => $v['name'], 'description' => $v['description'] ?? null]);
+        ContentTranslations::save($category->translations(), (array) ($v['translations'] ?? []), ['name', 'description']);
+
+        return back()->with('success', __('admin.knowledge_base.category_updated'));
+    }
+
+    public function updateKbArticle(Request $request, KbArticle $article)
+    {
+        $article->update($this->validateKbArticle($request));
+        ContentTranslations::save($article->translations(), (array) $request->input('translations', []), ['title', 'article']);
+
+        return back()->with('success', __('messages.success.article_updated'));
+    }
+
+    public function destroyKbArticle(KbArticle $article)
+    {
+        $article->delete();
+
+        return back()->with('success', __('messages.success.article_deleted'));
+    }
+
+    // Downloads
+    public function storeDownloadCategory(Request $request)
+    {
+        DownloadCategory::create($request->validate(['name' => 'required', 'description' => 'nullable|string']));
+
+        return back()->with('success', __('messages.success.category_created'));
+    }
+
+    public function updateDownloadCategory(Request $request, DownloadCategory $category)
+    {
+        $category->update($request->validate(['name' => 'required|string|max:255', 'description' => 'nullable|string']));
+
+        return back()->with('success', __('admin.downloads.category_updated'));
+    }
+
+    public function destroyDownloadCategory(DownloadCategory $category)
+    {
+        // downloads.category_id is constrained with cascadeOnDelete — the
+        // category's downloads are removed with it, so their uploaded files
+        // go first.
+        $category->downloads->each->deleteStoredFile();
+        $category->delete();
+
+        return back()->with('success', __('messages.success.category_deleted'));
+    }
+
+    public function storeDownload(Request $request)
+    {
+        $v = $this->validateDownload($request, null);
+        $download = new Download($v);
+        $this->takeDownloadSource($request, $download);
+        $download->save();
+        // Kept to the owners of these products; none means every signed-in customer.
+        $download->products()->sync($request->input('products', []));
+
+        return back()->with('success', __('messages.success.download_created'));
+    }
+
+    public function editDownload(Download $download)
+    {
+        return view('admin.config.download-edit', [
+            'download' => $download->load('products'),
+            'categories' => DownloadCategory::orderBy('name')->get(),
+            'products' => Product::orderBy('name')->get(['id', 'name']),
+        ]);
+    }
+
+    public function updateDownload(Request $request, Download $download)
+    {
+        $download->fill($this->validateDownload($request, $download));
+        $this->takeDownloadSource($request, $download);
+        $download->save();
+        $download->products()->sync($request->input('products', []));
+
+        return redirect()->route('admin.config.downloads')->with('success', __('admin.downloads.download_updated'));
+    }
+
+    public function destroyDownload(Download $download)
+    {
+        $download->deleteStoredFile();
+        $download->delete();
+
+        return back()->with('success', __('messages.success.download_deleted'));
+    }
+
+    /**
+     * A download is an uploaded file or a link. A new one needs one of them;
+     * an edit may keep the file or link it has.
+     */
+    private function validateDownload(Request $request, ?Download $download): array
+    {
+        $v = $request->validate([
+            'category_id' => 'required|exists:download_categories,id',
+            'title' => 'required|string',
+            'description' => 'nullable|string',
+            'file' => 'nullable|file',
+            'location' => [$download ? 'nullable' : 'required_without:file', 'nullable', 'string', 'max:2048'],
+            'published' => 'boolean',
+            'products' => 'nullable|array',
+            'products.*' => 'integer|exists:products,id',
+        ]);
+        $v['hidden'] = ! $request->boolean('published');
+        unset($v['published'], $v['products'], $v['file'], $v['location']);
+
+        return $v;
+    }
+
+    /**
+     * Put the uploaded file on the private disk (it is handed to customers
+     * by DownloadController after its checks, never by address), or take the
+     * link. Whatever the download had before is removed when it is replaced.
+     */
+    private function takeDownloadSource(Request $request, Download $download): void
+    {
+        if ($request->hasFile('file')) {
+            $file = $request->file('file');
+            $name = preg_replace('/[^A-Za-z0-9._-]+/', '-', $file->getClientOriginalName()) ?: 'download';
+            $path = $file->storeAs('downloads/'.Str::uuid(), $name, Download::DISK);
+
+            $download->deleteStoredFile();
+            $download->type = 'file';
+            $download->location = $path;
+
+            return;
+        }
+
+        if (filled($request->input('location'))) {
+            $download->deleteStoredFile();
+            $download->type = 'link';
+            $download->location = (string) $request->input('location');
+        }
+    }
+
+    // Network Issues
+    public function storeNetworkIssue(Request $request)
+    {
+        NetworkIssue::create($request->validate(['title' => 'required', 'description' => 'required|string', 'type' => 'nullable|string', 'status' => 'required', 'affected_server' => 'nullable|string|max:255', 'start_date' => 'nullable|date', 'end_date' => 'nullable|date']));
+
+        return back()->with('success', __('messages.success.network_issue_created'));
+    }
+
+    public function updateNetworkIssue(Request $request, NetworkIssue $issue)
+    {
+        $issue->update($request->validate(['title' => 'required', 'description' => 'required|string', 'type' => 'nullable|string', 'status' => 'required', 'affected_server' => 'nullable|string|max:255', 'start_date' => 'nullable|date', 'end_date' => 'nullable|date']));
+
+        return back()->with('success', __('messages.success.network_issue_updated'));
+    }
+
+    public function destroyNetworkIssue(NetworkIssue $issue)
+    {
+        $issue->delete();
+
+        return back()->with('success', __('messages.success.network_issue_deleted'));
+    }
+
+    // Banned IPs/Emails
+    public function destroyBannedIp(BannedIp $bannedIp)
+    {
+        $bannedIp->delete();
+
+        return back()->with('success', __('messages.success.ip_unbanned'));
+    }
+
+    public function storeBannedEmail(Request $request)
+    {
+        // banned_emails has no "type" column; the form field is named "domain"
+        // (it accepts a full address or a domain pattern).
+        BannedEmail::create($request->validate(['domain' => 'required|string', 'reason' => 'nullable|string']));
+
+        return back()->with('success', __('messages.success.email_banned'));
+    }
+
+    public function destroyBannedEmail(BannedEmail $bannedEmail)
+    {
+        $bannedEmail->delete();
+
+        return back()->with('success', __('messages.success.email_unbanned'));
+    }
+
+    // To-Do
+    public function updateTodo(Request $request, TodoItem $todo)
+    {
+        $todo->update($request->validate(['title' => 'required', 'description' => 'nullable|string', 'status' => 'nullable|string', 'due_date' => 'nullable|date',
+            'admin' => 'nullable|string|exists:admins,username']));
+
+        return back()->with('success', __('messages.success.todo_updated'));
+    }
+
+    public function destroyTodo(TodoItem $todo)
+    {
+        $todo->delete();
+
+        return back()->with('success', __('messages.success.todo_deleted'));
+    }
+
+    // Billable Items
+    public function storeBillableItem(Request $request)
+    {
+        BillableItem::create($request->validate(['client_id' => 'required|exists:clients,id', 'description' => 'required', 'amount' => 'required|numeric', 'due_date' => 'nullable|date']));
+
+        return back()->with('success', __('messages.success.billable_item_created'));
+    }
+
+    public function destroyBillableItem(BillableItem $item)
+    {
+        $item->delete();
+
+        return back()->with('success', __('messages.success.billable_item_deleted'));
+    }
+
+    // Domain Pricing
+    public function updateTld(Request $request, DomainPricing $domainPricing)
+    {
+        $v = $request->validate([
+            'extension' => 'required|string|unique:domain_pricing,extension,'.$domainPricing->id,
+            'register_price' => 'nullable|numeric|min:0',
+            'transfer_price' => 'nullable|numeric|min:0',
+            'renew_price' => 'nullable|numeric|min:0',
+            'restore_price' => 'nullable|numeric|min:0',
+            // Per year; empty = not offered at order, 0 = free.
+            'privacy_price' => 'nullable|numeric|min:0',
+            'category' => 'nullable|in:generic,local,country,new',
+            'is_popular' => 'boolean',
+            'grace_period' => 'nullable|integer|min:0',
+            // Days in redemption after the grace period; domain sync and the
+            // renewal reminders count them, and no form set them.
+            'redemption_grace_period' => 'nullable|integer|min:0',
+            'min_years' => 'nullable|integer|min:1',
+            'max_years' => 'nullable|integer|min:1',
+            'auto_registrar' => 'nullable|string',
+            'sort_order' => 'nullable|integer',
+            'enabled' => 'boolean',
+        ]);
+        $v['enabled'] = $request->boolean('enabled');
+        $v['is_popular'] = $request->boolean('is_popular');
+        $domainPricing->update($v);
+
+        return back()->with('success', __('messages.success.tld_updated'));
+    }
+
+    public function destroyTld(DomainPricing $domainPricing)
+    {
+        $domainPricing->delete();
+
+        return back()->with('success', __('messages.success.tld_deleted'));
+    }
+
+    // Gateway/Registrar settings
+
+    /**
+     * How many settings one module may be handed at once. No module declares
+     * anything close to this, so the cap only ever stops a tampered form from
+     * filling the table with rows.
+     */
+    private const SETTINGS_MAX_KEYS = ModuleSettings::MAX_KEYS;
+
+    public function updateGatewaySettings(Request $request, string $gateway)
+    {
+        // Only an installed gateway can be configured. The screen is built from
+        // the registry alone, so a name that resolves to no module did not come
+        // from the form, and writing it would leave settings for a gateway that
+        // can never be displayed or used again.
+        $module = app(ModuleRegistry::class)->getGatewayModule($gateway);
+        if (! $module) {
+            abort(404);
+        }
+
+        $settings = $this->sanitiseModuleSettings(
+            $this->readPostedSettings($request),
+            $this->secretFieldNames($module->getConfigFields())
+        );
+
+        // An unticked checkbox posts nothing, so it has to be written as off
+        // rather than left as it was.
+        $settings['active'] = $request->boolean('active') ? '1' : '0';
+
+        foreach ($settings as $key => $value) {
+            GatewaySettings::updateOrCreate(
+                ['gateway' => $gateway, 'setting' => $key],
+                ['value' => $value]
+            );
+        }
+
+        return back()->with('success', __('admin.messages.gateway_updated'));
+    }
+
+    /**
+     * The posted settings bag, from either the individual inputs or the
+     * raw-JSON textarea the screens offer when a module declares no fields.
+     */
+    private function readPostedSettings(Request $request): array
+    {
+        // Nothing checked the shape of any of this before: a value could be an
+        // array handed to a string column, or a megabyte long.
+        $request->validate([
+            'settings' => ['sometimes', 'array', 'max:'.self::SETTINGS_MAX_KEYS],
+            'settings.*' => ['nullable', 'string', 'max:8192'],
+            'settings_json' => ['nullable', 'string', 'max:65535'],
+        ]);
+
+        $settings = $request->input('settings', []);
+        if (! is_array($settings)) {
+            $settings = [];
+        }
+
+        $json = $request->input('settings_json');
+        if ($json && empty($settings)) {
+            $decoded = json_decode($json, true);
+            if (is_array($decoded)) {
+                // The textarea bypasses the rules above, so it gets the same
+                // ceiling here; anything past it is a tampered request.
+                $settings = array_slice($decoded, 0, self::SETTINGS_MAX_KEYS, true);
+            }
+        }
+
+        return $settings;
+    }
+
+    /** The names a module marks as secret, so a blank one can mean "keep". */
+    private function secretFieldNames(array $configFields): array
+    {
+        return ModuleSettings::secretFieldNames($configFields);
+    }
+
+    /** See ModuleSettings::sanitise - the screens and the API share the rules. */
+    private function sanitiseModuleSettings(array $settings, array $secretFields): array
+    {
+        return ModuleSettings::sanitise($settings, $secretFields);
+    }
+
+    public function updateRegistrarSettings(Request $request, string $registrar)
+    {
+        // Mirrors updateGatewaySettings: individual settings[key] inputs, with
+        // an optional raw-JSON textarea as fallback. This method used to be an
+        // empty stub that reported success without persisting anything.
+        //
+        // Unlike gateways, a missing module is NOT refused here: registrars()
+        // lists the stored registrar names alongside the installed ones, so a
+        // registrar whose module is absent is still on the screen and must stay
+        // editable. Without a module there are no declared fields, so the screen
+        // shows the JSON textarea and no secret inputs.
+        $module = app(ModuleRegistry::class)->getRegistrarModule($registrar);
+
+        $settings = $this->sanitiseModuleSettings(
+            $this->readPostedSettings($request),
+            $this->secretFieldNames($module?->getConfigFields() ?? [])
+        );
+
+        // An unticked checkbox posts nothing, so it has to be written as off
+        // rather than left as it was.
+        $settings['visible'] = $request->boolean('visible') ? '1' : '0';
+
+        foreach ($settings as $key => $value) {
+            RegistrarSettings::updateOrCreate(
+                ['registrar' => $registrar, 'setting' => $key],
+                ['value' => $value]
+            );
+        }
+
+        return back()->with('success', __('messages.success.registrar_updated'));
+    }
+
+    /**
+     * Run the registrar's own connection test (only modules that offer one).
+     */
+    public function testRegistrar(Request $request, string $registrar)
+    {
+        $module = app(ModuleRegistry::class)->getRegistrarModule($registrar);
+
+        if (! $module || ! method_exists($module, 'testConnection')) {
+            return back()->with('error', __('admin.registrars.test_unavailable'));
+        }
+
+        $result = $module->testConnection();
+
+        return back()->with($result['success'] ? 'success' : 'error', $result['message']);
+    }
+
+    /**
+     * Pull the registrar's domain prices into the panel's pricing (only
+     * modules that offer it, e.g. HRD).
+     */
+    public function syncRegistrarPrices(Request $request, string $registrar)
+    {
+        $module = app(ModuleRegistry::class)->getRegistrarModule($registrar);
+
+        if (! $module || ! method_exists($module, 'syncPrices')) {
+            return back()->with('error', __('admin.registrars.sync_unavailable'));
+        }
+
+        $result = $module->syncPrices();
+
+        if (empty($result['success'])) {
+            return back()->with('error', __('admin.registrars.sync_failed', ['message' => $result['message'] ?? '']));
+        }
+
+        return back()->with('success', __('admin.registrars.sync_success', [
+            'name' => $module->getModuleName(),
+            'updated' => $result['updated'] ?? 0,
+            'unchanged' => $result['unchanged'] ?? 0,
+            'skipped' => $result['skipped'] ?? 0,
+        ]));
+    }
+
+    /**
+     * Import every TLD the registrar offers into the price list, without
+     * duplicating the extensions that are already there.
+     */
+    public function addRegistrarTlds(Request $request, string $registrar)
+    {
+        $module = app(ModuleRegistry::class)->getRegistrarModule($registrar);
+
+        if (! $module || ! method_exists($module, 'importTlds')) {
+            return back()->with('error', __('admin.registrars.add_tlds_unavailable'));
+        }
+
+        $result = $module->importTlds();
+
+        if (empty($result['success'])) {
+            return back()->with('error', __('admin.registrars.add_tlds_failed', ['message' => $result['message'] ?? '']));
+        }
+
+        return back()->with('success', __('admin.registrars.add_tlds_success', [
+            'added' => $result['added'] ?? 0,
+            'skipped' => $result['skipped'] ?? 0,
+        ]));
+    }
+
+    // ===== AUTOMATION =====
+    public function automation()
+    {
+        return view('admin.config.automation');
+    }
+
+    // ===== CLIENT GROUPS =====
+    public function clientGroups()
+    {
+        return view('admin.config.client-groups', ['groups' => ClientGroup::withCount('clients')->get()]);
+    }
+
+    public function storeClientGroup(Request $request)
+    {
+        ClientGroup::create($request->validate(['name' => 'required', 'color' => 'nullable|string|max:7', 'discount_percent' => 'nullable|numeric|min:0|max:100', 'suspend_exempt' => 'sometimes|boolean', 'terminate_exempt' => 'sometimes|boolean']));
+
+        return back()->with('success', __('admin.messages.client_group_created'));
+    }
+
+    public function updateClientGroup(Request $request, ClientGroup $group)
+    {
+        $group->update($request->validate(['name' => 'required', 'color' => 'nullable|string|max:7', 'discount_percent' => 'nullable|numeric|min:0|max:100', 'suspend_exempt' => 'sometimes|boolean', 'terminate_exempt' => 'sometimes|boolean']));
+
+        return back()->with('success', __('admin.messages.client_group_updated'));
+    }
+
+    public function destroyClientGroup(ClientGroup $group)
+    {
+        $group->delete();
+
+        return back()->with('success', __('admin.messages.client_group_deleted'));
+    }
+
+    // ===== API DOCS =====
+
+    /**
+     * The endpoint tables are read from the live route table, not written by
+     * hand. The hand-written version documented 26 endpoints that did not
+     * exist and left 91 real ones out; a list that is generated cannot drift,
+     * and ApiDocsTest holds the rendered page to exactly the routed set.
+     */
+    private const API_DOC_SECTIONS = [
+        SystemApiController::class => 'system',
+        ClientApiController::class => 'clients',
+        InvoiceApiController::class => 'invoices',
+        OrderApiController::class => 'orders',
+        TicketApiController::class => 'tickets',
+        DomainApiController::class => 'domains',
+        ServiceApiController::class => 'services',
+    ];
+
+    public function apiDocs()
+    {
+        $params = config('api_docs', []);
+        $sections = [];
+
+        foreach (app('router')->getRoutes() as $route) {
+            if (! str_starts_with($route->uri(), 'api/v1/')) {
+                continue;
+            }
+            [$controller, $method] = [$route->getControllerClass(), $route->getActionMethod()];
+            $section = self::API_DOC_SECTIONS[$controller] ?? 'system';
+            $slug = basename($route->uri());
+            $descKey = 'admin.api_docs.desc_'.$slug;
+
+            $sections[$section][$slug] = [
+                'method' => in_array('POST', $route->methods(), true) ? 'POST' : 'GET',
+                // A curated description where one was written; the method name
+                // spelled out otherwise - true but plain beats absent.
+                'desc' => Lang::has($descKey)
+                    ? __($descKey)
+                    : ucfirst(strtolower(preg_replace('/(?<!^)[A-Z]/', ' $0', $method))),
+                'params' => ApiReference::hint($params[$slug] ?? []),
+            ];
+        }
+
+        $sections = array_replace(array_fill_keys(array_values(self::API_DOC_SECTIONS), []), $sections);
+        foreach ($sections as &$rows) {
+            ksort($rows);
+        }
+
+        return view('admin.api-docs', ['sections' => $sections]);
+    }
+
+    // ===== SSL MODULES =====
+    public function sslModules()
+    {
+        $registry = app(ModuleRegistry::class);
+        $modules = [];
+        $settings = [];
+
+        foreach ($registry->getSslModules() as $name) {
+            $module = $registry->getSslModule($name);
+            if ($module) {
+                $modules[$name] = $module;
+                $settings[$name] = SslModuleSettings::getForModule($name);
+            }
+        }
+
+        return view('admin.config.ssl-modules', compact('modules', 'settings'));
+    }
+
+    /**
+     * The SSL settings wrote whatever arrived: an array into a text column, and
+     * a blank password over the stored one - while the page printed the stored
+     * API password into its own source for the form to send back. Same rules
+     * as the gateway and registrar screens now: the password is never rendered
+     * and a blank one means "keep".
+     */
+    public function updateSslModuleSettings(Request $request, string $module)
+    {
+        $sslModule = app(ModuleRegistry::class)->getSslModule($module);
+        if (! $sslModule) {
+            abort(404);
+        }
+
+        $settings = $this->sanitiseModuleSettings(
+            $this->readPostedSettings($request),
+            $this->secretFieldNames($sslModule->getConfigFields())
+        );
+
+        foreach ($settings as $key => $value) {
+            SslModuleSettings::setSetting($module, $key, $value);
+        }
+
+        return back()->with('success', __('messages.success.ssl_module_updated'));
+    }
+
+    public function testSslConnection(string $module)
+    {
+        $registry = app(ModuleRegistry::class);
+        $sslModule = $registry->getSslModule($module);
+
+        if (! $sslModule) {
+            return back()->with('error', __('messages.error.ssl_module_not_found'));
+        }
+
+        $success = $sslModule->testConnection();
+
+        return back()->with(
+            $success ? 'success' : 'error',
+            $success ? 'Connection successful!' : 'Connection failed. Please check your credentials.'
+        );
+    }
+
+    // ===== CONFIG OPTIONS =====
+
+    public function configOptions()
+    {
+        $groups = ConfigOptionGroup::with(['options.subs.pricing', 'productLinks'])->get();
+        $products = Product::orderBy('name')->get(['id', 'name']);
+
+        return view('admin.config.config-options', compact('groups', 'products'));
+    }
+
+    /** Which products offer this option group. */
+    public function linkConfigOptionGroup(Request $request, int $id)
+    {
+        $group = ConfigOptionGroup::findOrFail($id);
+        $v = $request->validate([
+            'product_ids' => 'nullable|array',
+            'product_ids.*' => 'integer|exists:products,id',
+        ]);
+
+        ConfigOptionLink::where('group_id', $group->id)->delete();
+        foreach ($v['product_ids'] ?? [] as $productId) {
+            ConfigOptionLink::create(['group_id' => $group->id, 'product_id' => $productId]);
+        }
+
+        return back()->with('success', __('admin.messages.config_option_group_linked'));
+    }
+
+    public function storeConfigOptionGroup(Request $request)
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+        ]);
+        ConfigOptionGroup::create($validated);
+
+        return back()->with('success', __('admin.messages.config_option_group_created'));
+    }
+
+    public function updateConfigOptionGroup(Request $request, $id)
+    {
+        $group = ConfigOptionGroup::findOrFail($id);
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+        ]);
+        $group->update($validated);
+
+        return back()->with('success', __('admin.messages.config_option_group_updated'));
+    }
+
+    public function deleteConfigOptionGroup($id)
+    {
+        ConfigOptionGroup::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.config_option_group_deleted'));
+    }
+
+    public function storeConfigOption(Request $request)
+    {
+        $validated = $request->validate([
+            'group_id' => 'required|exists:config_option_groups,id',
+            'option_name' => 'required|string|max:255',
+            'option_type' => 'required|in:dropdown,radio,checkbox,quantity,text',
+            'sort_order' => 'nullable|integer',
+        ]);
+        ConfigOption::create($validated);
+
+        return back()->with('success', __('admin.messages.config_option_created'));
+    }
+
+    public function deleteConfigOption($id)
+    {
+        ConfigOption::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.config_option_deleted'));
+    }
+
+    public function storeConfigOptionSub(Request $request)
+    {
+        $validated = $request->validate([
+            'config_id' => 'required|exists:config_options,id',
+            'option_name' => 'required|string|max:255',
+            'sort_order' => 'nullable|integer',
+            'monthly' => 'nullable|numeric|min:0',
+            'quarterly' => 'nullable|numeric|min:0',
+            'semiannually' => 'nullable|numeric|min:0',
+            'annually' => 'nullable|numeric|min:0',
+            'biennially' => 'nullable|numeric|min:0',
+            'triennially' => 'nullable|numeric|min:0',
+        ]);
+
+        $sub = ConfigOptionSub::create([
+            'config_id' => $validated['config_id'],
+            'option_name' => $validated['option_name'],
+            'sort_order' => $validated['sort_order'] ?? 0,
+        ]);
+
+        // Prices live in the shared pricing table, the same shape products use.
+        // Without this the customer could pick an option and be charged nothing.
+        $currency = Currency::getDefault();
+        Pricing::updateOrCreate(
+            ['type' => ConfigOptionSub::PRICING_TYPE, 'rel_id' => $sub->id, 'currency_id' => $currency?->id ?? 1],
+            [
+                'monthly' => (float) ($request->input('monthly') ?? 0),
+                'quarterly' => (float) ($request->input('quarterly') ?? 0),
+                'semiannually' => (float) ($request->input('semiannually') ?? 0),
+                'annually' => (float) ($request->input('annually') ?? 0),
+                'biennially' => (float) ($request->input('biennially') ?? 0),
+                'triennially' => (float) ($request->input('triennially') ?? 0),
+            ]
+        );
+
+        return back()->with('success', __('admin.messages.sub_option_created'));
+    }
+
+    public function deleteConfigOptionSub($id)
+    {
+        ConfigOptionSub::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.sub_option_deleted'));
+    }
+
+    // ===== TICKET ESCALATION =====
+
+    public function ticketEscalation()
+    {
+        $rules = TicketEscalation::all();
+        $departments = TicketDepartment::all();
+        $admins = Admin::where('is_disabled', false)->get();
+        $statuses = TicketStatus::orderBy('sort_order')->pluck('title')->all();
+        $priorities = self::TICKET_PRIORITIES;
+
+        return view('admin.config.ticket-escalation', compact('rules', 'departments', 'admins', 'statuses', 'priorities'));
+    }
+
+    /**
+     * The priorities tickets are actually opened with. The escalation form used
+     * to offer an "urgent" option that exists nowhere else: a rule set to it
+     * wrote a priority no other screen can produce and the dashboard's
+     * high-priority counter stopped seeing the ticket.
+     */
+    private const TICKET_PRIORITIES = ['low', 'medium', 'high'];
+
+    /**
+     * Validate a rule and normalise its scope columns.
+     *
+     * The scope (departments / statuses / priorities) is cast to array on the
+     * model, so it has to arrive as an array. It used to be validated as
+     * "json", which no HTML form can send and which the array cast would
+     * double-encode into a string the escalation service silently ignores —
+     * every rule then applied to every ticket in the system.
+     */
+    private function validateEscalationRule(Request $request): array
+    {
+        $validated = $request->validate([
+            'name' => 'required|string|max:255',
+            'departments' => 'nullable|array',
+            'departments.*' => 'exists:ticket_departments,id',
+            'statuses' => 'nullable|array',
+            'statuses.*' => 'string|max:255',
+            'priorities' => 'nullable|array',
+            'priorities.*' => 'string|max:255',
+            'time_elapsed' => 'required|integer|min:1',
+            'new_department_id' => 'nullable|exists:ticket_departments,id',
+            'new_priority' => ['nullable', Rule::in(self::TICKET_PRIORITIES)],
+            'flag_to' => 'nullable|exists:admins,id',
+            'notify' => 'boolean',
+            'add_reply' => 'nullable|string',
+        ]);
+
+        $validated['notify'] = $request->boolean('notify');
+
+        // An empty multi-select submits nothing; store an empty scope rather
+        // than leaving the previous one in place on update.
+        foreach (['departments', 'statuses', 'priorities'] as $scope) {
+            $validated[$scope] = array_values(array_map('strval', $validated[$scope] ?? []));
+        }
+
+        return $validated;
+    }
+
+    public function storeTicketEscalation(Request $request)
+    {
+        TicketEscalation::create($this->validateEscalationRule($request));
+
+        return back()->with('success', __('admin.messages.escalation_rule_created'));
+    }
+
+    public function updateTicketEscalation(Request $request, $id)
+    {
+        $rule = TicketEscalation::findOrFail($id);
+        $rule->update($this->validateEscalationRule($request));
+
+        return back()->with('success', __('admin.messages.escalation_rule_updated'));
+    }
+
+    public function deleteTicketEscalation($id)
+    {
+        TicketEscalation::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.escalation_rule_deleted'));
+    }
+
+    // ===== NOTIFICATION CHANNELS (Phase 7) =====
+
+    public function notifications()
+    {
+        $providers = NotificationProvider::with('rules')->get();
+
+        // Every dispatchable event, so the operator can subscribe to the ones
+        // that matter most — a failed backup, provisioning that gave up.
+        $eventTypes = NotificationService::eventTypes();
+
+        return view('admin.config.notifications', compact('providers', 'eventTypes'));
+    }
+
+    public function storeNotificationProvider(Request $request)
+    {
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'type' => 'required|in:email,slack,webhook,telegram',
+            'settings' => 'nullable|array',
+            'active' => 'boolean',
+        ]);
+        $v['active'] = $request->boolean('active');
+        $v['settings'] = $request->input('settings', []);
+        NotificationProvider::create($v);
+
+        return back()->with('success', __('admin.messages.notification_provider_created'));
+    }
+
+    public function updateNotificationProvider(Request $request, $id)
+    {
+        $provider = NotificationProvider::findOrFail($id);
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'type' => 'required|in:email,slack,webhook,telegram',
+            'settings' => 'nullable|array',
+            'active' => 'boolean',
+        ]);
+        $v['active'] = $request->boolean('active');
+        $v['settings'] = $this->keepSecrets($request->input('settings', []), $provider->settings ?? []);
+        $provider->update($v);
+
+        return back()->with('success', __('admin.messages.notification_provider_updated'));
+    }
+
+    /**
+     * Carry stored secrets through an edit that left their field blank.
+     *
+     * The edit form cannot pre-fill a bot token - printing it into the page
+     * would hand it to anyone who can view source, or read a screen over a
+     * shoulder. So the field opens empty, and an operator who only wanted to
+     * rename the provider would otherwise save that emptiness over a working
+     * token and silence every alert without being told.
+     *
+     * @param  array<string, mixed>  $incoming
+     * @param  array<string, mixed>  $stored
+     * @return array<string, mixed>
+     */
+    private function keepSecrets(array $incoming, array $stored): array
+    {
+        foreach (['bot_token', 'secret'] as $key) {
+            if (trim((string) ($incoming[$key] ?? '')) === '' && ! empty($stored[$key])) {
+                $incoming[$key] = $stored[$key];
+            }
+        }
+
+        return $incoming;
+    }
+
+    /**
+     * Send a test message through a provider.
+     *
+     * A channel that is configured but never proved is worse than no channel:
+     * the operator believes they will be told about the next order. This runs
+     * the exact path a real alert takes and reports what Telegram said back.
+     */
+    public function testNotificationProvider($id)
+    {
+        $provider = NotificationProvider::findOrFail($id);
+
+        if ($provider->type !== 'telegram') {
+            return back()->with('error', __('admin.notifications.test_unsupported'));
+        }
+
+        $settings = $provider->settings ?? [];
+        $result = app(NotificationService::class)->pushToTelegram(
+            trim((string) ($settings['bot_token'] ?? '')),
+            trim((string) ($settings['chat_id'] ?? '')),
+            '<b>'.e(config('app.name')).'</b>'."\n".e(__('admin.notifications.test_message'))
+        );
+
+        return $result['ok']
+            ? back()->with('success', __('admin.notifications.test_sent'))
+            : back()->with('error', __('admin.notifications.test_failed', ['error' => $result['error']]));
+    }
+
+    public function destroyNotificationProvider($id)
+    {
+        $provider = NotificationProvider::findOrFail($id);
+        $provider->rules()->delete();
+        $provider->delete();
+
+        return back()->with('success', __('admin.messages.notification_provider_deleted'));
+    }
+
+    public function storeNotificationRule(Request $request)
+    {
+        $v = $this->validatedNotificationRule($request);
+        if ($v instanceof RedirectResponse) {
+            return $v;
+        }
+
+        NotificationRule::create($v);
+
+        return back()->with('success', __('admin.messages.notification_rule_created'));
+    }
+
+    /**
+     * Change a rule's event, channel, recipient or switch. Rules could only be
+     * added and deleted, so a typo in the recipient or a move to another
+     * channel meant deleting the rule and building it again.
+     */
+    public function updateNotificationRule(Request $request, $id)
+    {
+        $rule = NotificationRule::findOrFail($id);
+        $v = $this->validatedNotificationRule($request);
+        if ($v instanceof RedirectResponse) {
+            return $v;
+        }
+
+        $rule->update($v);
+
+        return back()->with('success', __('admin.messages.notification_rule_updated'));
+    }
+
+    /** @return array<string, mixed>|RedirectResponse */
+    private function validatedNotificationRule(Request $request)
+    {
+        $v = $request->validate([
+            'event' => 'required|string|max:255',
+            'provider_id' => 'required|exists:notification_providers,id',
+            'conditions' => 'nullable|array',
+            'conditions.recipient_email' => 'nullable|email',
+            'active' => 'boolean',
+        ]);
+
+        // An email rule with nowhere to send is accepted, listed as active and
+        // then sends nothing: the dispatcher looks for a recipient, does not
+        // find one and returns. The operator sets up alerts for failed backups,
+        // sees the rule sitting in the list, and never hears a thing.
+        $provider = NotificationProvider::find($v['provider_id']);
+
+        if ($provider?->type === 'email' && trim((string) $request->input('conditions.recipient_email')) === '') {
+            return back()->withInput()->withErrors([
+                'conditions.recipient_email' => __('admin.messages.notification_rule_needs_recipient'),
+            ]);
+        }
+
+        $v['active'] = $request->boolean('active');
+        $v['conditions'] = $request->input('conditions', []);
+
+        return $v;
+    }
+
+    public function destroyNotificationRule($id)
+    {
+        NotificationRule::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.notification_rule_deleted'));
+    }
+
+    // ===== TICKET SPAM FILTER (Phase 12) =====
+
+    public function ticketSpam()
+    {
+        $emailFilters = TicketSpamFilter::where('type', 'email')->pluck('content')->implode("\n");
+        $keywordFilters = TicketSpamFilter::where('type', 'keyword')->pluck('content')->implode("\n");
+
+        return view('admin.config.ticket-spam', [
+            'bannedEmails' => $emailFilters,
+            'bannedKeywords' => $keywordFilters,
+            'maxPerHour' => Setting::get('TicketSpamMaxPerHour', 5),
+            'filters' => TicketSpamFilter::orderBy('id', 'desc')->get(),
+        ]);
+    }
+
+    public function updateTicketSpam(Request $request)
+    {
+        // Sync email patterns
+        $emails = array_filter(array_map('trim', explode("\n", $request->input('banned_emails', ''))));
+        TicketSpamFilter::where('type', 'email')->delete();
+        foreach ($emails as $pattern) {
+            if ($pattern) {
+                TicketSpamFilter::create(['type' => 'email', 'content' => $pattern]);
+            }
+        }
+
+        // Sync keyword patterns
+        $keywords = array_filter(array_map('trim', explode("\n", $request->input('banned_keywords', ''))));
+        TicketSpamFilter::where('type', 'keyword')->delete();
+        foreach ($keywords as $keyword) {
+            if ($keyword) {
+                TicketSpamFilter::create(['type' => 'keyword', 'content' => $keyword]);
+            }
+        }
+
+        Setting::set('TicketSpamMaxPerHour', $request->input('max_per_hour', 5), 'tickets');
+
+        return back()->with('success', __('admin.messages.spam_filter_updated'));
+    }
+
+    public function storeTicketSpamFilter(Request $request)
+    {
+        $v = $request->validate([
+            'type' => 'required|in:email,keyword',
+            'content' => 'required|string|max:255',
+        ]);
+        TicketSpamFilter::create($v);
+
+        return back()->with('success', __('admin.messages.spam_filter_added'));
+    }
+
+    public function destroyTicketSpamFilter($id)
+    {
+        TicketSpamFilter::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.spam_filter_removed'));
+    }
+
+    // ===== PRODUCT ADDONS (Phase 14) =====
+
+    public function addons()
+    {
+        $addons = ProductAddon::with('pricing')->orderBy('sort_order')->get();
+        $products = Product::orderBy('name')->get();
+
+        return view('admin.config.addons', compact('addons', 'products'));
+    }
+
+    public function storeAddon(Request $request)
+    {
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'sort_order' => 'nullable|integer',
+            'hidden' => 'boolean',
+            'tax' => 'boolean',
+        ]);
+        $v['hidden'] = $request->boolean('hidden');
+        $v['tax'] = $request->boolean('tax');
+        $v['sort_order'] = $v['sort_order'] ?? 0;
+
+        // Store applicable products as comma-separated IDs
+        $packages = $request->input('packages', []);
+        $v['packages'] = ! empty($packages) ? implode(',', $packages) : null;
+
+        $addon = ProductAddon::create($v);
+        $this->saveAddonPricing($addon, $request);
+
+        return back()->with('success', __('admin.messages.addon_created'));
+    }
+
+    public function updateAddon(Request $request, $id)
+    {
+        $addon = ProductAddon::findOrFail($id);
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'sort_order' => 'nullable|integer',
+            'hidden' => 'boolean',
+            'retired' => 'boolean',
+            'tax' => 'boolean',
+        ]);
+        $v['hidden'] = $request->boolean('hidden');
+        $v['retired'] = $request->boolean('retired');
+        $v['tax'] = $request->boolean('tax');
+
+        // Only the create form used to send this, so saving an edit wiped the
+        // addon's product list.
+        if ($request->has('packages')) {
+            $packages = $request->input('packages', []);
+            $v['packages'] = ! empty($packages) ? implode(',', $packages) : null;
+        }
+
+        $addon->update($v);
+        $this->saveAddonPricing($addon, $request);
+
+        return back()->with('success', __('admin.messages.addon_updated'));
+    }
+
+    /**
+     * Write the addon's per-cycle prices. An addon with no price is free, which
+     * is a valid thing to sell, so a blank field means zero rather than "leave
+     * whatever was there".
+     */
+    private function saveAddonPricing(ProductAddon $addon, Request $request): void
+    {
+        $cycles = ['monthly', 'quarterly', 'semiannually', 'annually', 'biennially', 'triennially'];
+        $prices = (array) $request->input('pricing', []);
+
+        if ($prices === []) {
+            return;
+        }
+
+        $values = [];
+        foreach ($cycles as $cycle) {
+            // 0 sells the addon free on that cycle; -1 (any negative) does
+            // not offer it there (ProductAddon::offeredOn).
+            $price = round((float) ($prices[$cycle] ?? 0), 2);
+            $values[$cycle] = $price < 0 ? -1.0 : $price;
+        }
+
+        Pricing::updateOrCreate(
+            [
+                'type' => ProductAddon::PRICING_TYPE,
+                'rel_id' => $addon->id,
+                'currency_id' => Currency::getDefault()?->id,
+            ],
+            $values
+        );
+    }
+
+    public function destroyAddon($id)
+    {
+        ProductAddon::findOrFail($id)->delete();
+
+        return back()->with('success', __('admin.messages.addon_deleted'));
+    }
+
+    // ===== PRODUCT BUNDLES (Phase 15) =====
+
+    public function bundles()
+    {
+        $bundles = ProductBundle::with(['items.product'])->orderBy('name')->get();
+        $products = Product::with('group')->orderBy('name')->get();
+
+        return view('admin.config.bundles', compact('bundles', 'products'));
+    }
+
+    public function storeBundle(Request $request)
+    {
+        $v = $request->validate([
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string',
+            'discount_type' => 'required|in:percentage,fixed',
+            'discount_value' => 'required|numeric|min:0',
+            'is_active' => 'boolean',
+            'product_ids' => 'required|array|min:2',
+            'product_ids.*' => 'exists:products,id',
+        ]);
+
+        $bundle = ProductBundle::create([
+            'name' => $v['name'],
+            'description' => $v['description'] ?? null,
+            'discount_type' => $v['discount_type'],
+            'discount_value' => $v['discount_value'],
+            'is_active' => $request->boolean('is_active'),
+        ]);
+
+        foreach ($v['product_ids'] as $productId) {
+            $bundle->items()->create([
+                'item_type' => 'product',
+                'item_id' => $productId,
+                'qty' => 1,
+            ]);
+        }
+
+        return back()->with('success', __('admin.messages.bundle_created'));
+    }
+
+    public function destroyBundle($id)
+    {
+        $bundle = ProductBundle::findOrFail($id);
+        $bundle->items()->delete();
+        $bundle->delete();
+
+        return back()->with('success', __('admin.messages.bundle_deleted'));
+    }
+}

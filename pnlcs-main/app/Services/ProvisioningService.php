@@ -1,0 +1,450 @@
+<?php
+
+namespace App\Services;
+
+use App\Contracts\ServerModuleInterface;
+use App\Enums\ServiceStatus;
+use App\Events\ServiceActivated;
+use App\Events\ServiceSuspended;
+use App\Events\ServiceTerminated;
+use App\Events\ServiceUnsuspended;
+use App\Models\ModuleQueue;
+use App\Models\Product;
+use App\Models\Service;
+use App\Services\Module\ModuleRegistry;
+use Illuminate\Support\Facades\Log;
+
+class ProvisioningService
+{
+    public function __construct(private ModuleRegistry $registry) {}
+
+    public function createAccount(Service $service, bool $queueOnFail = true): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        run_hook('PreModuleCreate', ['service' => $service]);
+
+        try {
+            $result = $module->create($service);
+
+            if ($result['success'] ?? false) {
+                $service->status = ServiceStatus::Active->value;
+                $service->registration_date = $service->registration_date ?? now();
+                $service->save();
+                $this->settleQueue($service, 'create');
+                run_hook('AfterModuleCreate', ['service' => $service, 'result' => $result]);
+                event(new ServiceActivated($service));
+            } elseif ($queueOnFail) {
+                $this->enqueueRetry($service, 'create', $result['message'] ?? 'Module create failed');
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::createAccount failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+            if ($queueOnFail) {
+                $this->enqueueRetry($service, 'create', $e->getMessage());
+            }
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function suspendAccount(Service $service, string $reason = '', bool $queueOnFail = true): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        run_hook('PreModuleSuspend', ['service' => $service, 'reason' => $reason]);
+
+        try {
+            $result = $module->suspend($service, $reason);
+
+            if ($result['success'] ?? false) {
+                $service->status = ServiceStatus::Suspended->value;
+                $service->suspension_date = now();
+                $service->suspension_reason = $reason;
+                $service->save();
+                $this->settleQueue($service, 'suspend');
+                run_hook('AfterModuleSuspend', ['service' => $service, 'reason' => $reason]);
+                event(new ServiceSuspended($service, $reason));
+            } elseif ($queueOnFail) {
+                $this->enqueueRetry($service, 'suspend', $result['message'] ?? 'Module suspend failed', ['reason' => $reason]);
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::suspendAccount failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+            if ($queueOnFail) {
+                $this->enqueueRetry($service, 'suspend', $e->getMessage(), ['reason' => $reason]);
+            }
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function unsuspendAccount(Service $service, bool $queueOnFail = true): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        run_hook('PreModuleUnsuspend', ['service' => $service]);
+
+        try {
+            $result = $module->unsuspend($service);
+
+            if ($result['success'] ?? false) {
+                $service->status = ServiceStatus::Active->value;
+                $service->suspension_date = null;
+                $service->suspension_reason = null;
+                $service->save();
+                $this->settleQueue($service, 'unsuspend');
+                run_hook('AfterModuleUnsuspend', ['service' => $service]);
+                event(new ServiceUnsuspended($service));
+            } elseif ($queueOnFail) {
+                $this->enqueueRetry($service, 'unsuspend', $result['message'] ?? 'Module unsuspend failed');
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::unsuspendAccount failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+            if ($queueOnFail) {
+                $this->enqueueRetry($service, 'unsuspend', $e->getMessage());
+            }
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function terminateAccount(Service $service, bool $queueOnFail = true): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        run_hook('PreModuleTerminate', ['service' => $service]);
+
+        // Read before the module runs: some modules mark the service
+        // terminated themselves. The admin page offers Terminate whatever the
+        // status, and several modules answer a second terminate with success
+        // (Custom, aaPanel, Proxmox "already removed"); the event then ran
+        // again and handed a stock unit back twice and mailed the customer
+        // twice. A service already ended does not end again.
+        $alreadyEnded = in_array(strtolower((string) $service->status),
+            [ServiceStatus::Terminated->value, ServiceStatus::Cancelled->value], true);
+
+        try {
+            $result = $module->terminate($service);
+
+            if ($result['success'] ?? false) {
+                $service->status = ServiceStatus::Terminated->value;
+                $service->termination_date = now();
+                $service->save();
+                $this->settleQueue($service, 'terminate');
+                run_hook('AfterModuleTerminate', ['service' => $service]);
+                if (! $alreadyEnded) {
+                    event(new ServiceTerminated($service));
+                }
+            } elseif ($queueOnFail) {
+                $this->enqueueRetry($service, 'terminate', $result['message'] ?? 'Module terminate failed');
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::terminateAccount failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+            if ($queueOnFail) {
+                $this->enqueueRetry($service, 'terminate', $e->getMessage());
+            }
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function changePassword(Service $service, string $newPassword): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        try {
+            $result = $module->changePassword($service, $newPassword);
+
+            if ($result['success'] ?? false) {
+                $service->password = $newPassword;
+                $service->save();
+                run_hook('AfterModulePassword', ['service' => $service]);
+                // The WHMCS name for the same point, so WHMCS hooks run unchanged.
+                run_hook('AfterModuleChangePassword', ['service' => $service]);
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::changePassword failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Buy the period the customer has just paid for at the service's vendor,
+     * for a module that sells something bought per period (renew()). Null when
+     * the module has no such thing to buy.
+     *
+     * A refusal goes to the retry queue: the customer has paid, and a vendor
+     * that said no for want of balance says yes once the balance is topped up.
+     * A later success does not settle an older entry, unlike the other
+     * actions: each paid period is bought once, so a period still waiting is
+     * not the same work as the one that just went through.
+     */
+    public function renewAccount(Service $service, bool $queueOnFail = true): ?array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module || ! method_exists($module, 'renew')) {
+            return null;
+        }
+
+        // A queued period for a service that has since ended is not bought.
+        if (in_array(strtolower((string) $service->status), [ServiceStatus::Terminated->value, ServiceStatus::Cancelled->value, 'fraud'], true)) {
+            return ['success' => true, 'message' => 'The service has ended; there is nothing to renew.'];
+        }
+
+        try {
+            $result = (array) $module->renew($service);
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::renewAccount failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+            $result = ['success' => false, 'message' => $e->getMessage()];
+        }
+
+        if (! ($result['success'] ?? false) && $queueOnFail) {
+            $this->enqueueRetry($service, 'renew', (string) ($result['message'] ?? 'Module renew failed'));
+        }
+
+        return $result;
+    }
+
+    public function changePackage(Service $service, Product $newProduct): array
+    {
+        $module = $this->getModuleForService($service);
+
+        if (! $module) {
+            return ['success' => false, 'message' => __('messages.error.no_server_module_configured')];
+        }
+
+        try {
+            $result = $module->changePackage($service, $newProduct->toArray());
+
+            if ($result['success'] ?? false) {
+                $service->product_id = $newProduct->id;
+                $service->save();
+                run_hook('AfterModuleChangePackage', ['service' => $service, 'newProduct' => $newProduct]);
+            }
+
+            return $result;
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::changePackage failed', [
+                'service_id' => $service->id,
+                'error' => $e->getMessage(),
+            ]);
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Queue a failed module action for automatic retry (see pnlcs:module-queue).
+     * Deduplicates on (service, action, pending) and notifies admins once.
+     */
+    /**
+     * Whether a refusal is one no amount of trying will get past.
+     *
+     * A server that did not answer may answer later. A service the panel has
+     * no account for will not grow one because the queue asks again: those
+     * refusals are about the record, not the connection, and repeating them
+     * only fills the log - four services on this installation produced the
+     * same line every half hour for a fortnight.
+     */
+    /**
+     * Whether the queue has already given up on this work for good.
+     *
+     * A failed entry whose reason cannot change - no account to act on, no
+     * module configured - is the queue's answer, and running the job again
+     * does not make it a different one. A failure that could come right is not
+     * counted here, so it keeps being retried.
+     */
+    public function hasGivenUp(Service $service, string $action): bool
+    {
+        $entry = ModuleQueue::where('service_id', $service->id)
+            ->where('action', $action)
+            ->where('status', 'failed')
+            ->latest('id')
+            ->first();
+
+        return $entry !== null && self::willNeverSucceed((string) $entry->last_error);
+    }
+
+    public static function willNeverSucceed(string $error): bool
+    {
+        foreach ([
+            'not found in service notes',
+            'no account',
+            'account does not exist',
+            'no such account',
+            'username not set',
+            'no server module configured',
+        ] as $phrase) {
+            if (stripos($error, $phrase) !== false) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The action went through, so whatever the queue still holds for it is
+     * done - including an entry it had given up on. hasGivenUp() reads failed
+     * entries and nothing ever cleared them: once an operator had put things
+     * right and suspended by hand, auto-suspend still skipped that service
+     * the next time it fell behind, on the strength of a refusal that no
+     * longer applied.
+     */
+    private function settleQueue(Service $service, string $action): void
+    {
+        try {
+            ModuleQueue::where('service_id', $service->id)
+                ->where('action', $action)
+                ->whereIn('status', ['pending', 'failed'])
+                ->update(['status' => 'completed', 'completed_at' => now(), 'last_error' => null]);
+        } catch (\Throwable $e) {
+            Log::warning('ProvisioningService: could not settle the module queue', [
+                'service_id' => $service->id, 'action' => $action, 'error' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    private function enqueueRetry(Service $service, string $action, string $error, array $payload = []): void
+    {
+        run_hook('ModuleActionFailed', ['service' => $service, 'action' => $action, 'error' => $error]);
+
+        try {
+            // Anything not finished counts, including an entry the queue has
+            // already given up on. Looking only at pending ones meant a nightly
+            // job that keeps failing wrote a fresh row - and raised the same
+            // alert - every single night, for as long as it stayed broken.
+            $existing = ModuleQueue::where('service_id', $service->id)
+                ->where('action', $action)
+                ->whereIn('status', ['pending', 'failed'])
+                ->first();
+
+            $permanent = self::willNeverSucceed($error);
+
+            if ($existing) {
+                $reopened = ! $permanent && $existing->status === 'failed';
+
+                $existing->update([
+                    'last_error' => $error,
+                    // Given up on before, but the work is still wanted: let it
+                    // try again rather than leaving the row dead. A server that
+                    // was unreachable last night may answer tonight. Something
+                    // that cannot come right is left alone.
+                    'status' => $permanent ? 'failed' : 'pending',
+                    'attempts' => $reopened ? 0 : $existing->attempts,
+                    'next_attempt_at' => $reopened ? now()->addMinutes(5) : $existing->next_attempt_at,
+                    'payload' => $payload ?: $existing->payload,
+                ]);
+
+                return;
+            }
+
+            ModuleQueue::create([
+                'service_id' => $service->id,
+                'action' => $action,
+                'status' => $permanent ? 'failed' : 'pending',
+                'attempts' => 0,
+                'next_attempt_at' => $permanent ? null : now()->addMinutes(5),
+                'last_error' => $error,
+                'payload' => $payload ?: null,
+            ]);
+
+            // r117-alert: say which of the two happened. A refusal that cannot
+            // change is recorded as failed and never picked up again, so the
+            // alert written for the retry case - "queued for automatic retry" -
+            // is the only word the operator ever gets, and it tells them to
+            // wait for something that is not coming.
+            $alert = $permanent
+                ? [
+                    'event' => 'module.failed_permanently',
+                    'subject' => 'Module action failed — will not be retried',
+                    'message' => "Module '{$action}' failed for service #{$service->id} ({$service->domain}): {$error}. This cannot be retried and needs attention.",
+                ]
+                : [
+                    'event' => 'module.failed',
+                    'subject' => 'Module action failed — queued for retry',
+                    'message' => "Module '{$action}' failed for service #{$service->id} ({$service->domain}): {$error}. Queued for automatic retry.",
+                ];
+
+            app(NotificationService::class)->dispatch($alert['event'], [
+                'event_type' => $alert['event'],
+                'subject' => $alert['subject'],
+                'message' => $alert['message'],
+                'service_id' => $service->id,
+                'action' => $action,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('ProvisioningService::enqueueRetry failed', ['service_id' => $service->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Public resolver — which server module would handle this service.
+     */
+    public function resolveModule(Service $service): ?ServerModuleInterface
+    {
+        return $this->getModuleForService($service);
+    }
+
+    private function getModuleForService(Service $service): ?ServerModuleInterface
+    {
+        $service->loadMissing('product', 'server');
+
+        $serverType = $service->server?->type ?? $service->product?->server_type ?? null;
+
+        if (! $serverType) {
+            return null;
+        }
+
+        return $this->registry->getServerModule($serverType);
+    }
+}

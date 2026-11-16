@@ -1,0 +1,372 @@
+# Changelog
+
+## v5.13.10
+
+###### Bugfixes
+- Fixed: Registration failing for `.scot` and related TLDs when 'Domain Name Variants' is empty.
+- Fixed: Contact details page showing no contacts in sandbox mode, causing a fatal error on save.
+- Fixed: `DomainGetWhoisInfo` and `DomainUpdateWhoisInfo` API calls returning HTTP 500 in sandbox mode.
+
+## v5.13.9
+
+###### Bugfixes
+- Fixed: Locale value not being preserved when updating WHOIS contact details.
+- Fixed: Company or Individual ID fields appearing and being required for TLDs that do not require identification details.
+- Fixed: Balance widget displaying a hardcoded EUR symbol instead of the reseller account currency.
+- Fixed: Deprecated DomainSync cronjob failing when executed.
+- Fixed: Reauthentication failing after Openprovider credentials are changed due to stale authentication cache.
+
+## v5.13.8
+
+###### Features and improvements
+- Added support for managing DNS records directly from the WHMCS admin domain management page.
+
+###### Bugfixes
+- Fixed: DNS zone duplication when managing records for domains using Sectigo DNS.
+- Fixed: DNS Management tab disappearing when navigating to the DNSSEC management page for domains using Sectigo DNS.
+- Fixed: Unnecessary additional domain fields appearing in the WHMCS domain registration form.
+
+## v5.13.7
+
+###### Bugfixes
+- Fixed: DNS Management save and delete operations failing in WHMCS 9.0.6 due to CSRF token conflicts.
+- Fixed: Sandbox API connection failures caused by the deprecated API endpoint.
+
+## v5.13.6
+
+###### Features and improvements
+- Added new domain additional data fields for `.it` registrant declaration confirmation for domain registration and transfer.
+- Added the `itDeclarationFlowEnabled` configuration option to control the `.it` declaration flow.
+- Upgraded `openprovider/rest-client-php` library to `v2.2.3-beta`.
+
+## v5.13.5
+
+###### Bugfixes
+- Fixed: Pending registrar and addon module migrations not executing correctly during activation and updates.
+
+## v5.13.4
+
+###### Features and improvements
+- Removed the reseller hash ID from the Cross-Sell dashboard widget's link and simplified the link parameters.
+
+## v5.13.3
+
+###### Bugfixes
+- Fixed: DNS Management tab redirecting non-Openprovider domains to Openprovider's custom DNS Management interface.
+
+## v5.13.2
+
+###### Features and improvements
+- Added additional fields improvements for .sg.
+
+###### Bugfixes
+- Fix: WHMCS Admin Home failing when Openprovider registrar module is deactivated.
+- Fix: Duplicate `<?php` tag appended to `additionalfields.php` during install and update.
+
+## v5.13.1
+
+###### Features and improvements
+- Improved performance by adding global caching for TLD metadata to reduce repeated API calls.
+
+## v5.13.0
+
+###### Features and improvements
+- Added new contact additional data fields for `.ru` and `.рф` (xn--p1ai) for domain registration and transfer.
+- Upgraded `openprovider/rest-client-php` library to v2.2.1-beta.
+- Updated dependencies (incl. `guzzlehttp/guzzle`, `guzzlehttp/promises`, `guzzlehttp/psr7`, `phpunit/phpunit`, `webmozart/assert`, and Symfony polyfills).
+
+## v5.12.1
+
+###### Features and improvements
+- Added German language support for registrar module.
+
+###### Bugfixes
+- Fixed: TypeError on DomainTransferSync cron due to PHPStan namespace collision with WHMCS's bundled vendor.
+
+## v5.12.0
+
+###### Features and improvements
+- Added .IN nexus declaration fields for all .IN TLD and SLD extensions, including IDN variants, with checkout validation for non-Indian registrants.
+- Upgraded openprovider/rest-client-php library to v2.2.0-beta.
+- Improved checkout contact creation support for TLDs requiring customer additional data, including more supported TLD extensions.
+
+## v5.11.2
+
+###### Features and improvements
+- Upgraded openprovider/rest-client-php library to v2.1.0-beta.
+- Updated dependencies (incl. guzzlehttp/promises).
+- Added support for latest Openprovider API updates.
+
+## v5.11.1
+
+###### Bugfixes
+- Fixed: TXT record values not displaying in DNS Management after page reload.
+
+## v5.11.0
+
+###### Features and improvements
+- Improved client area DNS management performance across all key operations, including faster save flows and page loading.
+- Removed multiple redundant API calls across client area pages, improving overall client area performance.
+
+## v5.10.0
+
+###### Features and improvements
+- Added a promotional admin dashboard widget to highlight Openprovider's Email and Premium DNS products.
+- Improved registration flow by displaying the IDN Script field only for actual IDN domains during registration.
+- Set the correct locale when creating and updating handles.
+  
+## v5.9.4
+
+###### Features and improvements
+- Added support for deleting individual DNS records.
+- Introduced a dedicated DNSSEC management implementation and removed the dependency between DNS Management and DNSSEC Management client area buttons.
+
+## v5.9.3
+
+###### Bugfixes
+- Fixed: Duplicate handle creation when modifying contacts in the Admin Area.
+  
+## v5.9.2
+
+###### Features and improvements
+- Optimized Admin Domain Contacts page by fetching contact details using parallel API calls.
+- Added database caching for TLD metadata to reduce repeated API requests.
+  
+## v5.9.1
+
+###### Features and improvements
+- Added support for WHMCS 9.0.0.
+- Added a progress bar to the Openprovider install and update scripts.
+- Added a configuration option to open the new DNS Manager in a new browser tab (useNewDnsManagerFeatureInNewWindow in advanced-module-configurations.php).
+- Removed the unnecessary Company Registration Number additional field for .it domains.
+- Added support for overriding dnssec.tpl in custom WHMCS themes.
+
+###### Bugfixes
+- Fixed: DomainLockingEnabledController being triggered on non-domain pages.
+- Fixed: Sync cron failures due to outdated library.
+- Fixed: Update script confirmation not displaying when executed via curl or bash.
+- Fixed: Registrar lock status not displaying correctly for non-English languages.
+- Fixed: Domain creation issues in sandbox environments.
+- Fixed: Balance widget warning styling for specific balance ranges (e.g. 1,000–2,000 and 10,000–10,200).
+
+## v5.9.0
+
+###### Features and improvements
+- [Experimental] Bash scripts for one step installation and upgrade of the module. → Run the command via SSH or Terminal as hosting user. 
+- Per-domain sync button in the WHMCS Admin area.
+- Open the new DNS manager in a new tab ("useNewDnsManagerFeature" => true in advanced-module-configurations.php)
+- Module version and update check button in Openprovider widget.
+- Single function for balance widget and shows available balance.
+- Updated "jquery" (to address: CVE-2019-11358), "phpunit", "phpdocumentor", and "guzzlehttp" packages.
+- Renewal date sync to WHMCS with WHMCS native domain sync. This avoids mismatched dates caused by renewal offsets.
+- Progress indicator for DNSSEC activation and deactivation in WHMCS client area.
+- Support for .fi, .ae, .eu and .es (.es ANNEX III registrant Acceptance) additional fields.
+- Disabled domain locking warning in the client area for TLDs that do not support locking, for example .nl, .eu, etc.
+- Improved loading time by switching LocalAPI call to the $CONFIG global.
+- Nameserver validation for registrations, transfers and nameserver changes from WHMCS.
+- Updated rest-client-php library.
+- Updated readme files (main and addon module) and WHMCS documentation links in the docs.
+- Module now creates a queue item with domain details for API warnings.  
+
+###### Bugfixes
+- Fixed: Random admin logouts.
+- Fixed: To-Do list item creation for warning code 250.
+- Fixed: Long error logging entry in Activity Log when module log is empty (WHMCS Addon Module).
+- Fixed: TLD Import & Pricing Sync with Sandbox credentials.
+- Fixed: ShoppingCartController - Warning in error log when foreach() is passed a null argument.
+- Fixed: Domain details missing in to-do list items created.
+- Fixed: [Addon] To-Do list items getting created (The autorenewal for domain.tld has been enabled. Reschedule the transfer with Openprovider.) for domains that are not registered with Openprovider and not scheduled for transfer.
+- Fixed: Null check added to prevent type errors if additional fields function returns null value.
+- Fixed: Duplicate handle creations on contact updates from WHMCS.
+- Fixed: Error requesting EPP code for .be domains from WHMCS.
+- Fixed: DomainGetNameservers API returns empty response.
+- Fixed: Incorrect Error Response for DomainUpdateLockingStatus
+
+## v5.8.7
+
+###### Features and improvements
+* Implemented ICANN's Registration Data Policy(RDP): Minimum Data Set (MDS) changes
+
+###### Bugfixes
+* Fixed contact update failure for existing domains due to Minimum Data Set changes
+* Fixed transfer error in v5.8.6 [#443](https://github.com/openprovider/Openprovider-WHMCS-domains/issues/443)
+
+## v5.8.5
+
+### Features and improvements
+* Added **.SE/.NU Terms & Conditions Acceptance** checkbox - IIS (.SE/.NU) Registry made changes to the flow of .se/.nu domain names, making it mandatory for domain owners to accept T&C's of the registry before registering a .se or .nu domain name.
+
+## v5.8.4
+
+### Features and improvements
+* Added a **Consent to Publish Domain Contact Data** option for gTLDs in domain registration, transfer, and and domain modification (WHMCS Admin Area) pages - Personal data is redacted by default to protect registrants privacy according to GDPR. Explicit consent is now required to publish private contact details publicly to registrar WHOIS/RDAP.
+
+## v5.8.3
+
+###### Features and improvements
+* Added .es transfer auth code support (ensure to select **[EPP Code](https://docs.whmcs.com/domains/pricing-and-configuration/domain-pricing/#epp-code)** checkbox for .es in **Domain Pricing** to require an EPP code for incoming transfers of .es domains). 
+* Added .dk Terms & Conditions Acceptance checkbox - .DK Registry made changes to the flow of .DK domain names, making it mandatory for domain owners to accept T&C's of the registry before registering a .dk domain name. 
+* Generate a new auth code on clicking 'Get EPP Code' button in WHMCS if domain auth code is empty (for supported TLDs).
+
+###### Bugfixes
+* Fixed: Resolved an issue with converting checkbox values to strings.
+* Fixed error accessing admin dashboard - `Argument #2 ($array) must be of type array, null given in ../DocBlock/Tags/InvalidTag.php:89`
+* Updated the getOrDefault() function and default value of 'require_op_dns_servers' in advanced-module-configurations.php file.
+
+## v5.8.0
+
+###### Features and improvements
+
+- **Improved [TLD Price Sync](https://github.com/openprovider/Openprovider-WHMCS-domains/blob/version-8/docs/TLD_Pricing_sync_Utility.md)** - Fetch TLD prices with a single click from WHMCS. If prices were fetched via within last 24 hours, we will use the downloaded prices to speed up the operation.
+- **Improved [DNSSEC management for end users](https://github.com/openprovider/Openprovider-WHMCS-domains/blob/version-8/docs/DNSSEC_for_clients.md)** - Manually copying contents from 'custom-pages' to root folder is no longer required if your hosting environment permits. Made it easier to manage DNSSEC.
+- **Improved error reporting and logging** - Errors will be shown in WHMCS without restrictions. New informative error messages added for some scenarios.
+- **Improved Configuration Validation** - The module now uses WHMCS recommended `_config_validate` function to check whether the credentials and environment are correct.
+- **Auto-renew** - Domains will be created with auto-renew value "default" (will inherit reseller account settings)
+- **New**: [To-Do List](https://docs.whmcs.com/admins/admin-tools/#to-do-list) items creation for domain operation warnings in success response.
+
+###### Bugfixes
+
+- Fixed known PHP 8.1 compatibility issues (Renewal, double-renewal, TLD sync, cron, additional fields, whois lookup, domain suggestions
+- Fixed errors getting truncated
+- Fixed duplicate handle creation on contact update
+- Fixed XML parse error for domain registration in Sandbox
+- Fixed error renewing domains in Grace Period (Error: This domain already exists in Openprovider but NOT active)
+- Fixed Scheduled Domain Transfer sync script
+- Fixed nameserver IP update problem from WHMCS client area (Error: Field apiClass not found into command mapping!)
+- Fixed balance widget (can't close or hide)
+- Fixed domain renewal conflict when using other registrar modules
+
+## v5.6
+
+###### Features and improvements
+
+- Allow end user to enter additional fields for domain .it(company registration number/vat number/social security number).
+- Enhanced module logs.
+
+###### Bugfixes
+
+- Improved authentication performance.
+- Improved language supportive with IPA(Phonetic) characters.
+- Fixed table missing error in customer page
+
+## v5.5
+
+###### Features and improvements
+
+- Allow end user to enter additional fields for domain .es(owner type/company registration number or identification number).
+- Enhanced module logs.
+
+## v5.4
+
+###### Features and improvements
+
+- Improves activation logic for DNSSEC management
+- Improves sidebar logic for DNSSEC and makes adding translations simpler
+- Improves TLD price download script with more verbose error reporting
+
+###### Bugfixes
+
+- Fixes issue where transfers would sometimes fail because of missing DNS zones
+- Fixes issue which would cause domain pricing sync to sometimes fail
+
+## v5.3
+
+###### Features and improvements
+
+- Allow end users and WHMCS administrators to update domain contact details for .es domains, including the company / personal identification number
+
+###### Bugfixes
+
+- Fixes issue with DNSSEC domain validation
+
+## v5.0
+
+###### Features and improvements
+
+- Migrated the module from the Openprovider XML API to use the Openprovider REST API.
+- Control the maximum period for price imports.
+- Added option for partners to use Placement+ domain search
+
+###### Bugfixes
+
+- various bugfixes and improvements
+- Fixes issue where WHMCS domain sync would not update domain expiration dates in some cases
+
+## v4.0.3
+
+###### Bugfixes
+
+- Fixes issue with DNSSEC domain validation
+
+## v4.0.2
+
+###### Bugfixes
+
+- Fixes issue with unnecessary variable type
+- Fixes "getting oops error with mixed registrars"
+- Updates menu item & API scripts' absolute path
+
+## v4.0.1
+
+###### Features
+
+- Added support for Domain contact verification, for more information see the [WHMCS documentation](https://docs.whmcs.com/Domain_Contact_Verification)
+- [Support for tag management of clients](https://github.com/openprovider/Openprovider-WHMCS-domains#allow-end-users-to-edit-dnssec-records)
+- Simplified configuration page
+- [Allow end users to manage DNSSEC records](https://github.com/openprovider/Openprovider-WHMCS-domains#allow-end-users-to-edit-dnssec-records)
+- Refactored documentation
+
+###### Bugfixes
+
+- Fixes issue with unnecessary variable type
+
+## v3.4.1
+
+- [FEATURE] Added support for TLD price caching.
+- [IMPROVEMENT] Simplified login page and moved advanced configuration options to a file
+- [BUGFIX] Incorrect credentials were sometimes not being indicated when activating the module
+- [FEATURE] Allow end users to manage DNSSEC settings on their domains
+- [FEATURE] Added support for WHMCS feature domain verification as described in [the WHMCS documentaitno](https://docs.whmcs.com/Domain_Contact_Verification)
+- [FEATURE] Adds support for assigning tags to specific clients, which allows the WHMCS administrator to send custom emails to the client and all of the client's contacts
+
+## v3.3
+
+Notes:
+To improve DNS support, perform the actions are instructed in "Install the DNS management options". We have created a [request for WHMCS to make this easier. Please upvote this request here](https://requests.whmcs.com/topic/add-support-for-custom-dns-types).
+
+- Feature: #128 - Import domain pricing (WHMCS 7.10)
+- Feature: #131 - Reach DNS record type parity with Openprovider
+- Feature: #146 Changed how synchronisation works. Uses native WHMCS function and synchronises expired domains separatedly.
+- Feature: #149 Show the version number in the configuration page.
+- Feature: #144 Add support for GetDomainInformation
+- Feature: #125 Warn users about setting the correct DNS servers when enabling DNS management
+- Feature: #84 - Initial support for next-gen DNS.
+- Improvement: #132 Remove non-required .de required fields
+- Improvement: #148 Skip domains marked as fraud in synchronisation
+
+## v3.1
+
+- Feature: Execute renewal action for free domain transfers (#126)
+- Bugfix: Removed the by WHMCS introduced field "Eurid Entity type" for .eu (#130)
+- Bugfix: Fixed addon activation (#119)
+- Bugfix: Domains in Pending transfer are skipped by DomainSync (#131)
+
+## All previous versions to v3.0
+
+Manual action required: Check step 12 of hte installation manual in order to remove the domain lock warning for certain TLDs.
+
+- Feature: Added more options for what should be synced.
+- Feature: Widget shows in the admin dashboard the number of domains and the credit with OpenProvider.
+- Improvement: #99 remove domain lock notification for certain TLDs.
+- Improvement: Removed outdated fields for .pro
+- Improvement: Made a change to the whois protection API implementation.
+- Improvement: Refactored the structure partially. Started implementing tests.
+- Bugfix: bug where clients can update the reseller data
+- Bugfix: Replaced next due date sync engine
+- BugFix: for selling premium domains where the incorrect buying price was passed on.
+- Bugfix: Too few arguments to function Handle::update()
+- Bugfix: Delete domain prior to zone deletion in requestDelete()
+
+Known bugs in WHMCS:
+
+- Module shouldn't convert contact data to ASCI (CORE-13427)

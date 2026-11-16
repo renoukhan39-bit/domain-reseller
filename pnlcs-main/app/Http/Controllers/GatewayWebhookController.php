@@ -1,0 +1,888 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Enums\ChargeAttemptState;
+use App\Models\ActivityLog;
+use App\Models\Invoice;
+use App\Models\InvoiceChargeAttempt;
+use App\Services\Module\ModuleRegistry;
+use App\Support\AutoCharge;
+use App\Support\ClientPermissions;
+use App\Services\PaymentService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Log;
+
+class GatewayWebhookController extends Controller
+{
+    public function __construct(
+        private readonly ModuleRegistry $registry,
+        private readonly PaymentService $payments,
+    ) {}
+
+    /**
+     * Refuse to start a payment on an invoice that is not the caller's.
+     *
+     * The capture endpoints are reached from the customer's own browser, so
+     * the invoice has to belong to the account that is signed in. Webhooks are
+     * a different matter: they arrive from the gateway and are verified by
+     * signature instead.
+     */
+    private function authoriseInvoice(Invoice $invoice): void
+    {
+        $user = auth()->user();
+        $client = $user?->clients()->whereKey($invoice->client_id)->first();
+
+        // On the account, and given its invoices: the permission the invoice
+        // page itself asks for (ClientPermissions), so a login invited for
+        // tickets cannot pay with the account's stored card from here.
+        abort_if(! $client || ! ClientPermissions::allows($user, $client, 'invoices'), 403);
+    }
+
+    /**
+     * PayPal webhook endpoint.
+     * URL: POST /gateway/paypal/webhook
+     */
+    public function paypal(Request $request)
+    {
+        return $this->handle("paypal", $request, $request->header("PayPal-Transmission-Sig", ""));
+    }
+
+    /**
+     * Stripe webhook endpoint.
+     * URL: POST /gateway/stripe/webhook
+     */
+    public function stripe(Request $request)
+    {
+        return $this->handle("stripe", $request, $request->header("Stripe-Signature", ""), true);
+    }
+
+    /**
+     * Authorize.net webhook endpoint.
+     * URL: POST /gateway/authorize/webhook
+     */
+    public function authorize(Request $request)
+    {
+        return $this->handle("authorize", $request, $request->header("X-ANET-Signature", ""));
+    }
+
+    /**
+     * PayPal JS-SDK capture endpoint (POST /gateway/paypal/capture/{invoice}).
+     * Called by the PayPal Smart Buttons JS after buyer approves.
+     */
+    public function paypalCapture(Request $request, Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+
+        $captureId = $request->input("capture_id");
+
+        if (!$captureId) {
+            return response()->json(["success" => false, "message" => "Missing capture_id."]);
+        }
+
+        // The capture_id comes from the browser — verify it against PayPal
+        // before crediting anything, and trust PayPal's amount, not the client's.
+        $module = $this->registry->getGatewayModule("paypal");
+        if (!$module || !method_exists($module, "verifyCapture")) {
+            return response()->json(["success" => false, "message" => "PayPal module not available."]);
+        }
+
+        // Held to the currency this invoice is charged in, with the amount in
+        // the invoice's own currency.
+        $verified = method_exists($module, "verifyInvoiceCapture")
+            ? $module->verifyInvoiceCapture($invoice, $captureId)
+            : $module->verifyCapture($captureId);
+        if (!($verified["success"] ?? false)) {
+            Log::warning("PayPal capture rejected", ["invoice" => $invoice->id, "reason" => $verified["message"] ?? "unknown"]);
+            $this->notifyPaymentFailed($invoice, "paypal", (string) ($verified["message"] ?? "unknown"));
+            return response()->json(["success" => false, "message" => $verified["message"] ?? "Payment could not be verified."]);
+        }
+
+        // Under PayPal's id for the capture, so one capture is one payment
+        // however the browser spelled it.
+        $this->recordTransaction($invoice, "paypal", (string) ($verified["id"] ?? $captureId), (float) ($verified["amount"] ?? $invoice->amountDue()));
+
+        return response()->json([
+            "success"      => true,
+            "redirect_url" => route("client.invoices.show", $invoice),
+        ]);
+    }
+
+    /**
+     * Stripe: create PaymentIntent (POST /gateway/stripe/intent/{invoice}).
+     * Returns client_secret for frontend Stripe.js confirmCardPayment().
+     */
+    public function stripeIntent(Request $request, Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+        // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+        $invoice->refreshAddFundsRate();
+
+        $module = $this->registry->getGatewayModule("stripe");
+        if (!$module) {
+            return response()->json(["success" => false, "message" => "Stripe module not available."]);
+        }
+
+        // No currency override: the module charges in the currency the shop
+        // sells in. A hard-coded "usd" here once charged a GBP shop's
+        // customers in dollars while the module's own test stayed green.
+        //
+        // "Keep this card" is honoured only while automatic payment is on:
+        // that is the only thing a stored card is for, and the card-add page
+        // is closed for the same reason when it is off.
+        // Nor while staff are signed in as the customer: keeping a card is the
+        // cardholder's consent (App\Support\Impersonation).
+        $params = AutoCharge::enabled() && $request->boolean("save_card") && ! \App\Support\Impersonation::active() ? ["save_card" => true] : [];
+        $result = $module->capture($invoice, $invoice->amountDue(), $params);
+        return response()->json($result);
+    }
+
+    /**
+     * Stripe: hand back the secret for a charge the bank stopped
+     * (POST /gateway/stripe/authenticate/{invoice}).
+     *
+     * A stored card was charged while the customer was away and the issuer
+     * asked for the cardholder. This is the cardholder arriving. The intent is
+     * not taken from the request — the browser sends nothing but which invoice
+     * it is looking at — but read from the attempt row the charger wrote, so
+     * the only payment that can be resumed here is the one this system started
+     * itself and recorded.
+     *
+     * Once the browser has finished the authentication it posts to the existing
+     * confirm endpoint, which verifies with Stripe and credits through
+     * PaymentService like every other payment. The webhook will say the same
+     * thing a moment later and be refused as a duplicate.
+     *
+     * 404 while the shop is not collecting by card: there is no attempt row to
+     * resume on such an installation, and an endpoint that answered would be a
+     * surface the feature's switch does not cover.
+     */
+    public function stripeAuthenticate(Request $request, Invoice $invoice)
+    {
+        // Whose invoice it is, asked before anything else and asked the same
+        // way on every endpoint in this group: a customer poking at somebody
+        // else's invoice is told the same thing here as at the seven capture
+        // endpoints beside it, rather than having the shop's configuration
+        // answer first and hide the refusal behind a 404.
+        $this->authoriseInvoice($invoice);
+
+        abort_unless(AutoCharge::enabled(), 404);
+
+        $attempt = InvoiceChargeAttempt::where('invoice_id', $invoice->id)
+            ->where('state', ChargeAttemptState::ActionRequired->value)
+            ->first();
+
+        if (! $attempt || ! $attempt->last_transaction_id) {
+            return response()->json(["success" => false, "message" => "Nothing is waiting to be confirmed on this invoice."]);
+        }
+
+        $module = $this->registry->getGatewayModule("stripe");
+        if (! $module || ! method_exists($module, "resumeAuthentication")) {
+            return response()->json(["success" => false, "message" => "Stripe module not available."]);
+        }
+
+        $result = $module->resumeAuthentication($invoice, (string) $attempt->last_transaction_id);
+
+        if (! ($result["success"] ?? false)) {
+            Log::info("Stripe: an authentication could not be resumed", [
+                "invoice" => $invoice->id,
+                "reason"  => $result["message"] ?? null,
+            ]);
+
+            // What went wrong is for the log. The customer is told that this
+            // route is closed and shown the ordinary pay form, which works
+            // whatever became of the old intent.
+            return response()->json(["success" => false, "message" => __("client.invoices.authenticate_unavailable")]);
+        }
+
+        return response()->json([
+            "success"       => true,
+            "client_secret" => $result["client_secret"] ?? null,
+        ]);
+    }
+
+    /**
+     * Stripe: confirm payment after Stripe.js success (POST /gateway/stripe/confirm/{invoice}).
+     */
+    public function stripeConfirm(Request $request, Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+
+        $paymentIntentId = $request->input("payment_intent_id");
+        if (!$paymentIntentId) {
+            return response()->json(["success" => false, "message" => "Missing payment_intent_id."]);
+        }
+
+        // The intent id comes from the browser — verify it with Stripe and use
+        // Stripe's captured amount, never the client-supplied value.
+        $module = $this->registry->getGatewayModule("stripe");
+        if (!$module || !method_exists($module, "verifyPaymentIntent")) {
+            return response()->json(["success" => false, "message" => "Stripe module not available."]);
+        }
+
+        $verified = $module->verifyPaymentIntent($paymentIntentId, (int) $invoice->id);
+        if (!($verified["success"] ?? false)) {
+            Log::warning("Stripe confirm rejected", ["invoice" => $invoice->id, "reason" => $verified["message"] ?? "unknown"]);
+            $this->notifyPaymentFailed($invoice, "stripe", (string) ($verified["message"] ?? "unknown"));
+            return response()->json(["success" => false, "message" => $verified["message"] ?? "Payment could not be verified."]);
+        }
+
+        $this->recordTransaction($invoice, "stripe", $verified["transaction_id"] ?? $paymentIntentId, (float) ($verified["amount"] ?? $invoice->amountDue()));
+
+        // The tick on the pay form is the customer's agreement to be charged
+        // automatically, recorded the way the card-add page records its own:
+        // in the client's file, with the moment and the address it came from.
+        // An account that had switched automatic payment off has just switched
+        // it back on, in writing.
+        if (($verified["card_saved"] ?? false) === true && ($client = $invoice->client)) {
+            ActivityLog::log(
+                "Client #{$client->id} stored the card that paid invoice #{$invoice->id} with stripe and agreed to automatic payment of their invoices",
+                $client->display_name ?: ('client #'.$client->id),
+                $client->id,
+            );
+
+            if (! $client->auto_charge) {
+                $client->update(["auto_charge" => true]);
+            }
+
+            session()->flash("success", __("client.payment_methods.card_stored"));
+        }
+
+        return response()->json([
+            "success"      => true,
+            "redirect_url" => route("client.invoices.show", $invoice),
+        ]);
+    }
+
+    /**
+     * Authorize.net: Accept.js capture (POST /gateway/authorize/capture/{invoice}).
+     */
+    public function authorizeCapture(Request $request, Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+        // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+        $invoice->refreshAddFundsRate();
+
+        $module = $this->registry->getGatewayModule("authorize");
+        if (!$module) {
+            return response()->json(["success" => false, "message" => "Authorize.net module not available."]);
+        }
+
+        $opaqueData = $request->input("opaque_data");
+        if (!$opaqueData) {
+            return response()->json(["success" => false, "message" => "Missing payment data."]);
+        }
+
+        $due = $invoice->amountDue();
+
+        $result = $module->capture($invoice, $due, ["opaque_data" => $opaqueData]);
+
+        if ($result["success"] ?? false) {
+            $this->recordTransaction($invoice, "authorize", $result["transaction_id"], $due);
+            $result["redirect_url"] = route("client.invoices.show", $invoice);
+        }
+
+        return response()->json($result);
+    }
+
+    /**
+     * Generic webhook dispatch — passes raw payload + signature header to the module.
+     */
+    private function handle(string $gateway, Request $request, string $sigHeader, bool $passRaw = false): \Illuminate\Http\Response
+    {
+        $module = $this->registry->getGatewayModule($gateway);
+        if (!$module) {
+            Log::warning("Webhook received for unknown gateway: " . $gateway);
+            return response("Gateway not found", 404);
+        }
+
+        $rawPayload = $request->getContent();
+
+        $data = array_merge(
+            $request->all(),
+            [
+                "_raw_payload"      => $rawPayload,
+                "_signature_header" => $sigHeader,
+            ]
+        );
+
+        try {
+            $result = $module->processWebhook($data);
+        } catch (\Throwable $e) {
+            Log::error("Webhook exception [{$gateway}]: " . $e->getMessage());
+            return response("Webhook processing error", 500);
+        }
+
+        if ($result["retry_delivery"] ?? false) {
+            // The third answer a module may give, and the only one that asks
+            // the gateway to come back. "Worked" and "failed for good" were the
+            // only two categories here, and both are answered 2xx on purpose —
+            // a gateway only stops knocking when it gets one. That left nothing
+            // to say for the case that is neither: the work was not done and it
+            // still has to be. A duplicate delivery arriving while the first is
+            // in flight is that case, and so is the retry of a delivery that
+            // crashed, which is the one the gateway is sending precisely
+            // because it never got its 2xx.
+            //
+            // 409, because the request conflicts with the state of the thing it
+            // names — another delivery of this event holds it — and because a
+            // conflict is what the client can resolve by sending the request
+            // again later, which is exactly what is wanted. Stripe treats
+            // anything that is not 2xx as a failed delivery and retries it "for
+            // up to three days with an exponential back off in live mode"
+            // (https://docs.stripe.com/webhooks), so any non-2xx would bring
+            // the event back; the reason for this one rather than a 500 is that
+            // a 500 already means something here — the module threw, a few
+            // lines up — and an operator reading the gateway's delivery log
+            // should not have to guess which of the two happened.
+            Log::info("Webhook [{$gateway}] asked for this delivery to be repeated", $result);
+
+            return response("retry", 409);
+        }
+
+        if (!($result["success"] ?? false)) {
+            Log::warning("Webhook [{$gateway}] returned failure", $result);
+            // Return 200 to prevent repeated delivery for logic-level failures
+            return response("ok", 200);
+        }
+
+        // Auto-record transaction if webhook provided invoice_id + transaction_id
+        $invoiceId = $result["invoice_id"] ?? null;
+        $txnId     = $result["transaction_id"] ?? null;
+        $amount    = $result["amount"] ?? null;
+
+        if ($invoiceId && $txnId) {
+            $invoice = Invoice::find($invoiceId);
+            if ($invoice) {
+                $this->recordTransaction($invoice, $gateway, $txnId, $amount ?? (float) $invoice->amountDue());
+            }
+        }
+
+        return response("ok", 200);
+    }
+
+    /**
+     * Record a successful gateway payment through the central payment chain.
+     * PaymentService handles idempotency, partial payments, overpayment credit,
+     * and fires InvoicePaid → auto-accept order → provisioning.
+     */
+    /**
+     * Tell somebody that a payment did not go through.
+     *
+     * A successful payment raises InvoicePaid and reaches whoever subscribed
+     * to it. A refused one only ever reached the log file - the customer sat
+     * looking at "payment could not be verified" and nobody at this end knew
+     * to call them back. The invoice stays unpaid either way; the difference
+     * is whether anyone finds out today or at the end of the month.
+     *
+     * Never allowed to break the payment return: an exception here would
+     * leave the customer on a blank page after their card was charged.
+     */
+    private function notifyPaymentFailed(?Invoice $invoice, string $gateway, string $reason): void
+    {
+        try {
+            $client = $invoice?->client;
+            $who = $client
+                ? trim(($client->first_name ?? '').' '.($client->last_name ?? '')).' <'.($client->email ?? '-').'>'
+                : '-';
+
+            app(\App\Services\NotificationService::class)->dispatch('payment.failed', [
+                'event_type' => 'payment.failed',
+                'subject' => 'Payment failed',
+                'message' => "Invoice: ".($invoice ? ($invoice->invoice_num ?: $invoice->id) : '-')."\n"
+                    ."Customer: ".$who."\n"
+                    ."Gateway: ".$gateway."\n"
+                    ."Reason: ".$reason,
+                'invoice_id' => $invoice?->id,
+                'client_id' => $invoice?->client_id,
+                'gateway' => $gateway,
+                'reason' => $reason,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error("Payment failure notification could not be sent: ".$e->getMessage());
+        }
+    }
+
+    private function recordTransaction(Invoice $invoice, string $gateway, string $transactionId, float $amount): void
+    {
+        $result = $this->payments->applyPayment($invoice, $gateway, $transactionId, $amount > 0 ? $amount : null);
+
+        Log::info("Webhook payment processed for invoice #{$invoice->id} via {$gateway}", [
+            'transaction_id' => $transactionId,
+            'status'         => $result['status'] ?? null,
+            'balance'        => $result['balance'] ?? null,
+            'duplicate'      => $result['duplicate'] ?? false,
+        ]);
+    }
+
+    // ========== Any other gateway ==========
+
+    /**
+     * The callback for a gateway that has no route of its own - one installed
+     * from a pnlcs.json module (PayTR, Param, Papara...). Such a gateway could
+     * be found and offered at checkout, but the payment provider had nowhere
+     * to tell this installation the customer had paid.
+     *
+     * The gateway must be switched on with its settings filled in. Its
+     * processWebhook() gets the posted fields plus _raw_payload and _headers
+     * (lower-case names) and verifies them itself; a ['success' => true,
+     * 'invoice_id' => …] answer is applied as a payment, once per transaction
+     * id (PaymentService). It may set 'response' (the body the provider
+     * expects, default "OK") and 'http_status'.
+     */
+    public function callback(Request $request, string $gateway)
+    {
+        $gateway = strtolower($gateway);
+        if ($this->hasOwnRoute($gateway) || ! in_array($gateway, array_map('strtolower', $this->registry->usableGateways()), true)) {
+            return response('Gateway not found', 404);
+        }
+
+        $module = $this->registry->getGatewayModule($gateway);
+        if (! $module) {
+            return response('Gateway not found', 404);
+        }
+
+        $data = array_merge($request->all(), [
+            '_raw_payload' => $request->getContent(),
+            '_headers' => array_map(fn ($values) => implode(', ', (array) $values), array_change_key_case($request->headers->all(), CASE_LOWER)),
+        ]);
+
+        try {
+            $result = $module->processWebhook($data);
+        } catch (\Throwable $e) {
+            Log::error("Gateway callback threw [{$gateway}]: ".$e->getMessage());
+
+            return response('Error', 500);
+        }
+
+        if (($result['success'] ?? false) && ! empty($result['invoice_id'])) {
+            $transactionId = trim((string) ($result['transaction_id'] ?? ''));
+            $invoice = Invoice::find($result['invoice_id']);
+
+            // PaymentService only recognises a repeat by its transaction id,
+            // and books money for a paid invoice as credit: without an id,
+            // every retry of the same callback would book it again. Providers
+            // retry until they get the answer they expect, so nothing is
+            // applied, and the module's answer still goes back so the retries
+            // stop.
+            if ($transactionId === '') {
+                Log::warning("Gateway callback [{$gateway}] reported a payment without a transaction id; nothing was applied.", [
+                    'invoice_id' => $result['invoice_id'],
+                ]);
+            } elseif ($invoice) {
+                $this->recordTransaction($invoice, $gateway, $transactionId, (float) ($result['amount'] ?? 0));
+            }
+        }
+
+        return response((string) ($result['response'] ?? 'OK'), (int) ($result['http_status'] ?? 200));
+    }
+
+    /**
+     * A gateway with a route of its own (gateway.<name>.webhook and the like)
+     * keeps it and its checks; asked of the router so the list cannot drift
+     * from routes/web.php.
+     */
+    private function hasOwnRoute(string $gateway): bool
+    {
+        $prefix = "gateway.{$gateway}.";
+
+        return collect(app('router')->getRoutes()->getRoutesByName())
+            ->keys()
+            ->contains(fn ($name) => str_starts_with((string) $name, $prefix));
+    }
+
+    // ========== Mollie ==========
+
+    public function mollie(Request $request)
+    {
+        $data = $request->all();
+        $module = app(\App\Services\Module\ModuleRegistry::class)->getGatewayModule("mollie");
+        if (!$module) return response("Mollie not configured", 500);
+        $result = $module->processWebhook($data);
+        if (($result["success"] ?? false) && !empty($result["invoice_id"])) {
+            $invoice = \App\Models\Invoice::find($result["invoice_id"]);
+            if ($invoice) {
+                $this->recordTransaction($invoice, "mollie", $result["transaction_id"] ?? "", (float)($result["amount"] ?? 0));
+            }
+        }
+        return response("OK", 200);
+    }
+
+    public function mollieCapture(Request $request, \App\Models\Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+        // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+        $invoice->refreshAddFundsRate();
+
+        $module = app(\App\Services\Module\ModuleRegistry::class)->getGatewayModule("mollie");
+        if (!$module) return response()->json(["success" => false, "message" => "Not configured"]);
+        $result = $module->capture($invoice, $invoice->amountDue(), [
+            "redirect_url" => url("/client/invoices/{$invoice->id}?payment=success"),
+            "webhook_url" => route("gateway.mollie.webhook"),
+        ]);
+        if (($result["redirect"] ?? false) && !empty($result["checkout_url"])) {
+            return redirect($result["checkout_url"]);
+        }
+        return response()->json($result);
+    }
+
+    // ========== Razorpay ==========
+
+    public function razorpay(Request $request)
+    {
+        $data = $request->all();
+        $data["_raw_payload"] = $request->getContent();
+        $data["_signature_header"] = $request->header("X-Razorpay-Signature", "");
+        $module = app(\App\Services\Module\ModuleRegistry::class)->getGatewayModule("razorpay");
+        if (!$module) return response("Not configured", 500);
+        $result = $module->processWebhook($data);
+        if (($result["success"] ?? false) && !empty($result["invoice_id"])) {
+            $invoice = \App\Models\Invoice::find($result["invoice_id"]);
+            if ($invoice) {
+                $this->recordTransaction($invoice, "razorpay", $result["transaction_id"] ?? "", (float)($result["amount"] ?? 0));
+            }
+        }
+        return response("OK", 200);
+    }
+
+    // ========== Tpay ==========
+
+    public function tpay(Request $request)
+    {
+        $module = $this->registry->getGatewayModule("tpay");
+        if (!$module) {
+            return response("Gateway not found", 404);
+        }
+
+        $data = array_merge($request->all(), [
+            "_raw_payload"      => $request->getContent(),
+            "_signature_header" => $request->header("X-JWS-Signature", ""),
+        ]);
+
+        try {
+            $result = $module->processWebhook($data);
+        } catch (\Throwable $e) {
+            Log::error("Tpay webhook exception: " . $e->getMessage());
+            return response("FALSE", 200);
+        }
+
+        if (!($result["success"] ?? false)) {
+            Log::warning("Tpay webhook returned failure", $result);
+            return response("FALSE", 200);
+        }
+
+        $invoiceId = $result["invoice_id"] ?? null;
+        $txnId     = $result["transaction_id"] ?? null;
+
+        if ($invoiceId && $txnId) {
+            $invoice = \App\Models\Invoice::find($invoiceId);
+            if ($invoice) {
+                $this->recordTransaction($invoice, "tpay", $txnId, (float) ($result["amount"] ?? 0));
+            }
+        }
+
+        return response("TRUE", 200);
+    }
+
+    public function tpayCapture(Request $request, \App\Models\Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+        // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+        $invoice->refreshAddFundsRate();
+
+        $module = app(\App\Services\Module\ModuleRegistry::class)->getGatewayModule("tpay");
+        if (!$module) {
+            return response()->json(["success" => false, "message" => "Not configured"]);
+        }
+
+        $result = $module->capture($invoice, $invoice->amountDue(), [
+            "redirect_url" => url("/client/invoices/{$invoice->id}?payment=success"),
+            "cancel_url"   => url("/client/invoices/{$invoice->id}?payment=cancelled"),
+            "webhook_url"  => route("gateway.tpay.webhook"),
+        ]);
+
+        if (($result["redirect"] ?? false) && !empty($result["checkout_url"])) {
+            return redirect($result["checkout_url"]);
+        }
+
+        return response()->json($result);
+    }
+
+    public function razorpayCapture(Request $request, \App\Models\Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+
+        $module = app(\App\Services\Module\ModuleRegistry::class)->getGatewayModule("razorpay");
+        if (!$module) return response()->json(["success" => false, "message" => "Not configured"]);
+        if (! $request->input("confirm")) {
+            // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+            $invoice->refreshAddFundsRate();
+        }
+        if ($request->input("confirm")) {
+            // Confirm payment — verify the Razorpay signature and order server-side
+            // before crediting; never trust the browser-supplied result.
+            $paymentId = $request->input("razorpay_payment_id");
+            $orderId   = $request->input("razorpay_order_id");
+            $signature = $request->input("razorpay_signature");
+
+            if (!$paymentId || !$orderId || !$signature) {
+                return response()->json(["success" => false, "message" => "Missing payment confirmation fields."]);
+            }
+            if (!method_exists($module, "verifyPayment")) {
+                return response()->json(["success" => false, "message" => "Razorpay module not available."]);
+            }
+
+            $verified = $module->verifyPayment($orderId, $paymentId, $signature, (int) $invoice->id);
+            if (!($verified["success"] ?? false)) {
+                Log::warning("Razorpay confirm rejected", ["invoice" => $invoice->id, "reason" => $verified["message"] ?? "unknown"]);
+                $this->notifyPaymentFailed($invoice, "razorpay", (string) ($verified["message"] ?? "unknown"));
+                return response()->json(["success" => false, "message" => $verified["message"] ?? "Payment could not be verified."]);
+            }
+
+            $this->recordTransaction($invoice, "razorpay", $verified["transaction_id"] ?? $paymentId, (float) ($verified["amount"] ?? $invoice->amountDue()));
+            return response()->json(["success" => true, "redirect_url" => url("/client/invoices/{$invoice->id}?payment=success")]);
+        }
+        // Create order
+        $result = $module->capture($invoice, $invoice->amountDue());
+        return response()->json($result);
+    }
+    // ========== iyzico ==========
+
+    /**
+     * iyzico: open the payment form (POST /gateway/iyzico/init/{invoice}).
+     *
+     * Full page, not JSON: what iyzico returns is a script, and a script
+     * written into the page with innerHTML never runs.
+     */
+    public function iyzicoInit(Request $request, Invoice $invoice)
+    {
+        $this->authoriseInvoice($invoice);
+        // A payment starts here: an unpaid Add Funds invoice takes today's rate.
+        $invoice->refreshAddFundsRate();
+
+        $module = $this->registry->getGatewayModule("iyzico");
+        if (! $module) {
+            return redirect()->route("client.invoices.show", $invoice)
+                ->with("error", __("messages.iyzico.not_configured"));
+        }
+
+        $due = $invoice->amountDue();
+        if ($due <= 0) {
+            return redirect()->route("client.invoices.show", $invoice)
+                ->with("error", __("messages.iyzico.nothing_due"));
+        }
+
+        $result = $module->capture($invoice, $due);
+
+        if (! ($result["success"] ?? false)) {
+            Log::warning("iyzico: form could not be started", [
+                "invoice" => $invoice->id,
+                "reason" => $result["message"] ?? "unknown",
+            ]);
+
+            return redirect()->route("client.invoices.show", $invoice)
+                ->with("error", $result["message"] ?? __("messages.iyzico.init_failed"));
+        }
+
+        // Some accounts also get a ready-made payment page address back. Using
+        // it is both less code and means the form opens on iyzico's own
+        // domain rather than inside a page of ours.
+        if (! empty($result["payment_page_url"])) {
+            return redirect()->away($result["payment_page_url"]);
+        }
+
+        return response($this->iyzicoFormPage($invoice, (string) $result["checkout_form_content"]));
+    }
+
+    /**
+     * The interstitial page that carries iyzico's form.
+     */
+    private function iyzicoFormPage(Invoice $invoice, string $formContent): string
+    {
+        $back = htmlspecialchars(route("client.invoices.show", $invoice), ENT_QUOTES, "UTF-8");
+        $title = htmlspecialchars(__("messages.iyzico.page_title"), ENT_QUOTES, "UTF-8");
+        $cancel = htmlspecialchars(__("messages.iyzico.cancel"), ENT_QUOTES, "UTF-8");
+        $locale = htmlspecialchars(app()->getLocale(), ENT_QUOTES, "UTF-8");
+
+        return <<<HTML
+<!DOCTYPE html>
+<html lang="{$locale}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex,nofollow">
+<title>{$title}</title>
+<style>
+  body { font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:#f5f6f8; margin:0; padding:24px; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 16px; color:#222; }
+  .back { display:inline-block; margin-top:20px; font-size:13px; color:#555; text-decoration:none; }
+  .back:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>{$title}</h1>
+  <div id="iyzipay-checkout-form" class="responsive"></div>
+  <a class="back" href="{$back}">&larr; {$cancel}</a>
+</div>
+{$formContent}
+</body>
+</html>
+HTML;
+    }
+
+    /**
+     * iyzico: the payment return (POST /gateway/iyzico/callback).
+     *
+     * No session cookie arrives - the POST comes from iyzico's page, so
+     * SameSite drops it - which is why there is no auth here. The security
+     * comes from the signature instead: the token is handed back to iyzico
+     * over a request signed with our own keys, and the amount is read from
+     * that answer. Nothing the browser sent is trusted.
+     */
+    public function iyzicoCallback(Request $request)
+    {
+        $token = (string) $request->input("token", "");
+        $module = $this->registry->getGatewayModule("iyzico");
+
+        if (! $module || ! method_exists($module, "retrieveCheckoutForm")) {
+            return $this->iyzicoReturn(null, "notconfigured");
+        }
+
+        // The initialisation record: which invoice, how much lira, at what
+        // rate. What to credit comes from here, because the callback itself
+        // carries no amount.
+        $log = \App\Models\GatewayLog::where("gateway", "iyzico")
+            ->whereRaw("JSON_UNQUOTE(JSON_EXTRACT(data, '\$.token')) = ?", [$token])
+            ->latest("id")
+            ->first();
+
+        $started = $log ? (json_decode((string) $log->data, true) ?: []) : [];
+
+        $verified = $module->retrieveCheckoutForm($token);
+
+        if (! ($verified["success"] ?? false)) {
+            Log::warning("iyzico: payment could not be verified", [
+                "invoice" => $started["invoice_id"] ?? null,
+                "reason" => $verified["message"] ?? "unknown",
+            ]);
+
+            if ($log) {
+                $log->update(["result" => "failed: ".mb_substr((string) ($verified["message"] ?? ""), 0, 200)]);
+            }
+
+            $invoice = isset($started["invoice_id"]) ? Invoice::find($started["invoice_id"]) : null;
+
+            $this->notifyPaymentFailed($invoice, "iyzico", (string) ($verified["message"] ?? "unknown"));
+
+            return $this->iyzicoReturn($invoice, "failed");
+        }
+
+        $invoiceId = (int) ($started["invoice_id"] ?? $verified["conversation_id"] ?? 0);
+        $invoice = Invoice::find($invoiceId);
+
+        if (! $invoice) {
+            Log::error("iyzico: payment taken but no invoice found", [
+                "payment_id" => $verified["payment_id"] ?? null,
+                "invoice_id" => $invoiceId,
+            ]);
+
+            $this->notifyPaymentFailed(null, "iyzico", "Payment taken but no invoice found"
+                ." (iyzico payment id: ".($verified["payment_id"] ?? "-").", looked for invoice: ".$invoiceId.")");
+
+            return $this->iyzicoReturn(null, "orphan");
+        }
+
+        // Does the lira taken match the lira quoted at initialisation? If it
+        // does, the shop-currency figure worked out then is what goes on the
+        // invoice, so no rounding drift appears. If it does not - an
+        // instalment fee, a partial payment - what iyzico actually took is
+        // converted back at the same rate. Either way the record is the money.
+        $taken = (float) ($verified["paid_price"] ?? 0);
+        $rate = (float) ($started["rate"] ?? 0);
+        $expected = (float) ($started["try_amount"] ?? 0);
+
+        if ($expected > 0 && abs($taken - $expected) < 0.01) {
+            $amount = (float) ($started["due_amount"] ?? 0);
+        } elseif ($rate > 0) {
+            $amount = round($taken / $rate, 2);
+            Log::info("iyzico: amount taken differs from the amount quoted", [
+                "invoice" => $invoice->id, "expected" => $expected, "taken" => $taken,
+            ]);
+        } else {
+            $amount = $taken;
+        }
+
+        $this->recordTransaction($invoice, "iyzico", (string) $verified["payment_id"], $amount);
+
+        if ($log) {
+            $log->update(["result" => "paid: ".$verified["payment_id"]." / ".$taken." TRY"]);
+        }
+
+        $this->rememberIyzicoCard($invoice, $verified);
+
+        return $this->iyzicoReturn($invoice, null);
+    }
+
+    /**
+     * Keep the keys iyzico gives back when the customer stores their card.
+     *
+     * The card number never reaches us; what is kept is iyzico's handle for
+     * it, which is what saves asking for the card again on a renewal.
+     *
+     * THE WRITING MOVED INTO THE MODULE AND ONLY THE CALL IS LEFT HERE. A
+     * customer can now reach a stored card by two doors — this callback, and
+     * IyzicoModule::confirmVaulting() when the browser comes back from the form
+     * — and two places that both create a stored card are two chances to
+     * disagree about what one looks like, or to write two rows for one card.
+     * TokenizableGatewayInterface::confirmVaulting() requires the second door
+     * to write by the same route as the first, so the first now goes through
+     * that route too. The method is an updateOrCreate on the same key it always
+     * used, so whichever door arrives second changes nothing.
+     */
+    private function rememberIyzicoCard(Invoice $invoice, array $verified): void
+    {
+        $module = $this->registry->getGatewayModule("iyzico");
+
+        if (! $module instanceof \Modules\Gateways\Iyzico\IyzicoModule) {
+            // Unreachable while the module is registered — this callback's own
+            // route resolves it a few lines earlier — and logged rather than
+            // ignored so that a registry someone has replaced cannot make cards
+            // stop being stored in silence.
+            Log::warning("iyzico: the card could not be stored because no iyzico module is registered");
+
+            return;
+        }
+
+        $module->rememberStoredCard((int) $invoice->client_id, $verified);
+    }
+
+    /**
+     * Send the customer back to their invoice.
+     *
+     * Two things at once. The redirect targets the top window, because the
+     * form may have opened in an iframe and a plain redirect would trap the
+     * customer inside it. And the outcome goes in the address bar rather than
+     * the session - there is no session on this request (see the route) - so
+     * the invoice page prints the message from its own session.
+     */
+    private function iyzicoReturn(?Invoice $invoice, ?string $status): \Illuminate\Http\Response
+    {
+        $url = $invoice
+            ? route("client.invoices.show", $invoice)."?payment=".($status ?: "success")
+            : route("client.invoices.index")."?payment=".($status ?: "success");
+
+        $safe = htmlspecialchars($url, ENT_QUOTES, "UTF-8");
+        $continue = htmlspecialchars(__("messages.iyzico.continue"), ENT_QUOTES, "UTF-8");
+
+        return response(<<<HTML
+<!DOCTYPE html><html><head><meta charset="utf-8"><title>{$continue}</title></head>
+<body><script>
+(function(){ var u = "{$safe}"; if (window.top !== window.self) { window.top.location.href = u; } else { window.location.href = u; } })();
+</script>
+<noscript><a href="{$safe}">{$continue}</a></noscript>
+</body></html>
+HTML);
+    }
+}

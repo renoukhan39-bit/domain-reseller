@@ -1,0 +1,364 @@
+<?php
+
+namespace App\Http\Controllers\Client;
+
+use App\Enums\InvoiceStatus;
+use App\Http\Controllers\Controller;
+use App\Http\Controllers\Concerns\ResolvesClient;
+use App\Models\GatewaySettings;
+use App\Models\Invoice;
+use App\Models\PaymentMethod;
+use App\Models\PaymentNotification;
+use App\Services\AutoChargeService;
+use App\Services\InvoicePdfService;
+use App\Services\InvoiceService;
+use App\Services\Module\ModuleRegistry;
+use App\Services\NotificationService;
+use App\Services\PaymentService;
+use Illuminate\Http\Request;
+
+class InvoiceController extends Controller
+{
+    use ResolvesClient;
+
+    public function index()
+    {
+        $invoices = Invoice::with('items')
+            ->excludeSettledProformas()
+            ->where('client_id', $this->getClientId())
+            // A draft has not been issued to the customer.
+            ->where('status', '!=', \App\Enums\InvoiceStatus::Draft->value)
+            ->orderBy('id', 'desc')
+            ->paginate(25);
+
+        $this->flashPaymentOutcome(request()->query('payment'));
+
+        // The open invoices on this page that can be paid together.
+        $payable = $invoices->getCollection()->filter(fn (Invoice $i) => in_array(strtolower((string) $i->status), ['unpaid', 'overdue', 'partially_paid'], true)
+            && ($i->type ?? 'vat') !== \App\Services\MassPaymentService::TYPE)->values();
+
+        return view('client.invoices.index', compact('invoices', 'payable'));
+    }
+
+    /**
+     * Pay an open invoice, or part of it, from the account's balance.
+     *
+     * Credit is applied to an invoice when it is created, but an invoice
+     * issued before the customer topped up stayed unpaid with the money
+     * sitting on the account: InvoiceService::applyCredit() was reachable
+     * only through the API.
+     */
+    /** One payment invoice for the open invoices the customer ticked. */
+    public function massPay(\Illuminate\Http\Request $request, \App\Services\MassPaymentService $mass)
+    {
+        $request->validate(['invoice_ids' => 'required|array', 'invoice_ids.*' => 'integer']);
+        $client = \App\Models\Client::find($this->getClientId());
+        abort_unless($client, 403);
+
+        $result = $mass->create($client, (array) $request->input('invoice_ids'));
+        if (! $result['invoice']) {
+            return back()->with('error', $result['message']);
+        }
+
+        return redirect()->route('client.invoices.show', $result['invoice']);
+    }
+
+    public function payWithCredit(Invoice $invoice)
+    {
+        abort_if($invoice->client_id !== $this->getClientId(), 403);
+
+        if ($this->creditUsableOn($invoice) <= 0) {
+            return redirect()->route('client.invoices.show', $invoice);
+        }
+
+        $invoice = app(InvoiceService::class)->applyCredit($invoice, (float) $invoice->client->credit);
+
+        return redirect()->route('client.invoices.show', $invoice)
+            ->with('success', __('client.invoices.credit_applied'));
+    }
+
+    /**
+     * Pay the invoice now with a card the customer stored, chosen on the page.
+     *
+     * The card is charged the way a scheduled automatic payment is
+     * (AutoChargeService::payNowWith): one attempt at a time, recorded once,
+     * and a bank that asks for the cardholder is answered on this page.
+     */
+    public function payWithStoredCard(Request $request, Invoice $invoice)
+    {
+        abort_if($invoice->client_id !== $this->getClientId(), 403);
+        $invoice->refreshAddFundsRate();
+
+        // Paying with a card picked here is not asked about automatic payment,
+        // so staff signed in as the customer could charge the card of one who
+        // switched it off, in the customer's name. Charge now in the admin
+        // area is staff's way, and it keeps to that choice.
+        if (\App\Support\Impersonation::active()) {
+            return redirect()->route('client.invoices.show', $invoice)->with('error', __('client.invoices.card_payment_staff'));
+        }
+
+        $method = PaymentMethod::where('client_id', $invoice->client_id)
+            ->whereKey((int) $request->input('payment_method_id'))
+            ->first();
+        abort_if($method === null, 404);
+
+        $outcome = app(AutoChargeService::class)->payNowWith($invoice, $method);
+
+        [$kind, $key] = match ($outcome) {
+            'charged' => ['success', 'client.invoices.card_payment_taken'],
+            'action_required' => ['info', 'client.invoices.card_payment_needs_you'],
+            'failed' => ['error', 'client.invoices.card_payment_refused'],
+            'nothing_owed', 'invoice_no_longer_collectable' => ['info', 'client.invoices.card_payment_nothing_owed'],
+            'taken_not_recorded', 'outcome_unknown', 'needs_review', 'held' => ['info', 'client.invoices.card_payment_pending'],
+            default => ['error', 'client.invoices.card_payment_unavailable'],
+        };
+
+        return redirect()->route('client.invoices.show', $invoice)->with($kind, __($key));
+    }
+
+    /**
+     * The cards this invoice can be paid with now: the customer's active
+     * stored cards with a gateway that can charge them, while the shop
+     * collects by card and the invoice is open. Not Add Funds or a payment
+     * for several invoices, which turn into credit.
+     */
+    private function storedCardsFor(Invoice $invoice)
+    {
+        $open = in_array(strtolower((string) $invoice->status), ['unpaid', 'overdue', 'partially_paid'], true);
+        if (! $open || ! \App\Support\AutoCharge::enabled() || \App\Support\Impersonation::active()
+            || $invoice->type === \App\Services\MassPaymentService::TYPE
+            || $invoice->items->whereIn('type', ['AddFunds', \App\Services\MassPaymentService::ITEM_TYPE])->isNotEmpty()) {
+            return collect();
+        }
+
+        $gateways = array_keys(app(ModuleRegistry::class)->tokenisedGateways());
+
+        return PaymentMethod::where('client_id', $invoice->client_id)
+            ->where('status', PaymentMethod::STATUS_ACTIVE)
+            ->whereIn('gateway_name', $gateways)
+            ->orderByDesc('is_default')
+            ->orderBy('id')
+            ->get();
+    }
+
+    /** The account balance this invoice can take: none for a settled or Add Funds invoice. */
+    private function creditUsableOn(Invoice $invoice): float
+    {
+        $open = in_array(strtolower((string) $invoice->status), ['unpaid', 'overdue', 'partially_paid'], true);
+
+        // Add Funds and a payment for several invoices both turn into credit:
+        // paying them from credit would move it in a circle.
+        if (! $open || ! $invoice->client || $invoice->items()->whereIn('type', ['AddFunds', \App\Services\MassPaymentService::ITEM_TYPE])->exists()) {
+            return 0.0;
+        }
+
+        return max(0.0, (float) $invoice->client->credit);
+    }
+
+    public function show(Invoice $invoice)
+    {
+        abort_if($invoice->client_id !== $this->getClientId(), 403);
+        abort_if($invoice->status === \App\Enums\InvoiceStatus::Draft->value, 404);
+
+        // The outcome of a payment return arrives as a code in the query
+        // string: the callback request has no session, so it cannot flash a
+        // message. A code, never free text - printing text from the address
+        // bar onto the page would be an open injection door.
+        $this->flashPaymentOutcome(request()->query('payment'));
+        // The amount shown is the amount to pay: an unpaid Add Funds invoice
+        // is shown, and paid, at today's rate (Invoice::refreshAddFundsRate).
+        $invoice->refreshAddFundsRate();
+        $invoice->load('items');
+
+        // The value is encrypted at rest, so it is compared after it comes
+        // back rather than in the query: a where() against the column can never
+        // match, and this page quietly showed bank transfer only.
+        // Switched on is not the same as ready: a gateway missing its keys is
+        // not offered, or the customer picks it and the payment fails at the
+        // last step.
+        $gateways = app(ModuleRegistry::class)->usableGateways();
+
+        if (empty($gateways)) {
+            $gateways = ['banktransfer'];
+        }
+
+        // The customer already chose how to pay when they placed the order.
+        // The tabs were ordered by gateway_settings row order, which put bank
+        // transfer first: a customer who chose card opened the invoice, saw a
+        // table of IBANs and reported "the payment screen never came". Their
+        // chosen method is the first tab, and the first tab is the open one.
+        $chosen = strtolower(trim((string) $invoice->payment_method));
+        if ($chosen !== '' && in_array($chosen, $gateways, true)) {
+            usort($gateways, fn ($a, $b) => ($b === $chosen) <=> ($a === $chosen));
+        }
+
+        $gatewayForms = [];
+        $gatewayLabels = [];
+        if (in_array(strtolower($invoice->status), ['unpaid', 'overdue', 'partially_paid'])) {
+            $registry = app(ModuleRegistry::class);
+            foreach ($gateways as $gw) {
+                $module = $registry->getGatewayModule($gw);
+                if ($module) {
+                    try {
+                        $gatewayForms[$gw] = $module->getPaymentForm($invoice);
+                        $gatewayLabels[$gw] = payment_method_label($gw);
+                    } catch (\Throwable $e) {
+                        $gatewayLabels[$gw] = ucfirst($gw);
+                    }
+                } else {
+                    $gatewayLabels[$gw] = ucwords(str_replace('_', ' ', $gw));
+                }
+            }
+        }
+
+        $pendingNotification = PaymentNotification::where('invoice_id', $invoice->id)
+            ->pending()
+            ->latest()
+            ->first();
+
+        $balance = app(PaymentService::class)->balance($invoice);
+
+        // What the automatic charger has made of this invoice, so that the
+        // customer can read it here rather than only in an email they may have
+        // missed: a card that was refused, a retry that is coming, or a bank
+        // waiting for them to confirm a payment they can finish from this page.
+        //
+        // Null while the shop does not collect by card. Nothing on such an
+        // installation ever writes one of these rows, and asking for it would
+        // be a query this page has never made.
+        $chargeAttempt = \App\Support\AutoCharge::enabled()
+            ? \App\Models\InvoiceChargeAttempt::where('invoice_id', $invoice->id)->first()
+            : null;
+
+        // The key Stripe.js is initialised with, and only where the page has an
+        // unfinished authentication to offer. Publishable by name and by
+        // design: it identifies the account to the browser and can do nothing
+        // on its own. The secret key is never passed to a view.
+        $stripePublishableKey = $chargeAttempt
+            ? (string) \App\Models\GatewaySettings::where('gateway', 'stripe')
+                ->where('setting', 'publishable_key')
+                ->first()?->value
+            : null;
+
+        // Balance the account holds that this invoice may be paid from (not
+        // an Add Funds invoice: that would pay the top-up with itself).
+        $usableCredit = $this->creditUsableOn($invoice);
+
+        // Cards already stored, each with a "pay with this card" button.
+        $storedCards = $this->storedCardsFor($invoice);
+
+        return view('client.invoices.show', compact('invoice', 'gateways', 'gatewayForms', 'gatewayLabels', 'pendingNotification', 'balance', 'chargeAttempt', 'stripePublishableKey', 'usableCredit', 'storedCards'));
+    }
+
+    /**
+     * Show the customer the outcome of a payment return.
+     */
+    private function flashPaymentOutcome(?string $code): void
+    {
+        $messages = [
+            'success'       => ['success', 'messages.iyzico.paid'],
+            'failed'        => ['error', 'messages.iyzico.failed'],
+            'notconfigured' => ['error', 'messages.iyzico.not_configured'],
+            'orphan'        => ['error', 'messages.iyzico.invoice_missing'],
+        ];
+
+        if (! $code || ! isset($messages[$code])) {
+            return;
+        }
+
+        [$kind, $key] = $messages[$code];
+
+        // now(): the message is printed on this page, not on the next request.
+        session()->now($kind, __($key));
+    }
+
+    /**
+     * Client reports an offline payment (bank transfer) for review.
+     * Puts the invoice into payment_pending and alerts the admins.
+     */
+    public function submitPaymentNotification(Request $request, Invoice $invoice)
+    {
+        abort_if($invoice->client_id !== $this->getClientId(), 403);
+
+        if (!in_array(strtolower((string) $invoice->status), ['unpaid', 'overdue', 'partially_paid', 'payment_pending'])) {
+            return back()->with('error', __('messages.error.invoice_not_awaiting_payment'));
+        }
+
+        if (PaymentNotification::where('invoice_id', $invoice->id)->pending()->exists()) {
+            return back()->with('info', __('messages.info.payment_notification_already_pending'));
+        }
+
+        $validated = $request->validate([
+            'sender_name'   => ['required', 'string', 'max:255'],
+            'bank_name'     => ['nullable', 'string', 'max:255'],
+            'amount'        => ['required', 'numeric', 'min:0.01', 'max:99999999'],
+            'transfer_date' => ['required', 'date', 'before_or_equal:today'],
+            'reference'     => ['nullable', 'string', 'max:255'],
+            'client_note'   => ['nullable', 'string', 'max:2000'],
+            'receipt'       => ['nullable', 'file', 'mimes:jpg,jpeg,png,pdf', 'max:5120'],
+        ]);
+
+        $receiptPath = null;
+        if ($request->hasFile('receipt')) {
+            $receiptPath = $request->file('receipt')->store("payment-receipts/{$invoice->id}", 'local');
+        }
+
+        // The form asks for the amount in the currency the customer paid at
+        // the bank; the payment chain works in the invoice's source currency,
+        // which is what applyPayment takes off the balance when an admin
+        // approves. Converted at the rate stamped on the invoice, so a later
+        // rate move cannot change what this document settles at. The figure
+        // the customer reported goes in the note so an admin can match it
+        // against the bank statement line for line.
+        $reported = (float) $validated['amount'];
+        $amount = $reported;
+        $note = $validated['client_note'] ?? null;
+
+        if (has_billing_conversion($invoice)) {
+            $amount = round($reported / (float) $invoice->exchange_rate, 2);
+
+            $line = __('client.invoices.pn_reported_in_billing', [
+                'amount' => billing_money_fmt($amount, $invoice),
+                'rate' => number_format((float) $invoice->exchange_rate, 4),
+                'source' => (string) ($invoice->exchange_rate_source ?: '-'),
+            ]);
+
+            $note = trim($line."\n".(string) $note);
+        }
+
+        $notification = PaymentNotification::create([
+            'invoice_id'    => $invoice->id,
+            'client_id'     => $invoice->client_id,
+            'gateway'       => 'banktransfer',
+            'sender_name'   => $validated['sender_name'],
+            'bank_name'     => $validated['bank_name'] ?? null,
+            'amount'        => $amount,
+            'transfer_date' => $validated['transfer_date'],
+            'reference'     => $validated['reference'] ?? null,
+            'receipt_path'  => $receiptPath,
+            'client_note'   => $note,
+            'status'        => 'pending',
+        ]);
+
+        $invoice->update(['status' => InvoiceStatus::PaymentPending->value]);
+
+        app(NotificationService::class)->dispatch('payment.notification_received', [
+            'event_type' => 'payment.notification_received',
+            'subject'    => 'Bank transfer notification received',
+            'message'    => "Client reported a bank transfer of {$notification->amount} for invoice #{$invoice->invoice_num}. Awaiting review.",
+            'invoice_id' => $invoice->id,
+            'notification_id' => $notification->id,
+        ]);
+
+        return back()->with('success', __('messages.success.payment_notification_submitted'));
+    }
+
+    public function downloadPdf(Invoice $invoice, InvoicePdfService $pdfService)
+    {
+        abort_if($invoice->client_id !== $this->getClientId(), 403);
+        abort_if($invoice->status === \App\Enums\InvoiceStatus::Draft->value, 404);
+
+        return $pdfService->download($invoice);
+    }
+
+}

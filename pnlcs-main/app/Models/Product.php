@@ -1,0 +1,414 @@
+<?php
+
+namespace App\Models;
+
+use App\Services\BillingCycleHelper;
+use Illuminate\Database\Eloquent\Factories\HasFactory;
+use Illuminate\Database\Eloquent\Model;
+use Illuminate\Support\Str;
+
+class Product extends Model
+{
+    use HasFactory, \Illuminate\Database\Eloquent\SoftDeletes;
+
+    protected $fillable = ['type', 'group_id', 'name', 'slug', 'description', 'hidden', 'show_domain_options', 'free_domain', 'free_domain_tlds', 'free_domain_cycles', 'is_featured', 'retired', 'allow_upgrades', 'pay_type', 'auto_setup', 'suspend_after_days', 'terminate_after_days', 'server_type', 'server_group_id', 'stock_control', 'stock_qty', 'welcome_email_template', 'sort_order', 'config_options', 'tax', 'ssl_module', 'overage_enabled', 'overage_disk_rate', 'overage_bw_rate'];
+
+    protected function casts(): array
+    {
+        return ['free_domain' => 'boolean', 'hidden' => 'boolean', 'is_featured' => 'boolean', 'retired' => 'boolean', 'allow_upgrades' => 'boolean', 'stock_control' => 'boolean', 'tax' => 'boolean', 'overage_enabled' => 'boolean', 'overage_disk_rate' => 'decimal:4', 'overage_bw_rate' => 'decimal:4', 'config_options' => 'array', 'suspend_after_days' => 'integer', 'terminate_after_days' => 'integer'];
+    }
+
+    public function group()
+    {
+        return $this->belongsTo(ProductGroup::class, 'group_id');
+    }
+
+    /** The extensions a free domain may have (".com", ".com.tr"), lower case with the dot. */
+    public function freeDomainTlds(): array
+    {
+        return collect(preg_split('/[\s,]+/', strtolower((string) $this->free_domain_tlds)))
+            ->filter()->map(fn ($tld) => '.'.ltrim($tld, '.'))->unique()->values()->all();
+    }
+
+    /** The billing cycles (lower case) the free domain comes with; none listed means every cycle. */
+    public function freeDomainCycles(): array
+    {
+        return collect(explode(',', strtolower((string) $this->free_domain_cycles)))->map('trim')->filter()->values()->all();
+    }
+
+    /** Whether a domain of this extension, ordered with this product on this cycle, has its first term free. */
+    public function givesFreeDomain(string $tld, string $billingCycle): bool
+    {
+        if (! $this->free_domain) {
+            return false;
+        }
+        $tld = '.'.ltrim(strtolower($tld), '.');
+        $cycles = $this->freeDomainCycles();
+
+        return in_array($tld, $this->freeDomainTlds(), true)
+            && ($cycles === [] || in_array(strtolower($billingCycle), $cycles, true));
+    }
+
+    /** Whether the shelf is empty. A product without stock control never is. */
+    public function outOfStock(): bool
+    {
+        return (bool) $this->stock_control && (int) $this->stock_qty <= 0;
+    }
+
+    public function serverGroup()
+    {
+        return $this->belongsTo(ServerGroup::class, 'server_group_id');
+    }
+
+    public function pricing()
+    {
+        return $this->hasMany(Pricing::class, 'rel_id')->where('type', 'product');
+    }
+
+    /**
+     * How many services on this product a customer still holds.
+     *
+     * services.product_id is a plain column, so deleting a product customers
+     * still hold leaves their services pointing at nothing - no name on the
+     * renewal line, no server module to suspend or terminate with. Both the
+     * product screen and the Panelica Licences page ask this before deleting,
+     * so the rule is one rule rather than two that can drift apart.
+     */
+    public function heldServices(): int
+    {
+        return \App\Models\Service::where('product_id', $this->id)
+            ->whereNotIn('status', ['terminated', 'cancelled', 'fraud'])
+            ->count();
+    }
+
+    /** Prices for terms of months no billing cycle is named after. */
+    public function terms()
+    {
+        return $this->hasMany(ProductTerm::class);
+    }
+
+    /**
+     * The price row for a term of months, or null when that term is not sold.
+     *
+     * Falls back to whatever currency exists when the one asked for was never
+     * priced, the same way pricingFor() does, so a shop that added a currency
+     * later still sells the term rather than silently dropping it.
+     */
+    public function termFor(string $cycle, ?int $currencyId = null): ?ProductTerm
+    {
+        $months = BillingCycleHelper::months($cycle);
+
+        if ($months === null) {
+            return null;
+        }
+
+        $currencyId ??= Currency::getDefault()?->id;
+        $rows = ($this->relationLoaded('terms') ? $this->terms : $this->terms()->get())
+            ->where('months', $months);
+
+        return $rows->firstWhere('currency_id', $currencyId) ?? $rows->first();
+    }
+
+    /**
+     * The price row for a currency — the one being sold in unless asked
+     * otherwise, and whatever exists if the operator never priced that one.
+     */
+    public function pricingFor(?int $currencyId = null): ?Pricing
+    {
+        $currencyId ??= Currency::getDefault()?->id;
+
+        $rows = $this->relationLoaded('pricing') ? $this->pricing : $this->pricing()->get();
+
+        return $rows->firstWhere('currency_id', $currencyId) ?? $rows->first();
+    }
+
+    /**
+     * The one-time setup fee for ordering on a cycle, or zero when there is none.
+     *
+     * The product form has always saved a setup fee per cycle, and nothing read
+     * it: an operator who priced a plan at "100 a year plus 50 setup" was paid
+     * 100. A free product never carries one, and a negative value is no fee.
+     */
+    public function setupFeeFor(string $cycle, ?int $currencyId = null): float
+    {
+        if ($this->pay_type === 'free') {
+            return 0.0;
+        }
+
+        $column = BillingCycleHelper::pricingColumn($cycle);
+
+        if ($column === null) {
+            // A term of months has its setup fee beside its price.
+            return max(0.0, round((float) ($this->termFor($cycle, $currencyId)?->setup ?? 0), 2));
+        }
+
+        $row = $this->pricingFor($currencyId);
+
+        return $row ? max(0.0, round((float) ($row->{$column.'_setup'} ?? 0), 2)) : 0.0;
+    }
+
+    /**
+     * What one term costs, or null when the product is not sold on that cycle.
+     *
+     * The pricing table marks an unsold cycle with -1, which is a marker and
+     * not a price: anything that treats it as one bills a negative amount.
+     */
+    public function priceFor(string $cycle, ?int $currencyId = null): ?float
+    {
+        $column = BillingCycleHelper::pricingColumn($cycle);
+
+        if ($column === null) {
+            // A term of months no cycle is named after - seven months, say.
+            // Priced in product_terms; unpriced means not sold, exactly as an
+            // empty column means not sold.
+            $term = $this->termFor($cycle, $currencyId);
+
+            return $term && (float) $term->price > 0 ? round((float) $term->price, 2) : null;
+        }
+
+        $row = $this->pricingFor($currencyId);
+
+        if ($row && $row->{$column} !== null) {
+            $price = round((float) $row->{$column}, 2);
+
+            if ($price > 0) {
+                return $price;
+            }
+
+            // A free product's zero is a real price: the checkout accepts it and
+            // the zero-total invoice settles itself as paid (OrderService). Without
+            // this the product had no billing cycle at all and could not be
+            // ordered. A negative value still means "not sold on this cycle".
+            if ($this->pay_type === 'free' && $price >= 0) {
+                return 0.0;
+            }
+        }
+
+        // A free product sold on no cycle at all: the product form starts every
+        // cycle at -1 ("not sold"), so "Free" with the prices left alone could
+        // not be ordered - the order form had no cycle to offer and checkout
+        // said none was chosen. It is sold monthly at no charge; a free
+        // service is never invoiced again, so the cycle only dates it.
+        if ($this->pay_type === 'free' && $column === 'monthly' && ! $this->sellsAnyCycle($row)) {
+            return 0.0;
+        }
+
+        return null;
+    }
+
+    /** Whether a price row sells the product on at least one cycle (zero or more). */
+    private function sellsAnyCycle(?Pricing $row): bool
+    {
+        if (! $row) {
+            return false;
+        }
+
+        foreach (['monthly', 'quarterly', 'semiannually', 'annually', 'biennially', 'triennially'] as $column) {
+            if ($row->{$column} !== null && (float) $row->{$column} >= 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * The cycles the product is actually sold on, shortest term first.
+     *
+     * The six named cycles and any term of months the product carries a price
+     * for - seven months, say, which no cycle is named after and which lives in
+     * `product_terms`. The shop, the cart, the admin invoice screen and the
+     * customer's cycle change all ask this, so a term priced on the licences
+     * page is offered everywhere a named cycle is.
+     *
+     * @return array<string, float>
+     */
+    public function pricedCycles(?int $currencyId = null): array
+    {
+        $byMonths = [];
+
+        foreach (\App\Services\ProductCreator::CYCLES as $cycle) {
+            $price = $this->priceFor($cycle, $currencyId);
+
+            if ($price !== null) {
+                $byMonths[BillingCycleHelper::months($cycle)] = [$cycle, $price];
+            }
+        }
+
+        $terms = ($this->relationLoaded('terms') ? $this->terms : $this->terms()->get())
+            ->where('currency_id', $currencyId ?? Currency::getDefault()?->id);
+
+        foreach ($terms as $term) {
+            $months = (int) $term->months;
+            $cycle = BillingCycleHelper::cycleForMonths($months);
+            $price = $this->priceFor($cycle, $currencyId);
+
+            if (! isset($byMonths[$months]) && $price !== null) {
+                $byMonths[$months] = [$cycle, $price];
+            }
+        }
+
+        ksort($byMonths);
+        $prices = [];
+
+        foreach ($byMonths as [$cycle, $price]) {
+            $prices[$cycle] = $price;
+        }
+
+        return $prices;
+    }
+
+    public function services()
+    {
+        return $this->hasMany(Service::class, 'product_id');
+    }
+
+    /** Configurable option groups linked to this product. */
+    public function configOptionGroups()
+    {
+        return $this->belongsToMany(ConfigOptionGroup::class, 'config_option_links', 'product_id', 'group_id');
+    }
+
+    /**
+     * The packages the operator lets this one move to (product_upgrade_paths).
+     * Empty means no list was set: any package of the same module.
+     */
+    public function upgradeProducts()
+    {
+        return $this->belongsToMany(Product::class, 'product_upgrade_paths', 'product_id', 'upgrade_product_id')->withTimestamps();
+    }
+
+    public function scopeActive($q)
+    {
+        return $q->where('hidden', false)->where('retired', false);
+    }
+
+    /**
+     * What the plan actually gives, read from the product's own configuration.
+     *
+     * Written out rather than typed into a feature list, because a hand-written
+     * "1 GB RAM" goes stale the moment somebody edits the limits and nobody
+     * remembers to edit the marketing copy too. These are the numbers the panel
+     * will enforce.
+     *
+     * @return array<int, array{icon: string, text: string}>
+     */
+    public function resourceSummary(): array
+    {
+        $c = is_string($this->config_options) ? (json_decode($this->config_options, true) ?: []) : ((array) $this->config_options);
+        if ($c === []) {
+            return [];
+        }
+
+        // res_* are the Panelica panel's own limits. A product provisioned by
+        // another panel has none, and neither has an SSL certificate - even
+        // when an older save left those keys on it and the store went on
+        // advertising "1 GB RAM, 1 vCPU".
+        //
+        // A product with no module at all is left alone: nothing provisions it,
+        // so the operator typed those numbers in deliberately and the store has
+        // shown them since 86dae844 ("a product without a module keeps no
+        // resources it was never given" - never given, not never shown). Taking
+        // the card away from them was collateral of the SSL fix.
+        if (strtolower((string) $this->type) === 'ssl'
+            || ! in_array(strtolower((string) $this->server_type), ['', 'custom', 'panelica'], true)) {
+            return [];
+        }
+
+        // 3072 GB of bandwidth reads as a mistake; say 3 TB.
+        $mb = function ($v) {
+            $v = (int) $v;
+            $trim = fn ($n) => rtrim(rtrim(number_format($n, 1, '.', ''), '0'), '.');
+
+            if ($v >= 1048576) {
+                return $trim($v / 1048576).' TB';
+            }
+
+            return $v >= 1024 ? $trim($v / 1024).' GB' : $v.' MB';
+        };
+
+        $out = [];
+        if (($c['res_memory_mb'] ?? 0) > 0) {
+            $out[] = ['icon' => 'ri-ram-2-line', 'text' => __('client.store.res_memory', ['value' => $mb($c['res_memory_mb'])])];
+        }
+        if (($c['res_cpu_percent'] ?? 0) > 0) {
+            // 100% is one core, so say it in cores - a percentage over 100 reads
+            // like an error to anyone who has not seen a cgroup.
+            $cores = (int) $c['res_cpu_percent'] / 100;
+            $out[] = ['icon' => 'ri-cpu-line', 'text' => __('client.store.res_cpu', ['value' => rtrim(rtrim(number_format($cores, 1, '.', ''), '0'), '.')])];
+        }
+        if (($c['res_disk_mb'] ?? 0) > 0) {
+            $out[] = ['icon' => 'ri-hard-drive-2-line', 'text' => __('client.store.res_disk', ['value' => $mb($c['res_disk_mb'])])];
+        }
+        if (($c['res_bandwidth_mb'] ?? 0) > 0) {
+            $out[] = ['icon' => 'ri-exchange-line', 'text' => __('client.store.res_bandwidth', ['value' => $mb($c['res_bandwidth_mb'])])];
+        }
+        if (($c['res_max_containers'] ?? 0) > 0) {
+            $out[] = ['icon' => 'ri-apps-2-line', 'text' => trans_choice('client.store.res_apps', (int) $c['res_max_containers'], ['count' => (int) $c['res_max_containers']])];
+        }
+        if (($c['res_max_domains'] ?? 0) > 0) {
+            $out[] = ['icon' => 'ri-global-line', 'text' => trans_choice('client.store.res_domains', (int) $c['res_max_domains'], ['count' => (int) $c['res_max_domains']])];
+        }
+
+        return $out;
+    }
+
+    public function translations()
+    {
+        return $this->hasMany(ProductTranslation::class);
+    }
+
+    /**
+     * The description for the current language. The product's own text is the
+     * default language's; a translation row holds another language's, and a
+     * missing one falls back to the product's text.
+     */
+    public function localizedDescription(): string
+    {
+        $locale = app()->getLocale();
+        $translation = $this->relationLoaded('translations')
+            ? $this->translations->firstWhere('language', $locale)
+            : $this->translations()->where('language', $locale)->first();
+
+        if ($translation && (string) $translation->description !== '') {
+            return (string) $translation->description;
+        }
+
+        return (string) $this->description;
+    }
+
+    public function hasDescription(): bool
+    {
+        return $this->localizedDescription() !== '';
+    }
+
+    /**
+     * The product description as safe HTML.
+     *
+     * The admin writes Markdown (a small toolbar over the textarea); this is
+     * the one place it becomes HTML, and it is read by customers on the public
+     * store, so the conversion is told to treat the input as text and nothing
+     * else.
+     *
+     * Str::markdown() on its own does NOT make raw HTML safe: measured, the
+     * GitHub-flavoured default escapes a bare <script> but passes
+     * `<img src=x onerror=alert(1)>` straight through and turns
+     * `[x](javascript:alert(1))` into a live javascript: link. That is stored
+     * cross-site scripting on every page the description appears on, reachable
+     * by anyone who may edit a product. html_input=escape makes every tag text
+     * and allow_unsafe_links=false drops the scheme.
+     */
+    public function descriptionHtml(): string
+    {
+        return Str::markdown($this->localizedDescription(), [
+            'html_input' => 'escape',
+            'allow_unsafe_links' => false,
+        ]);
+    }
+
+    /** The description as plain text, for the truncated excerpts. */
+    public function descriptionText(): string
+    {
+        return trim(html_entity_decode(strip_tags($this->descriptionHtml()), ENT_QUOTES | ENT_HTML5, 'UTF-8'));
+    }
+}

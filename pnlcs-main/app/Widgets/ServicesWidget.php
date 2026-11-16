@@ -1,0 +1,30 @@
+<?php
+
+namespace App\Widgets;
+
+use App\Constants\Permissions;
+use App\Contracts\WidgetModuleInterface;
+use Illuminate\Support\Facades\DB;
+
+class ServicesWidget implements WidgetModuleInterface
+{
+    public function getTitle(): string { return __('admin.dashboard.w_services'); }
+    public function getDescription(): string { return __('admin.dashboard.w_services_desc'); }
+    public function getColumns(): int { return 1; }
+    public function getWeight(): int { return 50; }
+    public function getPermission(): ?string { return Permissions::LIST_SERVICES; }
+    public function getCacheTtl(): int { return 120; }
+
+    public function getData(): array
+    {
+        return DB::table("services")->selectRaw("status, COUNT(*) as cnt")->groupBy("status")->pluck("cnt", "status")->toArray();
+    }
+
+    public function render(array $data): string
+    {
+        $colors = ["active" => "#46a546", "suspended" => "#f89406", "terminated" => "#c43c35", "pending" => "#337ab7", "cancelled" => "#999"];
+        $html = "";
+        foreach ($data as $status => $count) { $color = $colors[$status] ?? "#666"; $html .= '<div style="display:flex;justify-content:space-between;padding:10px 16px;border-bottom:1px solid var(--pn-border);font-size:13px;"><span>'.e(invoice_status_label($status)).'</span><span style="font-weight:700;color:'.e($color).';">'.e($count).'</span></div>'; }
+        return $html;
+    }
+}

@@ -1,0 +1,363 @@
+<?php
+
+use App\Http\Controllers\Client\AccountController;
+use App\Http\Controllers\Client\AffiliateController;
+use App\Http\Controllers\Client\AnnouncementController;
+use App\Http\Controllers\Client\AuthController;
+use App\Http\Controllers\Client\CartController;
+use App\Http\Controllers\Client\ContactController;
+use App\Http\Controllers\Client\DomainController;
+use App\Http\Controllers\Client\DownloadController;
+use App\Http\Controllers\Client\EmailController;
+use App\Http\Controllers\Client\FundsController;
+use App\Http\Controllers\Client\HomeController;
+use App\Http\Controllers\Client\InvoiceController;
+use App\Http\Controllers\Client\KbController;
+use App\Http\Controllers\Client\NetworkStatusController;
+use App\Http\Controllers\Client\PaymentMethodController;
+use App\Http\Controllers\Client\QuoteController;
+use App\Http\Controllers\Client\ServiceController;
+use App\Http\Controllers\Client\SslController;
+use App\Http\Controllers\Client\TicketController;
+use App\Http\Controllers\DomainSearchController;
+use App\Http\Middleware\TwoFactorVerify;
+use Illuminate\Support\Facades\Route;
+
+Route::prefix('client')->name('client.')->middleware(['banned.ip', 'client.permission'])->group(function () {
+    Route::get('login', [AuthController::class, 'showLogin'])->name('login');
+    Route::post('login', [AuthController::class, 'login'])->middleware('throttle:10,1')->name('login.submit');
+    Route::get('register', [AuthController::class, 'showRegister'])->name('register');
+    // Signing up makes an account and sends mail; the contact form next to
+    // it has been counted all along.
+    Route::post('register', [AuthController::class, 'register'])->middleware('throttle:5,1')->name('register.submit');
+
+    // One-time sign-in links (the API's createssotoken) and account
+    // invitations (createclientinvite). Both are opened from an email or an
+    // integration, often by somebody not signed in yet.
+    Route::get('sso/{token}', \App\Http\Controllers\Client\SsoController::class)
+        ->middleware('throttle:20,1')->name('sso');
+    // The link at the foot of a marketing email: signed, no sign-in needed.
+    Route::get('unsubscribe/{client}', [\App\Http\Controllers\Client\UnsubscribeController::class, 'show'])
+        ->middleware(['signed', 'throttle:30,1'])->name('unsubscribe');
+    Route::post('unsubscribe/{client}', [\App\Http\Controllers\Client\UnsubscribeController::class, 'store'])
+        ->middleware(['signed', 'throttle:30,1'])->name('unsubscribe.store')
+        ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\ValidateCsrfToken::class]);
+    Route::get('invite/{token}', [\App\Http\Controllers\Client\InviteController::class, 'show'])
+        ->middleware('throttle:30,1')->name('invite.show');
+    Route::post('invite/{token}', [\App\Http\Controllers\Client\InviteController::class, 'accept'])
+        ->middleware('throttle:10,1')->name('invite.accept');
+
+    // Proving the address on an account. The link itself carries no session -
+    // a customer opens it on whatever device their mail is on - so it sits
+    // outside the signed-in group and relies on its signature instead.
+    Route::get('email/verify/{id}/{hash}', [\App\Http\Controllers\Client\EmailVerificationController::class, 'verify'])
+        ->middleware('throttle:20,1')->name('verification.verify');
+
+    // Signing in with Google. Both legs 404 unless an operator has turned it
+    // on and supplied their own OAuth client.
+    Route::get('auth/google', [\App\Http\Controllers\Client\SocialLoginController::class, 'redirect'])
+        ->middleware('throttle:20,1')->name('social.google.redirect');
+    Route::get('auth/google/callback', [\App\Http\Controllers\Client\SocialLoginController::class, 'callback'])
+        ->middleware('throttle:20,1')->name('social.google.callback');
+    Route::get('auth/github', [\App\Http\Controllers\Client\GithubLoginController::class, 'redirect'])
+        ->middleware('throttle:20,1')->name('social.github.redirect');
+    Route::get('auth/github/callback', [\App\Http\Controllers\Client\GithubLoginController::class, 'callback'])
+        ->middleware('throttle:20,1')->name('social.github.callback');
+
+    // Password Reset
+    Route::get('forgot-password', [AuthController::class, 'showForgotPassword'])->name('password.request');
+    // Unthrottled, this is a mail bomb aimed at any address the attacker likes.
+    Route::post('forgot-password', [AuthController::class, 'sendResetLink'])->middleware('throttle:5,1')->name('password.email');
+    Route::get('reset-password/{token}', [AuthController::class, 'showResetForm'])->name('password.reset');
+    Route::post('reset-password', [AuthController::class, 'resetPassword'])->middleware('throttle:10,1')->name('password.update.reset');
+
+    // Knowledge Base (public)
+    Route::get('knowledgebase', [KbController::class, 'index'])->name('kb.index');
+    Route::get('knowledgebase/{article}', [KbController::class, 'show'])->name('kb.show');
+
+    // Announcements (public)
+    Route::get('announcements', [AnnouncementController::class, 'index'])->name('announcements.index');
+    // Network / server status (public)
+    Route::get('network-status', [NetworkStatusController::class, 'index'])->name('network-status');
+    Route::get('announcements.rss', [AnnouncementController::class, 'rss'])->name('announcements.rss');
+    Route::get('announcements/{announcement}', [AnnouncementController::class, 'show'])->name('announcements.show');
+
+    // Contact (public)
+    Route::get('contact', [ContactController::class, 'show'])->name('contact');
+    Route::post('contact', [ContactController::class, 'submit'])->middleware('throttle:5,1')->name('contact.submit');
+
+    // Domain Search (public — no auth required)
+    Route::get('domain-search', [DomainSearchController::class, 'index'])->name('domain.search');
+    // One search fans out into a WHOIS query for the name and one for every
+    // suggested ending - outbound connections the registries throttle
+    // themselves, made in the operator's name by anybody at all.
+    Route::post('domain-search', [DomainSearchController::class, 'check'])->middleware('throttle:20,1')->name('domain.check');
+    Route::get('domain-pricing', [DomainSearchController::class, 'pricing'])->name('domain.pricing');
+
+    // Store — public browsing
+    Route::get('store', [CartController::class, 'store'])->name('store');
+    Route::get('store/configure/{product:slug}', [CartController::class, 'configure'])->name('store.configure');
+
+    // Cart and checkout are open to visitors: the account is opened AT
+    // checkout, not before it. The old shape - configure a product, press
+    // "add to cart", hit a login wall, lose the configuration, start over -
+    // was the most expensive moment in the funnel to put a wall in. The
+    // checkout POST creates the account in-line for guests; CartService has
+    // always keyed guest carts by session, only the routes forbade them.
+    // A visitor passes straight through '2fa'; a login that has given its
+    // password but not its second factor is sent to answer it first, as
+    // in the client area, rather than ordering on the account meanwhile.
+    Route::middleware('2fa')->group(function () {
+        Route::get('cart', [CartController::class, 'index'])->name('cart.index');
+        Route::post('cart/add', [CartController::class, 'addToCart'])->name('cart.add');
+        Route::post('cart/add-domain', [CartController::class, 'addDomainToCart'])->name('cart.add-domain');
+        // Asks the registry, as the domain search does, so it is throttled the same way.
+        Route::post('cart/domain-quote', [CartController::class, 'domainQuote'])->middleware('throttle:20,1')->name('cart.domain-quote');
+        Route::delete('cart/remove/{index}', [CartController::class, 'removeItem'])->name('cart.remove');
+        Route::post('cart/privacy/{index}', [CartController::class, 'domainPrivacy'])->name('cart.privacy');
+        Route::post('cart/promo', [CartController::class, 'applyPromo'])->name('cart.promo');
+        Route::get('cart/checkout', [CartController::class, 'checkout'])->name('cart.checkout');
+        Route::post('cart/checkout', [CartController::class, 'processCheckout'])->middleware('throttle:10,1')->name('cart.process');
+    });
+
+    // 2FA verification (requires login but not 2FA yet)
+    Route::middleware('auth')->withoutMiddleware([TwoFactorVerify::class])->group(function () {
+        Route::get('2fa', [AuthController::class, 'show2faVerify'])->name('2fa.verify');
+        // Six digits, and the form that comes before it allows ten tries a
+        // minute. Unthrottled, the second factor is only as good as the
+        // patience of whoever already has the password.
+        Route::post('2fa', [AuthController::class, 'verify2fa'])->middleware('throttle:10,1')->name('2fa.verify.submit');
+    });
+
+    Route::middleware(['auth', '2fa'])->group(function () {
+        Route::get('/', [HomeController::class, 'index'])->name('home');
+
+        // The waiting page and its "send it again" button. Three a minute:
+        // enough for a customer whose mail is slow, not enough to point at
+        // somebody else's inbox.
+        Route::get('email/verify', [\App\Http\Controllers\Client\EmailVerificationController::class, 'notice'])->name('verification.notice');
+        Route::post('email/verification-notification', [\App\Http\Controllers\Client\EmailVerificationController::class, 'resend'])
+            ->middleware('throttle:3,1')->name('verification.send');
+        // The code from the same mail. Each code also dies after five wrong
+        // tries; this keeps the guessing slow across resends.
+        Route::post('email/verify-code', [\App\Http\Controllers\Client\EmailVerificationController::class, 'verifyCode'])
+            ->middleware('throttle:10,1')->name('verification.code');
+        // Signing out must stay reachable while the code is outstanding.
+        Route::post('logout', [AuthController::class, 'logout'])
+            ->withoutMiddleware([TwoFactorVerify::class])->name('logout');
+
+        // Services
+        Route::get('services', [ServiceController::class, 'index'])->name('services.index');
+        Route::get('services/{service}', [ServiceController::class, 'show'])->name('services.show');
+        Route::get('services/{service}/login', [ServiceController::class, 'loginToPanel'])->name('services.login');
+        Route::get('services/{service}/usage', [ServiceController::class, 'usage'])->name('services.usage');
+        // A button the service's module offers the customer (clientFunctions()).
+        Route::post('services/{service}/module/{function}', [ServiceController::class, 'moduleFunction'])
+            ->where('function', '[A-Za-z][A-Za-z0-9_]{0,63}')->middleware('throttle:10,1')->name('services.module-function');
+        // Virtual servers (Proxmox): status and graphs are read often; the
+        // rest changes the machine and is rate limited.
+        Route::get('services/{service}/vps/status', [\App\Http\Controllers\Client\VpsController::class, 'status'])->middleware('throttle:60,1')->name('services.vps.status');
+        Route::get('services/{service}/vps/graphs', [\App\Http\Controllers\Client\VpsController::class, 'graphs'])->middleware('throttle:60,1')->name('services.vps.graphs');
+        Route::post('services/{service}/vps/power', [\App\Http\Controllers\Client\VpsController::class, 'power'])->middleware('throttle:10,1')->name('services.vps.power');
+        Route::post('services/{service}/vps/password', [\App\Http\Controllers\Client\VpsController::class, 'password'])->middleware('throttle:5,1')->name('services.vps.password');
+        Route::post('services/{service}/vps/reinstall', [\App\Http\Controllers\Client\VpsController::class, 'reinstall'])->middleware('throttle:3,10')->name('services.vps.reinstall');
+        Route::get('services/{service}/vps/snapshots', [\App\Http\Controllers\Client\VpsController::class, 'snapshots'])->middleware('throttle:60,1')->name('services.vps.snapshots');
+        Route::post('services/{service}/vps/snapshots', [\App\Http\Controllers\Client\VpsController::class, 'snapshotAction'])->middleware('throttle:10,1')->name('services.vps.snapshots.action');
+        Route::get('services/{service}/vps/backups', [\App\Http\Controllers\Client\VpsController::class, 'backups'])->middleware('throttle:60,1')->name('services.vps.backups');
+        Route::post('services/{service}/vps/backups', [\App\Http\Controllers\Client\VpsController::class, 'backupAction'])->middleware('throttle:6,10')->name('services.vps.backups.action');
+        Route::get('services/{service}/cancel', [ServiceController::class, 'requestCancellation'])->name('services.cancel');
+        Route::post('services/{service}/cancel', [ServiceController::class, 'submitCancellation'])->name('services.cancel.submit');
+        Route::get('services/{service}/upgrade', [ServiceController::class, 'upgrade'])->name('services.upgrade');
+        Route::post('services/{service}/upgrade', [ServiceController::class, 'processUpgrade'])->name('services.upgrade.process');
+        Route::post('services/{service}/options', [ServiceController::class, 'processOptionUpgrade'])->name('services.options.upgrade');
+        Route::post('services/{service}/autorenew', [ServiceController::class, 'toggleAutoRenew'])->name('services.autorenew');
+        Route::post('services/{service}/renew', [ServiceController::class, 'renew'])->name('services.renew');
+        Route::post('services/{service}/cycle', [ServiceController::class, 'changeCycle'])->name('services.cycle');
+        Route::post('services/{service}/addons', [ServiceController::class, 'storeAddon'])->name('services.addons.store');
+        Route::post('services/{service}/addons/{addon}/cancel', [ServiceController::class, 'cancelAddon'])->name('services.addons.cancel');
+
+        // Hosting management (Panelica-only, feature-gated in the controller)
+        Route::get('services/{service}/emails', [ServiceController::class, 'emails'])->name('services.emails');
+        Route::post('services/{service}/emails', [ServiceController::class, 'storeEmail'])->name('services.emails.store');
+        Route::post('services/{service}/emails/delete', [ServiceController::class, 'destroyEmail'])->name('services.emails.destroy');
+        Route::post('services/{service}/emails/certificate', [ServiceController::class, 'retryMailCertificate'])->middleware('throttle:3,10')->name('services.emails.certificate');
+        Route::post('services/{service}/emails/password', [ServiceController::class, 'updateEmailPassword'])->name('services.emails.password');
+        Route::get('services/{service}/ftp', [ServiceController::class, 'ftp'])->name('services.ftp');
+        Route::post('services/{service}/ftp', [ServiceController::class, 'storeFtp'])->name('services.ftp.store');
+        Route::post('services/{service}/ftp/delete', [ServiceController::class, 'destroyFtp'])->name('services.ftp.destroy');
+        Route::post('services/{service}/ftp/password', [ServiceController::class, 'updateFtpPassword'])->name('services.ftp.password');
+        Route::get('services/{service}/subdomains', [ServiceController::class, 'subdomains'])->name('services.subdomains');
+        Route::post('services/{service}/subdomains', [ServiceController::class, 'storeSubdomain'])->name('services.subdomains.store');
+        Route::post('services/{service}/subdomains/delete', [ServiceController::class, 'destroySubdomain'])->name('services.subdomains.destroy');
+        Route::get('services/{service}/cron', [ServiceController::class, 'cron'])->name('services.cron');
+        Route::post('services/{service}/cron', [ServiceController::class, 'storeCron'])->name('services.cron.store');
+        Route::post('services/{service}/cron/toggle', [ServiceController::class, 'toggleCron'])->name('services.cron.toggle');
+        Route::post('services/{service}/cron/run', [ServiceController::class, 'runCron'])->name('services.cron.run');
+        Route::post('services/{service}/cron/delete', [ServiceController::class, 'destroyCron'])->name('services.cron.destroy');
+        Route::get('services/{service}/dns', [ServiceController::class, 'dns'])->name('services.dns');
+        Route::post('services/{service}/dns', [ServiceController::class, 'storeDns'])->name('services.dns.store');
+        Route::post('services/{service}/dns/update', [ServiceController::class, 'updateDns'])->name('services.dns.update');
+        Route::post('services/{service}/dns/delete', [ServiceController::class, 'destroyDns'])->name('services.dns.destroy');
+        Route::get('services/{service}/backups', [ServiceController::class, 'backups'])->name('services.backups');
+        Route::post('services/{service}/backups', [ServiceController::class, 'storeBackup'])->name('services.backups.store');
+        Route::post('services/{service}/backups/delete', [ServiceController::class, 'destroyBackup'])->name('services.backups.destroy');
+        // Runtime applications (Laravel / Node.js / Python) — read-only lists.
+        Route::get('services/{service}/laravel', [ServiceController::class, 'laravelApps'])->name('services.laravel');
+        Route::get('services/{service}/nodejs', [ServiceController::class, 'nodejsApps'])->name('services.nodejs');
+        Route::get('services/{service}/python', [ServiceController::class, 'pythonApps'])->name('services.python');
+        Route::get('services/{service}/containers', [ServiceController::class, 'containers'])->name('services.containers');
+        Route::post('services/{service}/containers', [ServiceController::class, 'storeContainer'])->name('services.containers.store');
+        Route::post('services/{service}/containers/action', [ServiceController::class, 'containerAction'])->name('services.containers.action');
+        Route::post('services/{service}/containers/delete', [ServiceController::class, 'destroyContainer'])->name('services.containers.destroy');
+        Route::post('services/{service}/containers/email-details', [ServiceController::class, 'emailContainerDetails'])->name('services.containers.email');
+        // Opened by hand (a pasted address, a refresh after the redirect) this
+        // was a 405 dressed up as a server error. There is nothing to GET here.
+        Route::get('services/{service}/containers/email-details', fn (\App\Models\Service $service) => redirect()->route('client.services.containers', $service));
+        // Serving an app on the customer's own domain
+        Route::post('services/{service}/containers/link-domain', [ServiceController::class, 'linkContainerDomain'])->name('services.containers.link');
+        Route::post('services/{service}/containers/unlink-domain', [ServiceController::class, 'unlinkContainerDomain'])->name('services.containers.unlink');
+        Route::get('services/{service}/databases', [ServiceController::class, 'databases'])->name('services.databases');
+        Route::post('services/{service}/databases', [ServiceController::class, 'storeDatabase'])->name('services.databases.store');
+        Route::post('services/{service}/databases/delete', [ServiceController::class, 'destroyDatabase'])->name('services.databases.destroy');
+        Route::post('services/{service}/databases/users', [ServiceController::class, 'storeDatabaseUser'])->name('services.databases.users.store');
+        Route::post('services/{service}/databases/users/delete', [ServiceController::class, 'destroyDatabaseUser'])->name('services.databases.users.destroy');
+        Route::post('services/{service}/databases/users/password', [ServiceController::class, 'updateDatabaseUserPassword'])->name('services.databases.users.password');
+        Route::get('services/{service}/files', [ServiceController::class, 'files'])->name('services.files');
+        Route::get('services/{service}/files/download', [ServiceController::class, 'filesDownload'])->name('services.files.download');
+        Route::get('services/{service}/files/edit', [ServiceController::class, 'filesEdit'])->name('services.files.edit');
+        Route::post('services/{service}/files/save', [ServiceController::class, 'filesWrite'])->name('services.files.save');
+        Route::post('services/{service}/files/create', [ServiceController::class, 'filesCreate'])->name('services.files.create');
+        Route::post('services/{service}/files/upload', [ServiceController::class, 'filesUpload'])->name('services.files.upload');
+        Route::post('services/{service}/files/rename', [ServiceController::class, 'filesRename'])->name('services.files.rename');
+        Route::post('services/{service}/files/delete', [ServiceController::class, 'filesDelete'])->name('services.files.delete');
+
+        // Domains
+        Route::get('domains', [DomainController::class, 'index'])->name('domains.index');
+        Route::get('domains/transfer', [DomainController::class, 'transfer'])->name('domains.transfer');
+        Route::post('domains/renew', [DomainController::class, 'renewMany'])->name('domains.renew-many');
+        Route::get('domains/{domain}', [DomainController::class, 'show'])->name('domains.show');
+        Route::put('domains/{domain}/nameservers', [DomainController::class, 'updateNameservers'])->name('domains.nameservers');
+        Route::post('domains/{domain}/attach-hosting', [DomainController::class, 'attachToHosting'])->name('domains.attach-hosting');
+        // A transfer code or an unlocked domain lets the name leave: confirmed
+        // with an emailed code first (SensitiveActionConfirmation).
+        Route::post('domains/{domain}/lock', [DomainController::class, 'toggleLock'])->middleware('client.confirm')->name('domains.lock');
+        Route::post('domains/{domain}/autorenew', [DomainController::class, 'toggleAutoRenew'])->name('domains.autorenew');
+        Route::post('domains/{domain}/privacy', [DomainController::class, 'togglePrivacy'])->name('domains.privacy');
+        Route::get('domains/{domain}/contacts', [DomainController::class, 'contacts'])->name('domains.contacts');
+        Route::put('domains/{domain}/contacts', [DomainController::class, 'updateContacts'])->name('domains.contacts.update');
+        Route::get('domains/{domain}/glue', [DomainController::class, 'glue'])->name('domains.glue');
+        Route::post('domains/{domain}/glue', [DomainController::class, 'saveGlue'])->name('domains.glue.save');
+        Route::delete('domains/{domain}/glue', [DomainController::class, 'deleteGlue'])->name('domains.glue.delete');
+        Route::post('domains/{domain}/renew', [DomainController::class, 'renew'])->name('domains.renew');
+        Route::post('domains/{domain}/restore', [DomainController::class, 'restore'])->name('domains.restore');
+        Route::get('domains/{domain}/epp', [DomainController::class, 'getEppCode'])->middleware('client.confirm')->name('domains.epp');
+        // Giving a domain to another account: as sensitive as the transfer code.
+        Route::post('domains/{domain}/move', [\App\Http\Controllers\Client\DomainMoveController::class, 'offer'])->middleware(['client.confirm', 'throttle:5,10'])->name('domains.move');
+        Route::post('domain-moves/{offer}/cancel', [\App\Http\Controllers\Client\DomainMoveController::class, 'cancel'])->name('domain-moves.cancel');
+        Route::post('domain-moves/{offer}/accept', [\App\Http\Controllers\Client\DomainMoveController::class, 'accept'])->name('domain-moves.accept');
+        Route::post('domain-moves/{offer}/decline', [\App\Http\Controllers\Client\DomainMoveController::class, 'decline'])->name('domain-moves.decline');
+
+        // Invoices
+        Route::get('invoices', [InvoiceController::class, 'index'])->name('invoices.index');
+        // One payment for several open invoices (MassPaymentService).
+        Route::post('invoices/mass-pay', [InvoiceController::class, 'massPay'])->name('invoices.mass-pay');
+        Route::get('invoices/{invoice}/pdf', [InvoiceController::class, 'downloadPdf'])->name('invoices.pdf');
+        Route::get('invoices/{invoice}', [InvoiceController::class, 'show'])->name('invoices.show');
+        Route::post('invoices/{invoice}/payment-notification', [InvoiceController::class, 'submitPaymentNotification'])->name('invoices.payment-notification');
+        Route::post('invoices/{invoice}/pay-with-credit', [InvoiceController::class, 'payWithCredit'])->name('invoices.pay-with-credit');
+        // A card the customer already stored, chosen on the invoice (AutoChargeService::payNowWith).
+        Route::post('invoices/{invoice}/pay-with-card', [InvoiceController::class, 'payWithStoredCard'])->middleware('throttle:6,1')->name('invoices.pay-with-card');
+
+        // Quotes
+        Route::get('quotes', [QuoteController::class, 'index'])->name('quotes.index');
+        Route::get('quotes/{quote}', [QuoteController::class, 'show'])->name('quotes.show');
+        Route::post('quotes/{quote}/accept', [QuoteController::class, 'accept'])->name('quotes.accept');
+        Route::post('quotes/{quote}/decline', [QuoteController::class, 'decline'])->name('quotes.decline');
+
+        // Payment methods
+        Route::get('payment-methods', [PaymentMethodController::class, 'index'])->name('payment-methods.index');
+        Route::post('payment-methods', [PaymentMethodController::class, 'store'])->name('payment-methods.store');
+        Route::post('payment-methods/{paymentMethod}/default', [PaymentMethodController::class, 'setDefault'])->name('payment-methods.default');
+        Route::delete('payment-methods/{paymentMethod}', [PaymentMethodController::class, 'destroy'])->name('payment-methods.destroy');
+        // The customer's own stop switch for automatic card payment. 404s while
+        // the shop is not collecting by card, which is also when the page does
+        // not render it.
+        Route::post('payment-methods/auto-charge', [PaymentMethodController::class, 'autoCharge'])->name('payment-methods.auto-charge');
+        // Storing a card with the tokenising gateway. Both 404 unless the shop
+        // collects by card and has a gateway that can store one — a card form
+        // that leads nowhere must not be reachable at all.
+        Route::get('payment-methods/add-card', [PaymentMethodController::class, 'createCard'])->name('payment-methods.add-card');
+        Route::post('payment-methods/add-card', [PaymentMethodController::class, 'storeCard'])->name('payment-methods.store-card');
+
+        // Email history
+        Route::get('emails', [EmailController::class, 'index'])->name('emails.index');
+        Route::get('emails/{email}', [EmailController::class, 'show'])->name('emails.show');
+
+        // Tickets
+        Route::get('tickets', [TicketController::class, 'index'])->name('tickets.index');
+        Route::get('tickets/create', [TicketController::class, 'create'])->name('tickets.create');
+        Route::post('tickets', [TicketController::class, 'store'])->name('tickets.store');
+        Route::get('tickets/{ticket}', [TicketController::class, 'show'])->name('tickets.show');
+        Route::post('tickets/{ticket}/reply', [TicketController::class, 'reply'])->name('tickets.reply');
+        Route::post('tickets/{ticket}/close', [TicketController::class, 'close'])->name('tickets.close');
+        Route::post('tickets/{ticket}/feedback', [TicketController::class, 'feedback'])->middleware('throttle:10,1')->name('tickets.feedback');
+        Route::get('tickets/{ticket}/attachment', [TicketController::class, 'downloadAttachment'])->name('tickets.attachment');
+        Route::get('tickets/{ticket}/reply/{replyId}/attachment', [TicketController::class, 'downloadAttachment'])->name('tickets.reply.attachment');
+
+        // Downloads (auth required)
+        Route::get('downloads', [DownloadController::class, 'index'])->name('downloads.index');
+        Route::get('downloads/{download}', [DownloadController::class, 'download'])->name('downloads.download');
+
+        // Add Funds
+        Route::get('funds', [FundsController::class, 'index'])->name('funds.index');
+        Route::post('funds', [FundsController::class, 'store'])->name('funds.store');
+
+        // Affiliates
+        Route::get('affiliates', [AffiliateController::class, 'index'])->name('affiliates.index');
+        Route::post('affiliates/activate', [AffiliateController::class, 'activate'])->name('affiliates.activate');
+        Route::post('affiliates/withdraw', [AffiliateController::class, 'withdraw'])->name('affiliates.withdraw');
+        Route::post('affiliates/code', [AffiliateController::class, 'updateCode'])->name('affiliates.code');
+        Route::post('affiliates/to-balance', [AffiliateController::class, 'toBalance'])->name('affiliates.toBalance');
+
+        // Cart & Checkout
+
+        // Account Management
+        Route::get('account', [AccountController::class, 'profile'])->name('account.profile');
+        Route::put('account', [AccountController::class, 'updateProfile'])->name('account.update');
+        Route::get('account/password', [AccountController::class, 'changePassword'])->name('account.password');
+        Route::put('account/password', [AccountController::class, 'updatePassword'])->name('account.password.update');
+        Route::get('account/contacts', [AccountController::class, 'contacts'])->name('account.contacts');
+        Route::post('account/contacts', [AccountController::class, 'storeContact'])->name('account.contacts.store');
+        Route::post('account/switch/{client}', [AccountController::class, 'switchAccount'])->name('account.switch');
+        Route::put('account/contacts/{contact}', [AccountController::class, 'updateContact'])->name('account.contacts.update');
+        Route::delete('account/contacts/{contact}', [AccountController::class, 'destroyContact'])->name('account.contacts.destroy');
+        Route::get('account/payment-methods', [AccountController::class, 'paymentMethods'])->name('account.payment_methods');
+        Route::get('account/security', [AccountController::class, 'security'])->name('account.security');
+        // The account owner's Users page (invite, permissions, remove).
+        Route::get('account/users', [\App\Http\Controllers\Client\AccountUserController::class, 'index'])->name('account.users');
+        Route::post('account/users', [\App\Http\Controllers\Client\AccountUserController::class, 'invite'])->middleware('throttle:10,1')->name('account.users.invite');
+        Route::put('account/users/{user}', [\App\Http\Controllers\Client\AccountUserController::class, 'update'])->name('account.users.update');
+        Route::delete('account/users/{user}', [\App\Http\Controllers\Client\AccountUserController::class, 'destroy'])->name('account.users.destroy');
+        Route::delete('account/users/invites/{invite}', [\App\Http\Controllers\Client\AccountUserController::class, 'cancelInvite'])->name('account.users.invites.destroy');
+        Route::post('account/personal-data', [AccountController::class, 'exportData'])->middleware('throttle:5,1')->name('account.personal-data');
+        Route::get('confirm', [\App\Http\Controllers\Client\ConfirmSensitiveController::class, 'show'])->name('confirm.show');
+        Route::post('confirm/send', [\App\Http\Controllers\Client\ConfirmSensitiveController::class, 'send'])->middleware('throttle:5,10')->name('confirm.send');
+        Route::post('confirm', [\App\Http\Controllers\Client\ConfirmSensitiveController::class, 'verify'])->middleware('throttle:10,1')->name('confirm.verify');
+        Route::post('account/phone/verification', [\App\Http\Controllers\Client\PhoneVerificationController::class, 'start'])->middleware('throttle:3,10')->name('account.phone.verify');
+        Route::post('account/phone/verification-check', [\App\Http\Controllers\Client\PhoneVerificationController::class, 'check'])->middleware('throttle:10,1')->name('account.phone.verify_check');
+        Route::post('account/security/sessions/{sessionId}/logout', [AccountController::class, 'logoutSession'])->name('account.security.logout_session');
+        Route::match(['get', 'post'], '2fa/enable', [AuthController::class, 'enable2fa'])->name('2fa.enable');
+        Route::post('2fa/disable', [AuthController::class, 'disable2fa'])->name('2fa.disable');
+
+        // ── SSL Certificates ──────────────────────────────────────────
+        Route::prefix('ssl')->name('ssl.')->group(function () {
+            Route::get('/', [SslController::class, 'index'])->name('index');
+            Route::get('/{sslOrder}', [SslController::class, 'show'])->name('show');
+            Route::get('/{sslOrder}/configure', [SslController::class, 'configure'])->name('configure');
+            Route::post('/{sslOrder}/configure', [SslController::class, 'submitConfiguration'])->name('submitConfiguration');
+            Route::get('/{sslOrder}/approver-emails', [SslController::class, 'getApproverEmails'])->name('approverEmails');
+            Route::get('/{sslOrder}/download', [SslController::class, 'downloadCert'])->name('download');
+            Route::post('/{sslOrder}/resend-validation', [SslController::class, 'resendValidation'])->name('resendValidation');
+        });
+    });
+});

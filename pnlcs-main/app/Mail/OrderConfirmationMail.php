@@ -1,0 +1,43 @@
+<?php
+
+namespace App\Mail;
+
+use App\Models\Order;
+use App\Mail\Concerns\LocalizesToRecipient;
+use App\Models\Setting;
+use Illuminate\Bus\Queueable;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class OrderConfirmationMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+    use LocalizesToRecipient;
+
+    public function __construct(
+        public Order $order
+    ) {
+        $this->localizeTo($this->order);
+    }
+
+    public function envelope(): Envelope
+    {
+        $id = $this->order->order_num ?? $this->order->id;
+
+        return new Envelope(subject: __('email.order.confirmation_subject', ['number' => $id]));
+    }
+
+    public function content(): Content
+    {
+        return new Content(
+            view: 'emails.order-confirmation',
+            with: [
+                'order' => $this->order,
+                'companyName' => company_name(),
+            ],
+        );
+    }
+}

@@ -1,0 +1,173 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Enums\ServiceStatus;
+use App\Events\ServiceSuspended;
+use App\Models\Invoice;
+use App\Models\Product;
+use App\Models\Service;
+use App\Models\Setting;
+use App\Services\ProvisioningService;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+class SuspensionCommand extends Command
+{
+    protected $signature = 'pnlcs:auto-suspend {--dry-run : List what would be suspended without touching anything}';
+
+    protected $description = 'Auto-suspend services with overdue invoices';
+
+    /**
+     * Grace period, in days, after an invoice becomes overdue.
+     *
+     * Public because unsuspend-on-payment asks the same question with it: a
+     * service must not be switched back on over a debt that will suspend it
+     * again the next morning.
+     *
+     * A product may keep its own (suspend_after_days); without one, or for a
+     * service without a product, the general setting applies.
+     */
+    public static function graceDays(?Product $product = null): int
+    {
+        if ($product && $product->suspend_after_days !== null) {
+            return max(0, (int) $product->suspend_after_days);
+        }
+
+        return max(0, (int) Setting::get('AutoSuspensionDays', 3));
+    }
+
+    /** Whether the service owes what its own grace period would suspend it over. */
+    public static function behindFor(Service $service): bool
+    {
+        $grace = self::graceDays($service->product);
+
+        return self::invoicedOnly()
+            ? Service::whereKey($service->id)->owingOverdue($grace)->exists()
+            : Invoice::where('client_id', $service->client_id)->overduePastGrace($grace)->exists();
+    }
+
+    /**
+     * Whether only the services on the overdue invoice are suspended.
+     *
+     * Off (the default), the question is about the client: an overdue invoice
+     * of any kind - a domain renewal, a one-off charge - suspends every active
+     * service they have. On, it is about the service, the way an operator who
+     * sells many services to one customer (a reseller, an agency) may want it:
+     * a late domain renewal does not take down a customer's other servers.
+     * Unsuspend-on-payment asks the same question, so the two agree.
+     */
+    public static function invoicedOnly(): bool
+    {
+        return (bool) (int) Setting::get('AutoSuspendInvoicedOnly', 0);
+    }
+
+    public function handle(ProvisioningService $provisioning): int
+    {
+        // The shortest grace any service has, to find the candidates in one
+        // query; each is then held to its own product's (behindFor()).
+        $own = Product::whereNotNull('suspend_after_days')->min('suspend_after_days');
+        $least = $own === null ? self::graceDays() : min(self::graceDays(), max(0, (int) $own));
+
+        $services = Service::with(['client.group', 'server', 'product'])
+            ->where('status', ServiceStatus::Active->value)
+            // r135-hold: "do not suspend until" is a date, not a switch. This
+            // used to pass over any service carrying a date at all, so a hold
+            // put on until the end of the month went on protecting the account
+            // for ever and the customer could stop paying with nothing
+            // happening. A hold that has run out no longer holds; one that ends
+            // today still does.
+            ->where(fn ($q) => $q
+                ->whereNull('override_auto_suspend_date')
+                ->orWhereDate('override_auto_suspend_date', '<', today()))
+            ->when(
+                self::invoicedOnly(),
+                fn ($q) => $q->owingOverdue($least),
+                fn ($q) => $q->whereHas('client', function ($q) use ($least) {
+                    $q->whereHas('invoices', fn ($iq) => $iq->overduePastGrace($least));
+                }),
+            )
+            ->get();
+
+        $suspended = 0;
+        $exempt = 0;
+        $failed = 0;
+
+        foreach ($services as $service) {
+            // The queue has already worked out that some of these cannot come
+            // right; asking again only writes the same refusal to the log.
+            if ($provisioning->hasGivenUp($service, 'suspend')) {
+                $failed++;
+
+                continue;
+            }
+
+            if ($this->isExempt($service)) {
+                $exempt++;
+
+                continue;
+            }
+
+            // Found by the shortest grace; not yet due by its own product's.
+            if (self::graceDays($service->product) > $least && ! self::behindFor($service)) {
+                continue;
+            }
+
+            if ($this->option('dry-run')) {
+                $this->line("would suspend service #{$service->id} ({$service->domain})");
+
+                continue;
+            }
+
+            // A service backed by a server module must be suspended ON THE
+            // SERVER — flipping the local status alone used to leave the
+            // hosting account fully live while the panel claimed otherwise.
+            // The server itself is the test, not the module: a product can name
+            // a module while this service was never put on a server, and the
+            // module would then pick one by itself and stamp it on the service.
+            if ($service->server_id && $provisioning->resolveModule($service)) {
+                $result = $provisioning->suspendAccount($service, 'Overdue Invoice - Automatic Suspension');
+                if ($result['success'] ?? false) {
+                    $suspended++;
+                } else {
+                    // suspendAccount already queued a retry and logged details.
+                    $failed++;
+                    Log::warning("Auto-suspend failed for service #{$service->id}: ".($result['message'] ?? 'unknown'));
+                }
+
+                continue;
+            }
+
+            // No server module (e.g. a manual or non-hosting product): there is
+            // nothing remote to suspend, so record the local state only.
+            $service->update([
+                'status' => ServiceStatus::Suspended->value,
+                'suspension_date' => now(),
+                'suspension_reason' => 'Overdue Invoice - Automatic Suspension',
+            ]);
+            // As suspendAccount does for a server: the customer is told and
+            // the ServiceSuspended hook runs, so an addon can act on it.
+            event(new ServiceSuspended($service, 'Overdue Invoice - Automatic Suspension'));
+            $suspended++;
+        }
+
+        $this->info("Suspended {$suspended} services ({$exempt} exempt, {$failed} failed and queued for retry).");
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * Suspension exemptions. These columns were settable from the admin UI but
+     * no code ever read them, so "never suspend this client" was ignored.
+     */
+    private function isExempt(Service $service): bool
+    {
+        $client = $service->client;
+        if (! $client) {
+            return false;
+        }
+
+        return (bool) ($client->override_auto_suspend ?? false)
+            || (bool) ($client->group?->suspend_exempt ?? false);
+    }
+}

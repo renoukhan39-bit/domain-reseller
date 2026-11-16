@@ -1,0 +1,45 @@
+<?php
+
+namespace App\Mail;
+
+use App\Models\Service;
+use App\Mail\Concerns\LocalizesToRecipient;
+use App\Models\Setting;
+use Illuminate\Bus\Queueable;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class CancellationConfirmMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+    use LocalizesToRecipient;
+
+    public function __construct(
+        public Service $service,
+        public string $cancellationType = 'end_of_billing'
+    ) {
+        $this->localizeTo($this->service);
+    }
+
+    public function envelope(): Envelope
+    {
+        $domain = $this->service->domain ?? $this->service->name ?? $this->service->id;
+
+        return new Envelope(subject: __('email.cancellation.confirm_subject', ['domain' => $domain]));
+    }
+
+    public function content(): Content
+    {
+        return new Content(
+            view: 'emails.cancellation-confirm',
+            with: [
+                'service' => $this->service,
+                'cancellationType' => $this->cancellationType,
+                'companyName' => company_name(),
+            ],
+        );
+    }
+}

@@ -1,0 +1,667 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Enums\InvoiceStatus;
+use App\Http\Controllers\Controller;
+use App\Http\Traits\CsvExportable;
+use App\Mail\InvoiceCreatedMail;
+use App\Mail\PaymentReminderMail;
+use App\Models\ActivityLog;
+use App\Models\Client;
+use App\Models\Currency;
+use App\Models\Invoice;
+use App\Models\InvoiceChargeAttempt;
+use App\Models\InvoiceItem;
+use App\Models\InvoiceProduct;
+use App\Models\Product;
+use App\Models\Setting;
+use App\Models\TaxRule;
+use App\Services\InvoicePdfService;
+use App\Services\InvoiceService;
+use App\Services\Module\ModuleRegistry;
+use App\Services\PaymentService;
+use App\Support\AutoCharge;
+use Illuminate\Http\RedirectResponse;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\View\View;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+
+class InvoiceController extends Controller
+{
+    use CsvExportable;
+
+    /** The status tab that is not a status: invoices whose card charge needs a person. */
+    public const CHARGE_REVIEW_FILTER = 'charge_review';
+
+    public function __construct(
+        protected InvoiceService $invoiceService,
+        protected PaymentService $paymentService
+    ) {}
+
+    public function index(Request $request): View
+    {
+        $query = Invoice::with('client')->excludeSettledProformas();
+
+        // The list opens on the Unpaid view (which includes overdue invoices).
+        $status = (string) $request->input('status', 'unpaid');
+
+        // "All" is asked for by name. An empty status cannot carry it: the
+        // URL generator leaves it out, so a link to it opened on Unpaid.
+        if ($status === 'all') {
+            $status = '';
+        }
+
+        if ($status === 'unpaid') {
+            $query->whereIn('status', ['unpaid', 'overdue']);
+        } elseif ($status === self::CHARGE_REVIEW_FILTER) {
+            // Not an invoice status: the invoices whose automatic card payment
+            // was sent and whose outcome could not be established. They are
+            // listed here rather than on a screen of their own because this is
+            // the screen an operator already has open, and each one's answer is
+            // on its own invoice page. The dashboard count links straight to
+            // this view.
+            $query->whereHas('chargeAttempt', fn ($q) => $q->needsReview());
+        } elseif ($status !== '') {
+            $query->where('status', $status);
+        }
+
+        if ($request->filled('search')) {
+            $query->where(function ($q) use ($request) {
+                $q->where('invoice_num', 'like', "%{$request->search}%")
+                    ->orWhereHas('client', fn ($c) => $c->where('first_name', 'like', "%{$request->search}%")
+                        ->orWhere('last_name', 'like', "%{$request->search}%")
+                    );
+            });
+        }
+
+        $invoices = $query->orderBy('created_at', 'desc')->paginate(25);
+
+        return view('admin.invoices.index', compact('invoices'));
+    }
+
+    public function show(Invoice $invoice): View
+    {
+        $invoice->load('client', 'items', 'transactions');
+
+        // The tax rules the operator may assign to a line: those configured for
+        // the customer's country/state, with the default first.
+        $taxRules = $invoice->client
+            ? $this->invoiceService->taxRatesFor($invoice->client)
+                ->map(fn (TaxRule $r) => ['id' => $r->id, 'name' => $r->name, 'rate' => (float) $r->tax_rate])
+                ->values()
+            : collect();
+
+        // A line keeps the rule it was written under, even if the customer's
+        // country changed since. Offer any such rule so the edit box never
+        // silently drops a line's tax to 0% just because it is off the list.
+        $referencedIds = $invoice->items->pluck('tax_rule_id')->filter()->map(fn ($id) => (int) $id);
+        $missingIds = $referencedIds->diff($taxRules->pluck('id'));
+        if ($missingIds->isNotEmpty()) {
+            $taxRules = $taxRules->merge(
+                TaxRule::whereIn('id', $missingIds)->get()
+                    ->map(fn (TaxRule $r) => ['id' => $r->id, 'name' => $r->name, 'rate' => (float) $r->tax_rate])
+            )->values();
+        }
+
+        $activityLog = ActivityLog::forInvoice($invoice)->limit(50)->get();
+
+        // Only asked where it can mean something. An installation that does not
+        // collect by card runs exactly the queries it ran before this feature
+        // existed, on this page as everywhere else.
+        $chargeReview = AutoCharge::enabled()
+            ? InvoiceChargeAttempt::query()->needsReview()->where('invoice_id', $invoice->id)->first()
+            : null;
+
+        // "Charge card now": offered where the charger could act on it - the
+        // switch is on, the invoice is owed, and the customer has a card a
+        // gateway can charge. chargeNow() asks the rest again, under its claim.
+        $canChargeNow = AutoCharge::enabled()
+            && in_array(strtolower((string) $invoice->status), [InvoiceStatus::Unpaid->value, InvoiceStatus::Overdue->value, InvoiceStatus::PartiallyPaid->value], true)
+            && \App\Models\PaymentMethod::query()
+                ->where('client_id', $invoice->client_id)
+                ->where('status', \App\Models\PaymentMethod::STATUS_ACTIVE)
+                ->whereIn('gateway_name', array_keys(app(ModuleRegistry::class)->tokenisedGateways()))
+                ->exists();
+
+        return view('admin.invoices.show', compact('invoice', 'taxRules', 'activityLog', 'chargeReview', 'canChargeNow'));
+    }
+
+    /**
+     * A person has looked at the gateway; let the charger try this one again.
+     *
+     * needs_review is the state that says "a charge was sent and we cannot tell
+     * what became of it". Nothing automatic clears it, on purpose — but until
+     * now nothing at all did, so an invoice that landed there was out of
+     * automatic collection for ever even after the operator had established
+     * that no money had moved. That is what this button is: the human end of
+     * the state, and the only thing in the system that writes it off.
+     *
+     * The row is deleted rather than rewritten. One row per invoice is the
+     * table's whole design, and what it holds after a review is answered is a
+     * card's attempt count that the review has just made meaningless — the next
+     * claim starts clean, which is exactly what "try this again" means. The
+     * trail is kept where the rest of an invoice's history is kept.
+     *
+     * It refuses anything that is not in review. A scheduled retry, an
+     * exhausted card or an attempt in flight are all live state, and deleting
+     * one of those would hand the invoice straight back to the charger with its
+     * dunning count reset — or, for an in-flight row, remove the very thing
+     * that stops a second charge.
+     */
+    /**
+     * Charge the customer's stored card for this invoice, now.
+     *
+     * Through AutoChargeService::chargeNow, so through the same claim as the
+     * scheduled run: pressing the button twice, or while the 06:45 run has the
+     * invoice, charges once.
+     */
+    public function chargeNow(Invoice $invoice, \App\Services\AutoChargeService $charger): RedirectResponse
+    {
+        $outcome = $charger->chargeNow($invoice);
+
+        ActivityLog::log(
+            __('admin.invoices.charge_now_log', ['outcome' => $outcome]),
+            auth('admin')->user()?->email,
+            $invoice->client_id,
+            $invoice->id,
+        );
+
+        $key = 'admin.invoices.charge_now_'.$outcome;
+        $message = \Illuminate\Support\Facades\Lang::has($key) ? __($key) : __('admin.invoices.charge_now_refused', ['reason' => $outcome]);
+
+        return back()->with($outcome === 'charged' ? 'success' : 'error', $message);
+    }
+
+    public function releaseChargeReview(Invoice $invoice): RedirectResponse
+    {
+        $row = InvoiceChargeAttempt::query()->needsReview()->where('invoice_id', $invoice->id)->first();
+
+        if ($row === null) {
+            return back()->with('info', __('admin.invoices.charge_review_nothing'));
+        }
+
+        $row->delete();
+
+        ActivityLog::log(
+            __('admin.invoices.charge_review_released_log'),
+            auth('admin')->user()?->email,
+            $invoice->client_id,
+            $invoice->id,
+        );
+
+        return back()->with('success', __('admin.invoices.charge_review_released'));
+    }
+
+    /**
+     * Update a single line item and recalculate the invoice totals.
+     */
+    public function updateItem(Request $request, Invoice $invoice, InvoiceItem $item): RedirectResponse
+    {
+        abort_if($item->invoice_id !== $invoice->id, 404);
+
+        if ($this->itemsLocked($invoice)) {
+            return back()->with('error', __('admin.invoices.items_locked'));
+        }
+
+        $validated = $request->validate([
+            'description' => ['required', 'string', 'max:255'],
+            'qty' => ['required', 'integer', 'min:1', 'max:999999'],
+            'amount' => ['required', 'numeric', 'min:0'],
+            'tax_rule_id' => ['nullable', 'string', 'max:20'],
+        ]);
+
+        $ruleId = $validated['tax_rule_id'] ?? '';
+
+        // A legacy line with a rate but no matching rule keeps its tax as it
+        // was; "__legacy__" is the marker the edit form sends for it. Nothing
+        // is typed by hand, so a line never drifts from the rule it was issued
+        // under, and the rule id is always validated.
+        $rule = null;
+        if ($ruleId !== '__legacy__') {
+            $rule = $ruleId !== '' ? TaxRule::find((int) $ruleId) : null;
+            abort_if($ruleId !== '' && $rule === null, 422);
+            $rule = $invoice->buyer_tax_exempt && (float) $rule?->tax_rate > 0 ? null : $rule;
+        }
+
+        $fields = [
+            'description' => $validated['description'],
+            'qty' => (int) $validated['qty'],
+            'amount' => (float) $validated['amount'],
+        ];
+
+        if ($ruleId !== '__legacy__') {
+            $taxRate = $rule !== null ? (float) $rule->tax_rate : 0.0;
+
+            // Give every line an explicit rate so a legacy invoice edited once
+            // stays consistent: lines without a rate would otherwise stop being
+            // taxed the moment any other line carries its own rate. On an
+            // exempt buyer's invoice that rate is zero: handing the untouched
+            // lines the invoice's rate turned the document into a per-line one,
+            // which is the path that does not read the exemption, and left it
+            // half taxed - the edited line at zero, the rest at 20% (#389).
+            $fallback = $invoice->buyer_tax_exempt ? 0.0 : (float) $invoice->tax_rate;
+            $invoice->items()->whereNull('tax_rate')->get()->each(function (InvoiceItem $legacy) use ($fallback) {
+                $legacy->update(['tax_rate' => $legacy->taxed ? $fallback : 0.0]);
+            });
+
+            $fields += [
+                'tax_rate' => $taxRate,
+                'tax_label' => $rule?->name,
+                'tax_rule_id' => $rule?->id,
+                'taxed' => $taxRate > 0,
+            ];
+        }
+
+        $item->update($fields);
+
+        $this->invoiceService->recalculateTotals($invoice);
+
+        ActivityLog::log(
+            "Invoice #{$invoice->id} line item updated",
+            $this->adminName(),
+            $invoice->client_id,
+            $invoice->id
+        );
+
+        return back()->with('success', __('admin.invoices.item_updated'));
+    }
+
+    /**
+     * Add a blank line item to the invoice.
+     */
+    public function storeItem(Request $request, Invoice $invoice): RedirectResponse
+    {
+        if ($this->itemsLocked($invoice)) {
+            return back()->with('error', __('admin.invoices.items_locked'));
+        }
+
+        $this->invoiceService->addLineItem($invoice, [
+            'type' => 'Other',
+            'description' => (string) $request->input('description', ''),
+            'qty' => 1,
+            'amount' => 0,
+            'tax_rate' => 0,
+        ]);
+
+        ActivityLog::log(
+            "Invoice #{$invoice->id} line item added",
+            $this->adminName(),
+            $invoice->client_id,
+            $invoice->id
+        );
+
+        return back()->with('success', __('admin.invoices.item_added'));
+    }
+
+    /**
+     * Remove a line item and recalculate the invoice totals.
+     */
+    public function destroyItem(Request $request, Invoice $invoice, InvoiceItem $item): RedirectResponse
+    {
+        abort_if($item->invoice_id !== $invoice->id, 404);
+
+        if ($this->itemsLocked($invoice)) {
+            return back()->with('error', __('admin.invoices.items_locked'));
+        }
+
+        $item->delete();
+        $this->invoiceService->recalculateTotals($invoice);
+
+        ActivityLog::log(
+            "Invoice #{$invoice->id} line item removed",
+            $this->adminName(),
+            $invoice->client_id,
+            $invoice->id
+        );
+
+        return back()->with('success', __('admin.invoices.item_removed'));
+    }
+
+    /**
+     * A paid, cancelled or refunded invoice is closed: changing its lines
+     * recalculated the total under payments and refunds already recorded
+     * against it, and the customer's copy no longer matched what was paid.
+     */
+    private function itemsLocked(Invoice $invoice): bool
+    {
+        return in_array(strtolower((string) $invoice->status), [
+            InvoiceStatus::Paid->value, InvoiceStatus::Cancelled->value, InvoiceStatus::Refunded->value,
+        ], true);
+    }
+
+    /**
+     * Email the invoice to the client.
+     */
+    public function sendInvoice(Invoice $invoice): RedirectResponse
+    {
+        abort_if(! $invoice->client?->billingEmail(), 422, 'Client has no email address.');
+
+        Mail::to($invoice->client->billingEmail())->queue(new InvoiceCreatedMail($invoice));
+
+        ActivityLog::log(
+            "Invoice #{$invoice->id} sent by email",
+            $this->adminName(),
+            $invoice->client_id,
+            $invoice->id
+        );
+
+        return back()->with('success', __('admin.invoices.email_sent'));
+    }
+
+    /**
+     * Send a payment reminder for this invoice (positive = due in N days,
+     * negative = N days overdue).
+     */
+    public function sendReminder(Invoice $invoice): RedirectResponse
+    {
+        abort_if(! $invoice->client?->billingEmail(), 422, 'Client has no email address.');
+
+        $daysOffset = $invoice->due_date
+            ? (int) now()->startOfDay()->diffInDays($invoice->due_date->startOfDay(), false)
+            : 0;
+
+        Mail::to($invoice->client->billingEmail())->queue(new PaymentReminderMail($invoice, $daysOffset));
+
+        ActivityLog::log(
+            "Invoice #{$invoice->id} payment reminder sent",
+            $this->adminName(),
+            $invoice->client_id,
+            $invoice->id
+        );
+
+        return back()->with('success', __('admin.invoices.reminder_sent'));
+    }
+
+    private function adminName(): string
+    {
+        return auth('admin')->user()?->full_name ?? 'Admin';
+    }
+
+    /**
+     * Show the invoice creation form.
+     */
+    public function create(Request $request): View
+    {
+        $clients = Client::orderBy('first_name')->get();
+        // r139-gateways: this box picks the gateway the invoice is paid
+        // through, and it was filled from the payment_methods table - every
+        // customer's stored method, unscoped, labelled with that customer's own
+        // description. An operator raising an invoice for one customer was
+        // shown what other customers had named their bank accounts, and the
+        // list was wrong besides: three customers with a bank account gave
+        // three identical options, and an installation where nobody had saved
+        // one offered no gateway at all.
+        $gateways = app(ModuleRegistry::class)->usableGateways();
+
+        $selectedClient = $request->filled('client_id')
+            ? Client::find($request->client_id)
+            : null;
+
+        $defaultPaymentMethod = $selectedClient?->default_payment_method;
+
+        $dueDays = (int) Setting::get('InvoiceDueDays', 14);
+
+        // Cheapest sold cycle stands in for the product's money value, so the
+        // builder can pre-fill the amount when a product is picked.
+        $products = Product::active()->with('pricing')->get()->map(function (Product $p) {
+            $cycles = $p->pricedCycles();
+
+            return [
+                'name' => $p->name,
+                'amount' => $cycles ? min($cycles) : null,
+                'cycle' => $cycles ? array_search(min($cycles), $cycles, true) : null,
+                'taxed' => (bool) $p->tax,
+            ];
+        })->values();
+
+        // Catalog products/services (goods) are offered in the same box. They
+        // carry their own price, unit and VAT rate.
+        $catalogProducts = InvoiceProduct::orderBy('name')->get()->map(fn (InvoiceProduct $p) => [
+            'name' => $p->name,
+            'amount' => (float) $p->price,
+            'unit' => $p->unit,
+            'tax_rate' => (float) $p->tax_rate,
+            'tax_label' => $p->tax_label,
+            'tax_rule_id' => $p->tax_rule_id,
+        ])->values();
+
+        $products = $products->merge($catalogProducts)->values();
+
+        $defaultCurrency = Currency::getDefault();
+
+        // Per-client applicable tax rate (shown in the summary while building
+        // the invoice) plus every rate configured for the client's country so
+        // the operator can pick one per line. Matches the engine: country+state.
+        $invoiceService = app(InvoiceService::class);
+        $clients = $clients->map(function (Client $client) use ($invoiceService) {
+            $rule = $invoiceService->taxRuleFor($client);
+            $rates = $invoiceService->taxRatesFor($client)
+                ->map(fn (TaxRule $r) => [
+                    'id' => $r->id,
+                    'name' => $r->name,
+                    'rate' => (float) $r->tax_rate,
+                    'is_default' => (bool) $r->is_default,
+                ])
+                ->values();
+
+            return clone $client
+                ->setAttribute('billing_tax_rate', (float) ($rule?->tax_rate ?? 0))
+                ->setAttribute('billing_tax_label', $rule?->name ?? '')
+                ->setAttribute('billing_tax_rates', $rates);
+        });
+
+        return view('admin.invoices.create', compact(
+            'clients',
+            'gateways',
+            'selectedClient',
+            'products',
+            'defaultCurrency',
+            'defaultPaymentMethod',
+            'dueDays'
+        ));
+    }
+
+    /**
+     * Store a new invoice created from the admin form.
+     */
+    public function store(Request $request): RedirectResponse
+    {
+        $validated = $request->validate([
+            'client_id' => ['required', 'exists:clients,id'],
+            'date' => ['required', 'date'],
+            'due_date' => ['required', 'date'],
+            'payment_method' => ['nullable', 'string', 'max:100'],
+            'notes' => ['nullable', 'string', 'max:2000'],
+            'items' => ['required', 'array', 'min:1'],
+            'items.*.description' => ['required', 'string', 'max:255'],
+            'items.*.qty' => ['nullable', 'integer', 'min:1', 'max:999999'],
+            'items.*.amount' => ['required', 'numeric', 'min:0'],
+            'items.*.tax_rule_id' => ['nullable', 'integer', 'exists:tax_rules,id'],
+            'items.*.tax_rate' => ['nullable', 'numeric', 'min:0', 'max:100'],
+            'items.*.tax_label' => ['nullable', 'string', 'max:255'],
+            'items.*.unit' => ['nullable', 'string', 'max:50'],
+        ]);
+
+        $client = Client::findOrFail($validated['client_id']);
+
+        $items = array_map(fn ($item) => [
+            'type' => 'Other',
+            'description' => $item['description'],
+            'qty' => (int) ($item['qty'] ?? 1),
+            'amount' => (float) $item['amount'],
+            'tax_rule_id' => ($item['tax_rule_id'] ?? null) ?: null,
+            // Per-item VAT percentage; an empty field means untaxed.
+            'tax_rate' => isset($item['tax_rate']) && $item['tax_rate'] !== '' ? (float) $item['tax_rate'] : 0.0,
+            'tax_label' => $item['tax_label'] ?? null,
+            'unit' => $item['unit'] ?? null,
+        ], $validated['items']);
+
+        $invoice = $this->invoiceService->createInvoice($client, $items, [
+            'date' => $validated['date'],
+            'due_date' => $validated['due_date'],
+            'payment_method' => $validated['payment_method'] ?? null,
+            'notes' => $validated['notes'] ?? null,
+        ]);
+
+        return redirect()
+            ->route('admin.invoices.show', $invoice)
+            ->with('success', __('admin.messages.invoice_created', ['num' => $invoice->invoice_num]));
+    }
+
+    /**
+     * Mark an invoice as paid.
+     */
+    public function markPaid(Request $request, Invoice $invoice): RedirectResponse
+    {
+        if (strtolower((string) $invoice->status) === InvoiceStatus::Paid->value) {
+            return back()->with('info', __('admin.messages.invoice_already_paid'));
+        }
+
+        $validated = $request->validate([
+            'transaction_id' => ['nullable', 'string', 'max:255'],
+            'gateway' => ['nullable', 'string', 'max:100'],
+            'amount' => ['nullable', 'numeric', 'min:0.01'],
+        ]);
+
+        // "Credit" pays from the client's credit balance. Recorded as an
+        // ordinary payment it marked the invoice paid and left the balance
+        // untouched, so the client kept the money and the invoice was settled.
+        if (($validated['gateway'] ?? null) === 'credit') {
+            return $this->payFromCredit($invoice, isset($validated['amount']) ? (float) $validated['amount'] : null);
+        }
+
+        // The form's amount field used to be silently ignored, marking the
+        // invoice fully paid regardless of what the admin entered. Routing
+        // through PaymentService keeps partial payments, overpayment-to-credit
+        // and the InvoicePaid event chain consistent.
+        $result = $this->paymentService->applyPayment(
+            $invoice,
+            $validated['gateway'] ?? 'manual',
+            $validated['transaction_id'] ?? null,
+            isset($validated['amount']) ? (float) $validated['amount'] : null
+        );
+
+        if (($result['balance'] ?? 0) > 0.009) {
+            return back()->with('success', __('admin.messages.invoice_partially_paid', [
+                'num' => $invoice->invoice_num,
+                'balance' => number_format($result['balance'], 2),
+            ]));
+        }
+
+        return back()->with('success', __('admin.messages.invoice_marked_paid', ['num' => $invoice->invoice_num]));
+    }
+
+    private function payFromCredit(Invoice $invoice, ?float $amount): RedirectResponse
+    {
+        $due = $invoice->amountDue();
+        $credit = (float) $invoice->client?->credit;
+
+        if ($credit < 0.01 || $due < 0.01) {
+            return back()->with('error', __('admin.messages.no_credit_available'));
+        }
+
+        // applyCredit caps at the balance and at what is due, under locks.
+        $invoice = $this->invoiceService->applyCredit($invoice, min($amount ?? $due, $due));
+        $remaining = $invoice->amountDue();
+
+        if ($remaining > 0.009) {
+            return back()->with('success', __('admin.messages.invoice_partially_paid', [
+                'num' => $invoice->invoice_num,
+                'balance' => number_format($remaining, 2),
+            ]));
+        }
+
+        return back()->with('success', __('admin.messages.invoice_marked_paid', ['num' => $invoice->invoice_num]));
+    }
+
+    /**
+     * Refund an invoice (full or partial) through the original gateway,
+     * or offline for bank transfer / manual payments.
+     */
+    public function refund(Request $request, Invoice $invoice): RedirectResponse
+    {
+        $validated = $request->validate([
+            'amount' => ['nullable', 'numeric', 'min:0.01'],
+            'reason' => ['nullable', 'string', 'max:500'],
+            'gateway_refund' => ['nullable', 'boolean'],
+        ]);
+
+        $result = app(PaymentService::class)->refundInvoice(
+            $invoice,
+            $validated['amount'] ?? null,
+            [
+                'reason' => $validated['reason'] ?? null,
+                'gateway_refund' => $request->boolean('gateway_refund', true),
+            ]
+        );
+
+        return $result['success']
+            ? back()->with('success', $result['message'])
+            : back()->with('error', $result['message']);
+    }
+
+    /**
+     * Cancel an invoice.
+     */
+    public function cancel(Invoice $invoice): RedirectResponse
+    {
+        if (strtolower((string) $invoice->status) === InvoiceStatus::Paid->value) {
+            return back()->with('error', __('messages.error.paid_invoices_cannot_be_cancelled'));
+        }
+
+        $this->invoiceService->cancelInvoice($invoice);
+
+        return back()->with('success', __('admin.messages.invoice_cancelled', ['num' => $invoice->invoice_num]));
+    }
+
+    /**
+     * Export invoices as CSV.
+     */
+    public function exportCsv(Request $request): StreamedResponse
+    {
+        $query = Invoice::with('client')->excludeSettledProformas();
+
+        if ($request->filled('status')) {
+            $status = (string) $request->status;
+
+            if ($status === 'unpaid') {
+                $query->whereIn('status', ['unpaid', 'overdue']);
+            } else {
+                $query->where('status', $status);
+            }
+        }
+
+        $invoices = $query->orderBy('id', 'asc')->get();
+
+        $rows = $invoices->map(fn ($inv) => [
+            $inv->id,
+            $inv->invoice_num ?? '',
+            $inv->client?->full_name ?? '',
+            $inv->client?->email ?? '',
+            $inv->status,
+            $inv->subtotal ?? '0.00',
+            $inv->tax_amount ?? '0.00',
+            $inv->total ?? '0.00',
+            $inv->payment_method ?? '',
+            $inv->date?->format('Y-m-d') ?? '',
+            $inv->due_date?->format('Y-m-d') ?? '',
+            $inv->date_paid?->format('Y-m-d H:i:s') ?? '',
+        ]);
+
+        return $this->streamCsvDownload(
+            'invoices-'.now()->format('Y-m-d').'.csv',
+            ['ID', 'Invoice #', 'Client', 'Email', 'Status', 'Subtotal', 'Tax', 'Total', 'Payment Method', 'Date', 'Due Date', 'Date Paid'],
+            $rows
+        );
+    }
+
+    /**
+     * Download invoice as PDF.
+     */
+    public function downloadPdf(Invoice $invoice, InvoicePdfService $pdfService)
+    {
+        return $pdfService->download($invoice);
+    }
+}

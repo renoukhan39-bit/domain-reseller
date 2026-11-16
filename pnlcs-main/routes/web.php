@@ -1,0 +1,104 @@
+<?php
+
+use App\Http\Controllers\GatewayWebhookController;
+use App\Http\Controllers\InstallController;
+use App\Http\Middleware\EnsureNotInstalled;
+use App\Http\Middleware\InstallLocale;
+use Illuminate\Support\Facades\Route;
+
+Route::get('/', [App\Http\Controllers\WelcomeController::class, 'index'])->name('home');
+
+// For search engines: the public pages, and robots.txt pointing at them.
+Route::get('sitemap.xml', [App\Http\Controllers\SitemapController::class, 'sitemap'])->name('sitemap');
+Route::get('robots.txt', [App\Http\Controllers\SitemapController::class, 'robots'])->name('robots');
+
+// ===== Install Wizard (gated by EnsureNotInstalled — 404 once admins exist) =====
+Route::middleware(['web', EnsureNotInstalled::class, InstallLocale::class])->prefix('install')->group(function () {
+    Route::get('/',                  [InstallController::class, 'index']);
+    Route::get('/requirements',      [InstallController::class, 'requirements']);
+    Route::get('/database',          [InstallController::class, 'database']);
+    Route::post('/database/test',    [InstallController::class, 'testDatabase']);
+    Route::post('/database',         [InstallController::class, 'saveDatabase']);
+    Route::get('/database/migrate',  [InstallController::class, 'migrate']);
+    Route::post('/database/migrate', [InstallController::class, 'runMigrations']);
+    Route::get('/admin',             [InstallController::class, 'admin']);
+    Route::post('/admin',            [InstallController::class, 'saveAdmin']);
+    Route::get('/app',               [InstallController::class, 'app']);
+    Route::post('/app',              [InstallController::class, 'saveApp']);
+});
+
+// Finish page is intentionally OUTSIDE the gating middleware so users can land
+// on it after the lock file is written. It only displays a success message and
+// a link to /admin/login — no sensitive data and no actions.
+Route::middleware(['web', InstallLocale::class])->get('/install/finish', [InstallController::class, 'finish']);
+
+// ===== Gateway Webhooks (no CSRF — verified by signature) =====
+Route::withoutMiddleware([\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class])->group(function () {
+    Route::post('gateway/paypal/webhook',    [GatewayWebhookController::class, 'paypal'])->name('gateway.paypal.webhook');
+    Route::post('gateway/stripe/webhook',    [GatewayWebhookController::class, 'stripe'])->name('gateway.stripe.webhook');
+    Route::post('gateway/authorize/webhook', [GatewayWebhookController::class, 'authorize'])->name('gateway.authorize.webhook');
+    Route::post('gateway/mollie/webhook', [GatewayWebhookController::class, 'mollie'])->name('gateway.mollie.webhook');
+    Route::post('gateway/razorpay/webhook', [GatewayWebhookController::class, 'razorpay'])->name('gateway.razorpay.webhook');
+    Route::post('gateway/tpay/webhook', [GatewayWebhookController::class, 'tpay'])->name('gateway.tpay.webhook');
+});
+
+// ===== Legal documents and corporate pages =====
+// Public and readable without an account on purpose: a visitor has to be able
+// to read the terms before opening one, and a crawler has to be able to index
+// them - iyzico, PayTR and Stripe all check for reachable terms, privacy and
+// refund pages before approving a merchant account.
+Route::get('legal', [App\Http\Controllers\LegalController::class, 'index'])->name('legal.index');
+Route::get('legal/{document}', [App\Http\Controllers\LegalController::class, 'show'])->name('legal.show');
+Route::get('about', [App\Http\Controllers\PageController::class, 'about'])->name('pages.about');
+Route::get('ssl', [App\Http\Controllers\PageController::class, 'ssl'])->name('pages.ssl');
+// The mail client settings. The most common support request, so it needs no
+// sign-in: a customer should be able to read it before logging in, and so
+// should whoever arrives from a search engine.
+Route::get('guides/mail-setup', [App\Http\Controllers\PageController::class, 'mailSetup'])->name('pages.mail-setup');
+
+// ===== iyzico payment return =====
+// POSTed from iyzico's own page, so it is cross-site: SameSite=Lax means the
+// customer's session cookie is NOT sent on this request. Without StartSession
+// left out, Laravel would open an empty session and put a fresh session cookie
+// on the response, writing over the one the customer is signed in with - they
+// would pay and be signed out on the way back to the invoice. Nothing here
+// touches the session; the outcome travels in the query string and the invoice
+// page prints it from its own session.
+// The security comes from the signature: the token is handed back to iyzico
+// over a request signed with our own keys.
+Route::post('gateway/iyzico/callback', [GatewayWebhookController::class, 'iyzicoCallback'])
+    ->name('gateway.iyzico.callback')
+    ->withoutMiddleware([
+        \Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class,
+        \Illuminate\Session\Middleware\StartSession::class,
+        \Illuminate\View\Middleware\ShareErrorsFromSession::class,
+        \App\Http\Middleware\SetLocale::class,
+    ]);
+
+// ===== Any other gateway (no CSRF — the module verifies the call) =====
+// For a gateway with no route of its own, such as one installed from a
+// pnlcs.json module. After iyzico's callback above, which it would otherwise
+// take: routes match in the order they are registered.
+Route::match(['get', 'post'], 'gateway/{gateway}/callback', [GatewayWebhookController::class, 'callback'])
+    ->where('gateway', '[a-z0-9_-]+')
+    ->name('gateway.callback')
+    ->withoutMiddleware([\Illuminate\Foundation\Http\Middleware\PreventRequestForgery::class]);
+
+// ===== Gateway JS-SDK Capture Endpoints (authenticated, CSRF-protected) =====
+// The comment was true of CSRF only: the group had no auth middleware, so
+// these ran for anyone who knew an invoice id. Behind the second factor too,
+// like the invoice pages they are called from.
+Route::middleware(['web', 'auth', '2fa'])->group(function () {
+    Route::post('gateway/paypal/capture/{invoice}',    [GatewayWebhookController::class, 'paypalCapture'])->name('gateway.paypal.capture');
+    Route::post('gateway/stripe/intent/{invoice}',     [GatewayWebhookController::class, 'stripeIntent'])->name('gateway.stripe.intent');
+    Route::post('gateway/stripe/confirm/{invoice}',    [GatewayWebhookController::class, 'stripeConfirm'])->name('gateway.stripe.confirm');
+    // The cardholder coming back to a charge their bank stopped. 404s unless
+    // the shop collects by card, and resumes only the intent the charger
+    // itself recorded on the invoice.
+    Route::post('gateway/stripe/authenticate/{invoice}', [GatewayWebhookController::class, 'stripeAuthenticate'])->name('gateway.stripe.authenticate');
+    Route::post('gateway/authorize/capture/{invoice}', [GatewayWebhookController::class, 'authorizeCapture'])->name('gateway.authorize.capture');
+    Route::post('gateway/mollie/capture/{invoice}', [GatewayWebhookController::class, 'mollieCapture'])->name('gateway.mollie.capture');
+    Route::post('gateway/razorpay/capture/{invoice}', [GatewayWebhookController::class, 'razorpayCapture'])->name('gateway.razorpay.capture');
+    Route::post('gateway/tpay/capture/{invoice}', [GatewayWebhookController::class, 'tpayCapture'])->name('gateway.tpay.capture');
+    Route::post('gateway/iyzico/init/{invoice}', [GatewayWebhookController::class, 'iyzicoInit'])->name('gateway.iyzico.init');
+});

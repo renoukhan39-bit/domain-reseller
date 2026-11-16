@@ -1,0 +1,396 @@
+<?php
+
+namespace App\Http\Controllers\Client;
+
+use App\Enums\ClientStatus;
+use App\Events\ClientCreated;
+use App\Http\Controllers\Controller;
+use App\Http\Middleware\AffiliateTracking;
+use App\Models\BannedEmail;
+use App\Models\Client;
+use App\Models\User;
+use App\Services\AffiliateService;
+use App\Services\LoginRecorder;
+use App\Services\TwoFactorService;
+use App\Support\QrCode;
+use Carbon\Carbon;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\RateLimiter;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+
+class AuthController extends Controller
+{
+    public function showLogin()
+    {
+        if (Auth::check()) {
+            return redirect()->route('client.home');
+        }
+
+        return view('client.auth.login');
+    }
+
+    public function login(Request $request)
+    {
+        $credentials = $request->validate([
+            'email' => 'required|email',
+            'password' => 'required|string',
+        ]);
+
+        // Checked before the password is tried, so a bot cannot use the form
+        // to test passwords when the operator has switched the challenge on.
+        if (! app(\App\Services\RecaptchaService::class)->passes('login', $request->input(\App\Services\RecaptchaService::FIELD), $request->ip())) {
+            return back()
+                ->withErrors([\App\Services\RecaptchaService::FIELD => __('client.contact.recaptcha_failed')])
+                ->onlyInput('email');
+        }
+
+        $key = Str::transliterate(Str::lower($request->input('email')).'|'.$request->ip());
+        if (RateLimiter::tooManyAttempts($key, 5)) {
+            throw ValidationException::withMessages([
+                'email' => __('auth.throttle', ['seconds' => RateLimiter::availableIn($key)]),
+            ]);
+        }
+
+        if (Auth::attempt($credentials, $request->boolean('remember'))) {
+            RateLimiter::clear($key);
+            $request->session()->regenerate();
+
+            $user = Auth::user();
+
+            // A closed account is finished. Nothing read the status the admin
+            // screen sets, so a customer whose account had been closed could
+            // still sign in and carry on.
+            if ($user->clients()->exists() && ! $user->clients()->where('status', '!=', ClientStatus::Closed->value)->exists()) {
+                Auth::logout();
+                $request->session()->invalidate();
+                $request->session()->regenerateToken();
+
+                return back()->withErrors(['email' => __('auth.account_closed')])->onlyInput('email');
+            }
+
+            // Whatever the visitor put in the cart before logging in changes
+            // hands here. The cart id lives in the session DATA, which
+            // regenerate() carries across - keyed by the session id it used
+            // to evaporate at this exact line.
+            $guestCartId = session('guest_cart_id');
+            if ($guestCartId) {
+                $client = $user->clients()->first();
+                if ($client) {
+                    \App\Models\Cart::whereKey($guestCartId)->whereNull('user_id')
+                        ->update(['user_id' => $client->id]);
+                    session()->forget('guest_cart_id');
+                }
+            }
+
+            $user->forceFill([
+                'last_login' => now(),
+                'last_login_ip' => $request->ip(),
+            ])->save();
+
+            // Check 2FA. With a second factor the sign-in is recorded once
+            // it is answered, in verify2fa().
+            if ($user->second_factor_type && $user->second_factor_secret) {
+                // Start from unverified every time: 2fa_verified is a plain
+                // session key that regenerate() carries across a fresh login,
+                // and impersonation sets it deliberately. A stale one here
+                // would wave a real 2FA login straight through.
+                session()->forget('2fa_verified');
+                session(['2fa_pending' => true, 'login_method' => 'password']);
+
+                return redirect()->route('client.2fa.verify');
+            }
+
+            app(LoginRecorder::class)->succeeded($user, $request, 'password');
+
+            return redirect()->intended(route('client.home'));
+        }
+
+        RateLimiter::hit($key, 900);
+
+        // A wrong password for a login that exists goes into that login's
+        // history, where its owner can see it. Unknown addresses are not
+        // stored: there is nobody to show them to.
+        $attempted = User::where('email', $credentials['email'])->first();
+        if ($attempted) {
+            app(LoginRecorder::class)->failed($attempted, $request);
+        }
+
+        return back()->withErrors(['email' => __('auth.failed')])->onlyInput('email');
+    }
+
+    public function show2faVerify()
+    {
+        if (! Auth::check()) {
+            return redirect()->route('client.login');
+        }
+
+        return view('client.auth.two-factor');
+    }
+
+    public function verify2fa(Request $request, TwoFactorService $twoFactor)
+    {
+        $request->validate(['code' => 'required|string']);
+
+        $user = Auth::user();
+        if (! $user) {
+            return redirect()->route('client.login');
+        }
+
+        // Per account, whatever the address or the session: the route's own
+        // limit is per visitor, and six digits do not survive a patient
+        // guesser who changes either. Five wrong codes wait fifteen minutes.
+        $attempts = 'second-factor:client:'.$user->id;
+        if (RateLimiter::tooManyAttempts($attempts, 5)) {
+            return back()->withErrors(['code' => __('auth.throttle', ['seconds' => RateLimiter::availableIn($attempts)])]);
+        }
+
+        $code = $request->input('code');
+
+        // Try TOTP code
+        if ($twoFactor->verify($user->second_factor_secret, $code)) {
+            session(['2fa_verified' => true]);
+            RateLimiter::clear($attempts);
+            session()->forget('2fa_pending');
+            app(LoginRecorder::class)->succeeded($user, $request, session()->pull('login_method', 'password'));
+
+            return redirect()->intended(route('client.home'));
+        }
+
+        // Try backup code
+        $backupCodes = $user->backup_codes ?? [];
+        if (! empty($backupCodes)) {
+            $result = $twoFactor->verifyBackupCode($backupCodes, $code);
+            if ($result['valid']) {
+                $user->update(['backup_codes' => $result['remaining']]);
+                session(['2fa_verified' => true]);
+                RateLimiter::clear($attempts);
+                session()->forget('2fa_pending');
+                app(LoginRecorder::class)->succeeded($user, $request, session()->pull('login_method', 'password'));
+
+                return redirect()->intended(route('client.home'));
+            }
+        }
+
+        RateLimiter::hit($attempts, 15 * 60);
+
+        return back()->withErrors(['code' => __('auth.invalid_verification_code')]);
+    }
+
+    public function enable2fa(Request $request, TwoFactorService $twoFactor)
+    {
+        $user = Auth::user();
+
+        if ($request->isMethod('get')) {
+            $secret = session('2fa_setup_secret', $twoFactor->generateSecret());
+            session(['2fa_setup_secret' => $secret]);
+
+            $qrUrl = $twoFactor->getQrCodeUrl($user->email, $secret);
+
+            return view('client.auth.enable-two-factor', [
+                'secret' => $secret,
+                'qrUrl' => $qrUrl,
+                // Drawn here: the address carries the secret and must not go to a QR service.
+                'qrImage' => QrCode::dataUri($qrUrl),
+            ]);
+        }
+
+        $request->validate(['code' => 'required|string|size:6']);
+
+        $secret = session('2fa_setup_secret');
+        if (! $secret || ! $twoFactor->verify($secret, $request->code)) {
+            return back()->withErrors(['code' => __('auth.invalid_code_try_again')]);
+        }
+
+        $backupCodes = $twoFactor->generateBackupCodes();
+
+        $user->update([
+            'second_factor_type' => 'totp',
+            'second_factor_secret' => $secret,
+            'backup_codes' => $backupCodes,
+        ]);
+
+        session()->forget('2fa_setup_secret');
+        session(['2fa_verified' => true]);
+
+        return redirect()->route('client.account.security')->with('success', __('messages.success.2fa_enabled_successfully'))->with('backup_codes', $backupCodes);
+    }
+
+    public function disable2fa(Request $request)
+    {
+        $request->validate(['password' => 'required|string']);
+
+        $user = Auth::user();
+
+        if (! Hash::check($request->password, $user->password)) {
+            return back()->withErrors(['password' => __('auth.incorrect_password')]);
+        }
+
+        $user->update([
+            'second_factor_type' => null,
+            'second_factor_secret' => null,
+            'backup_codes' => null,
+        ]);
+
+        session()->forget('2fa_verified');
+
+        return back()->with('success', __('messages.success.2fa_has_been_disabled'));
+    }
+
+    public function showRegister(Request $request)
+    {
+        return view('client.auth.register', [
+            'countries' => \App\Support\Countries::all(),
+            'detectedCountry' => \App\Support\GeoLocale::country($request) ?: \App\Models\Setting::get('Country') ?: \App\Support\GeoLocale::countryFromBrowser($request),
+            'languages' => \App\Models\Language::getActiveLanguages(),
+        ]);
+    }
+
+    public function register(Request $request)
+    {
+        $validated = $request->validate([
+            'first_name' => 'required|string|max:255',
+            'last_name' => 'required|string|max:255',
+            'email' => 'required|email|unique:users,email',
+            'password' => 'required|string|min:8|confirmed',
+            'company_name' => 'nullable|string|max:255',
+            'address1' => 'required|string|max:255',
+            'address2' => 'nullable|string|max:255',
+            'city' => 'required|string|max:255',
+            'state' => 'nullable|string|max:100',
+            'postcode' => 'required|string|max:20',
+            'country' => 'required|string|size:2',
+            'tax_id' => 'nullable|string|max:50',
+            'client_type' => 'nullable|in:individual,company',
+            'language' => 'nullable|string|max:10',
+            'tax_office' => 'nullable|string|max:100',
+            'national_id' => 'nullable|string|max:20',
+            'phone_number' => 'nullable|string|max:30',
+            'phone_prefix' => 'nullable|string|max:4',
+            'tos' => 'required|accepted',
+        ]);
+
+        if (! app(\App\Services\RecaptchaService::class)->passes('signup', $request->input(\App\Services\RecaptchaService::FIELD), $request->ip())) {
+            return back()
+                ->withErrors([\App\Services\RecaptchaService::FIELD => __('client.contact.recaptcha_failed')])
+                ->withInput($request->except(['password', 'password_confirmation']));
+        }
+
+        // The ban list was only ever consulted when scoring an order, so a
+        // banned address could open an account and be back inside the panel.
+        if (BannedEmail::blocks($validated['email'])) {
+            return back()
+                ->withErrors(['email' => __('auth.email_not_accepted')])
+                ->onlyInput('email');
+        }
+
+        // Checkout opens accounts too now; one implementation for both doors.
+        [$user] = app(\App\Services\ClientRegistrationService::class)->register($validated, $request);
+
+        // Whoever typed this address has to prove it is theirs before we send
+        // them an invoice, a password reset or a suspension notice.
+        \App\Http\Controllers\Client\EmailVerificationController::send($user);
+
+        Auth::login($user);
+
+        return redirect()->route(
+            \App\Http\Controllers\Client\EmailVerificationController::required()
+                ? 'client.verification.notice'
+                : 'client.home'
+        );
+    }
+
+    public function logout(Request $request)
+    {
+        session()->forget('active_client_id');
+
+        Auth::logout();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
+
+        return redirect()->route('client.login');
+    }
+
+    public function showForgotPassword()
+    {
+        return view('client.auth.forgot-password');
+    }
+
+    public function sendResetLink(Request $request)
+    {
+        $request->validate(['email' => 'required|email']);
+
+        if (! app(\App\Services\RecaptchaService::class)->passes('password', $request->input(\App\Services\RecaptchaService::FIELD), $request->ip())) {
+            return back()
+                ->withErrors([\App\Services\RecaptchaService::FIELD => __('client.contact.recaptcha_failed')])
+                ->onlyInput('email');
+        }
+
+        // Whether or not an account exists, the answer is the same: the form
+        // must not tell a stranger which addresses have logins.
+        app(\App\Services\PasswordResetSender::class)->send((string) $request->email);
+
+        return back()->with('success', __('messages.success.if_an_account_exists_with_that_email_a_password_re'));
+    }
+
+    public function showResetForm(Request $request, string $token)
+    {
+        return view('client.auth.reset-password', ['token' => $token, 'email' => $request->email]);
+    }
+
+    public function resetPassword(Request $request)
+    {
+        $request->validate([
+            'token' => 'required',
+            'email' => 'required|email',
+            'password' => 'required|min:8|confirmed',
+        ]);
+        $record = DB::table('password_reset_tokens')->where('email', $request->email)->first();
+        if (! $record || ! Hash::check($request->token, $record->token)) {
+            return back()->withErrors(['email' => __('auth.invalid_or_expired_reset_token')]);
+        }
+        // diffInMinutes() is signed: for a time in the past it returns a
+        // negative number, so the old '> 60' was never true and every link
+        // stayed valid for good. Compare against the deadline instead.
+        if (Carbon::parse($record->created_at)->addMinutes(60)->isPast()) {
+            return back()->withErrors(['email' => __('auth.reset_link_expired')]);
+        }
+        $user = User::where('email', $request->email)->first();
+        if (! $user) {
+            return back()->withErrors(['email' => __('auth.user_not_found')]);
+        }
+
+        // The reset link is the third door onto a password, and the same rule
+        // stands at all three.
+        if (\App\Support\PasswordHistory::isReused($user, $request->password)) {
+            return back()->withErrors([
+                'password' => __('client.password.recently_used', ['count' => \App\Support\PasswordHistory::KEEP]),
+            ]);
+        }
+
+        $previousHash = (string) $user->password;
+        $user->password = Hash::make($request->password);
+
+        // Resetting a password is what somebody does when they think another
+        // person is in their account. Any "remember me" cookie already handed
+        // out has to stop working, or the reset changes nothing for them.
+        $user->setRememberToken(Str::random(60));
+
+        // The link only ever reaches the inbox of this address, so following it
+        // proves the address the way the verification link does. Without this,
+        // a customer whose account staff opened, and who set a password from
+        // the reset email, was then asked to verify the address they had just
+        // used. The invitation link counts the same way (InviteController).
+        if (! $user->hasVerifiedEmail()) {
+            $user->email_verified_at = now();
+        }
+        $user->save();
+        \App\Support\PasswordHistory::remember($user, $previousHash);
+        DB::table('password_reset_tokens')->where('email', $request->email)->delete();
+
+        return redirect()->route('client.login')->with('success', __('messages.success.password_reset_successfully_please_log_in'));
+    }
+}

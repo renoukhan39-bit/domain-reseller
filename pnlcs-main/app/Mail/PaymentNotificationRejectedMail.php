@@ -1,0 +1,42 @@
+<?php
+
+namespace App\Mail;
+
+use App\Models\PaymentNotification;
+use App\Mail\Concerns\LocalizesToRecipient;
+use App\Models\Setting;
+use Illuminate\Bus\Queueable;
+use Illuminate\Contracts\Queue\ShouldQueue;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+
+class PaymentNotificationRejectedMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+    use LocalizesToRecipient;
+
+    public function __construct(public PaymentNotification $notification) {
+        $this->localizeTo($this->notification);
+    }
+
+    public function envelope(): Envelope
+    {
+        $num = $this->notification->invoice?->invoice_num ?? $this->notification->invoice_id;
+
+        return new Envelope(subject: __('email.payment_notification_rejected.subject', ['number' => $num]));
+    }
+
+    public function content(): Content
+    {
+        return new Content(
+            view: 'emails.payment-notification-rejected',
+            with: [
+                'notification' => $this->notification,
+                'invoice'      => $this->notification->invoice,
+                'companyName'  => company_name(),
+            ],
+        );
+    }
+}

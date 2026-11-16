@@ -1,0 +1,979 @@
+<?php
+
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Http\Traits\CsvExportable;
+use App\Models\ActivityLog;
+use App\Models\Admin;
+use App\Models\Client;
+use App\Models\ClientGroup;
+use App\Models\ClientNote;
+use App\Models\Currency;
+use App\Models\CustomField;
+use App\Models\CustomFieldValue;
+use App\Models\Domain;
+use App\Models\Product;
+use App\Models\RegistrarSettings;
+use App\Models\Server;
+use App\Models\Service;
+use App\Models\Setting;
+use App\Models\User;
+use App\Enums\DomainStatus;
+use App\Enums\ServiceStatus;
+use App\Services\Module\ModuleRegistry;
+use App\Services\ProvisioningService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rule;
+use Symfony\Component\HttpFoundation\StreamedResponse;
+
+class ClientController extends Controller
+{
+    use CsvExportable;
+
+    public function index(Request $request)
+    {
+        $query = Client::with('contacts');
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        if ($request->filled('group_id')) {
+            $query->where('group_id', $request->group_id);
+        }
+        $clients = $query->orderBy('created_at', 'desc')->paginate(25);
+        $groups = ClientGroup::all();
+
+        return view('admin.clients.index', compact('clients', 'groups'));
+    }
+
+    public function create(Request $request)
+    {
+        $groups = ClientGroup::all();
+        $currencies = Currency::all();
+        $customFields = CustomField::clientFields()->get();
+        $paymentMethods = $this->paymentMethods();
+        $defaultPaymentMethod = Setting::get('DefaultPaymentMethod', 'banktransfer');
+        $languages = \App\Models\Language::getActiveLanguages();
+
+        $defaultCountry = Setting::get('Country') ?: \App\Support\GeoLocale::country($request) ?: \App\Support\GeoLocale::countryFromBrowser($request);
+        $defaultLanguage = Setting::get('DefaultLanguage', config('app.locale', 'en'));
+        $defaultPhonePrefix = \App\Support\Countries::phonePrefix($defaultCountry);
+
+        return view('admin.clients.create', compact('groups', 'currencies', 'customFields', 'paymentMethods', 'defaultPaymentMethod', 'languages', 'defaultCountry', 'defaultLanguage', 'defaultPhonePrefix'));
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            'first_name' => 'required|string|max:255',
+            'last_name' => 'required|string|max:255',
+            // A deleted client stays in the table (its invoices point at it), but
+            // its address is free again: the account under it is gone.
+            'email' => ['required', 'email', 'max:255', Rule::unique('clients', 'email')->withoutTrashed(), 'unique:users,email'],
+            'billing_email' => 'nullable|email|max:255',
+            'company_name' => 'nullable|string|max:255',
+            'tax_id' => 'nullable|string|max:20',
+            // The billing identity. These were displayed on the form and never
+            // saved: a field that is not in the array validate() returns never
+            // reaches update(), so an admin typed a value, saved, and found
+            // the field empty.
+            'client_type' => 'nullable|in:individual,company',
+            'tax_office' => 'nullable|string|max:100',
+            'national_id' => 'nullable|string|max:20',
+            'address1' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:255',
+            'state' => 'nullable|string|max:255',
+            'postcode' => 'nullable|string|max:20',
+            'country' => 'nullable|string|max:2',
+            'phone_number' => 'nullable|string|max:30',
+            'phone_prefix' => 'nullable|string|max:4',
+            'status' => 'required|in:active,inactive,closed',
+            'group_id' => 'nullable|exists:client_groups,id',
+            'currency_id' => 'nullable|exists:currencies,id',
+            'default_payment_method' => 'nullable|string|max:50',
+            'language' => 'nullable|string|max:10',
+            'password' => 'nullable|string|min:8|confirmed',
+        ]);
+        $client = Client::create($validated);
+
+        // A client created by staff gets a login account too, otherwise there
+        // is no user to sign the client area in as (or to impersonate with).
+        if (! empty($validated['password'])) {
+            $user = User::create([
+                'first_name' => $client->first_name,
+                'last_name' => $client->last_name,
+                'email' => $client->email,
+                'password' => Hash::make($validated['password']),
+                'is_active' => true,
+            ]);
+            $client->users()->attach($user->id, ['owner' => true]);
+        }
+
+        $this->saveCustomFieldValues($client, $request);
+
+        return redirect()->route('admin.clients.show', $client)->with('success', __('messages.success.client_created'));
+    }
+
+    /**
+     * Every customer's billing identity in one table.
+     *
+     * While invoices are issued by hand, collecting this customer by customer
+     * becomes the day's work. The table shows exactly the fields an official
+     * invoice needs, marks the gaps, and the "only incomplete" filter says who
+     * to chase at the start of the month.
+     */
+    public function billingIdentity(Request $request)
+    {
+        $query = Client::query();
+
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $clients = $query->orderBy('id', 'asc')->get();
+
+        // What is missing is a rule per customer type, not a column query -
+        // which is why the filter and the count live here rather than in SQL.
+        $missing = $clients->mapWithKeys(fn (Client $c) => [$c->id => $c->missingBillingIdentity()]);
+
+        if ($request->boolean('only_missing')) {
+            $clients = $clients->filter(fn (Client $c) => $missing[$c->id] !== []);
+        }
+
+        return view('admin.clients.billing-identity', [
+            'clients' => $clients,
+            'missing' => $missing,
+            'missingCount' => $missing->filter(fn (array $m) => $m !== [])->count(),
+        ]);
+    }
+
+    /** The same table, in a form an accountant can be sent. */
+    public function billingIdentityCsv(Request $request): StreamedResponse
+    {
+        $query = Client::query();
+
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+
+        $clients = $query->orderBy('id', 'asc')->get();
+
+        if ($request->boolean('only_missing')) {
+            $clients = $clients->filter(fn (Client $c) => $c->missingBillingIdentity() !== []);
+        }
+
+        $rows = $clients->map(fn (Client $c) => [
+            $c->id,
+            $c->full_name,
+            $c->client_type === 'company' ? __('admin.clients.billing_type_company') : ($c->client_type === 'individual' ? __('admin.clients.billing_type_individual') : ''),
+            $c->company_name ?? '',
+            $c->tax_office ?? '',
+            $c->tax_id ?? '',
+            $c->national_id ?? '',
+            $c->address1 ?? '',
+            $c->city ?? '',
+            $c->country ?? '',
+            $c->full_phone ?? '',
+            $c->email,
+            implode(' | ', \App\Support\BillingIdentity::labels($c->missingBillingIdentity())),
+        ]);
+
+        return $this->streamCsvDownload(
+            'billing-identity-'.now()->format('Y-m-d').'.csv',
+            ['ID', __('admin.clients.name'), __('admin.clients.billing_type'), __('client.form.company_title'), __('admin.clients.billing_tax_office'), __('common.form.tax_id'), __('admin.clients.billing_national_id'), __('common.form.street_address'), __('common.form.city'), __('common.form.country'), __('client.form.phone'), __('common.form.email_address'), __('admin.clients.billing_missing_column')],
+            $rows
+        );
+    }
+
+    public function show(Request $request, Client $client)
+    {
+        $tab = $request->get('tab', 'summary');
+
+        $client->load('contacts', 'users');
+
+        $data = ['client' => $client, 'tab' => $tab];
+
+        // Custom fields (shown in the summary tab)
+        $data['customFields'] = CustomField::clientFields()
+            ->with(['values' => fn ($q) => $q->where('rel_id', $client->id)])
+            ->get();
+
+        // The info bar: the customer's stored cards, and whether staff can
+        // ask them to add one (only where the customer could). Cards only:
+        // Stripe stores them as 'cc', iyzico as 'card'; a PayPal account or a
+        // bank account the customer typed in is not a card.
+        $data['storedCardCount'] = \App\Models\PaymentMethod::where('client_id', $client->id)
+            ->whereIn('payment_type', ['cc', 'card'])->count();
+        $data['cardRequestOffered'] = \App\Support\AutoCharge::cardStorageOffered();
+
+        // Stats always needed (shown in all tabs)
+        $data['serviceCount'] = $client->services()->count();
+        $data['domainCount'] = $client->domains()->count();
+        $data['invoiceCount'] = $client->invoices()->excludeSettledProformas()->count();
+        $data['ticketCount'] = $client->tickets()->count();
+        // What the customer still owes: every open invoice's remaining balance.
+        // Counting only the ones literally marked unpaid left out the overdue
+        // ones - the money the operator most wants to see on this page.
+        $payments = app(\App\Services\PaymentService::class);
+        $data['unpaidInvoices'] = $client->invoices()
+            ->whereIn('status', ['unpaid', 'overdue', 'partially_paid', 'payment_pending', 'collections'])
+            ->get()
+            ->sum(fn ($invoice) => $payments->balance($invoice));
+        // The billing summary's counts. The view read $invoiceSummary and
+        // nothing ever set it, so every client showed 0 paid, 0 unpaid and
+        // 0 overdue invoices whatever they had.
+        $byStatus = $client->invoices()->excludeSettledProformas()
+            ->selectRaw('LOWER(status) as s, COUNT(*) as c')->groupBy('s')->pluck('c', 's');
+        $data['invoiceSummary'] = [
+            'paid' => (int) ($byStatus['paid'] ?? 0),
+            'unpaid' => (int) collect(['unpaid', 'partially_paid', 'payment_pending'])->sum(fn ($st) => $byStatus[$st] ?? 0),
+            'overdue' => (int) ($byStatus['overdue'] ?? 0),
+        ];
+
+        switch ($tab) {
+            case 'services':
+                $data['services'] = $client->services()->with('product')->orderBy('id', 'desc')->paginate(15);
+                // For the "add existing service" form (used when migrating a
+                // customer in by hand): only real, sellable products and the
+                // servers an operator can place them on.
+                $data['products'] = Product::where('retired', false)->orderBy('name')->get(['id', 'name', 'server_type']);
+                // Each product's order options, so the form can offer them (an
+                // operator adding a VPS picks its operating system and size).
+                $optionService = app(\App\Services\ConfigOptionService::class);
+                $data['productOptions'] = $data['products']->mapWithKeys(fn ($p) => [$p->id => $optionService->groupsFor($p)
+                    ->flatMap(fn ($g) => $g->options)
+                    ->filter(fn ($o) => $o->subs->isNotEmpty() && ($o->isChoice() || $o->isQuantity() || $o->isCheckbox()))
+                    ->map(fn ($o) => [
+                        'id' => $o->id,
+                        'name' => $o->displayName(),
+                        'type' => $o->isQuantity() ? 'quantity' : ($o->isCheckbox() ? 'checkbox' : 'choice'),
+                        'min' => (int) ($o->qty_minimum ?? 0),
+                        'max' => $o->qty_maximum ? (int) $o->qty_maximum : null,
+                        'subs' => $o->subs->map(fn ($s) => ['id' => $s->id, 'label' => $s->displayName()])->values(),
+                    ])->values()])->filter(fn ($o) => $o->isNotEmpty());
+                $data['servers'] = Server::where('active', true)->orderBy('name')->get(['id', 'name', 'type']);
+                break;
+            case 'domains':
+                $data['domains'] = $client->domains()->orderBy('id', 'desc')->paginate(15);
+                $data['registrars'] = $this->activeRegistrars();
+                break;
+            case 'invoices':
+                $data['invoices'] = $client->invoices()->excludeSettledProformas()->orderBy('id', 'desc')->paginate(15);
+                break;
+            case 'tickets':
+                $data['tickets'] = $client->tickets()->with('department')->orderBy('id', 'desc')->paginate(15);
+                break;
+            case 'notes':
+                $data['notes'] = ClientNote::where('client_id', $client->id)->orderBy('id', 'desc')->get();
+                break;
+            case 'log':
+                $data['logs'] = ActivityLog::forClient($client)
+                    ->orderBy('id', 'desc')->paginate(25);
+                break;
+            default: // summary
+                $data['serviceCount'] = $client->services()->count();
+                $data['domainCount'] = $client->domains()->count();
+                $data['invoiceCount'] = $client->invoices()->excludeSettledProformas()->count();
+                $data['ticketCount'] = $client->tickets()->count();
+                $data['recentInvoices'] = $client->invoices()->excludeSettledProformas()->orderBy('id', 'desc')->limit(5)->get();
+                $data['recentTickets'] = $client->tickets()->with('department')->orderBy('id', 'desc')->limit(5)->get();
+                $data['recentServices'] = $client->services()->with('product')->orderBy('id', 'desc')->limit(5)->get();
+                break;
+        }
+
+        return view('admin.clients.show', $data);
+    }
+
+    public function storeNote(Request $request, Client $client)
+    {
+        $validated = $request->validate([
+            'note' => 'required|string',
+            'sticky' => 'boolean',
+        ]);
+
+        // client_notes keeps its author as a plain name in `admin`; there is no
+        // admin_id column and the model does not accept one, so writing an id
+        // here left every note attributed to nobody in particular. The API door
+        // has always written the name.
+        ClientNote::create([
+            'client_id' => $client->id,
+            'admin' => auth('admin')->user()?->full_name ?: 'system',
+            'note' => $validated['note'],
+            'sticky' => $validated['sticky'] ?? false,
+        ]);
+
+        return back()->with('success', __('messages.success.note_added'));
+    }
+
+    public function updateNote(Request $request, Client $client, ClientNote $note)
+    {
+        abort_if($note->client_id !== $client->id, 404);
+
+        $validated = $request->validate([
+            'note' => 'required|string',
+            'sticky' => 'boolean',
+        ]);
+
+        // Inline editing cannot change sticky; keep the stored value.
+        $note->update([
+            'note' => $validated['note'],
+            'edited_by' => auth('admin')->user()?->full_name ?: 'system',
+        ]);
+
+        if ($request->wantsJson()) {
+            return response()->json([
+                'success' => true,
+                'note' => $note->note,
+                'sticky' => (bool) $note->sticky,
+            ]);
+        }
+
+        return back()->with('success', __('messages.success.note_updated'));
+    }
+
+    public function destroyNote(Request $request, Client $client, ClientNote $note)
+    {
+        abort_if($note->client_id !== $client->id, 404);
+
+        $note->delete();
+
+        if ($request->wantsJson()) {
+            return response()->json(['success' => true]);
+        }
+
+        return back()->with('success', __('messages.success.note_deleted'));
+    }
+
+    /**
+     * Attach an existing service to a client by hand.
+     *
+     * This is the migration path the docs describe: a customer already runs on
+     * a server (from cPanel/WHMCS/manual setup) and the operator records that
+     * service in PNLCS so renewals bill from here. It deliberately does NOT
+     * provision anything on the panel — the account already exists — it only
+     * writes the billing record, so there is no order and no module call.
+     */
+    public function storeService(Request $request, Client $client, ProvisioningService $provisioning)
+    {
+        $cycles = ['Monthly', 'Quarterly', 'Semi-Annually', 'Annually', 'Biennially', 'Triennially', 'One-Time'];
+
+        $validated = $request->validate([
+            'product_id' => ['required', Rule::exists('products', 'id')],
+            // A server is required when we are going to provision on it.
+            'server_id' => [Rule::requiredIf($request->boolean('provision')), 'nullable', Rule::exists('servers', 'id')],
+            'domain' => ['nullable', 'string', 'max:255'],
+            'billing_cycle' => ['required', Rule::in($cycles)],
+            'amount' => ['required', 'numeric', 'min:0'],
+            'next_due_date' => ['nullable', 'date'],
+            'status' => ['required', Rule::in(array_column(ServiceStatus::cases(), 'value'))],
+            'provision' => ['boolean'],
+            // Link an already-existing server account (migration): the panel user id.
+            'link_user_id' => ['nullable', 'string', 'max:100'],
+            'config_options' => ['nullable', 'array'],
+        ]);
+
+        // Building an account on a server, or taking over one that is already
+        // there, is a server action: the permission the module buttons on a
+        // service ask for. Writing the billing record alone stays with "edit
+        // clients".
+        $linkUserId = trim((string) $request->input('link_user_id'));
+        if ($request->boolean('provision') || $linkUserId !== '') {
+            abort_unless(auth('admin')->user()?->hasPermission(\App\Constants\Permissions::MANAGE_SERVICES), 403);
+        }
+
+        // A panel account another live service already manages is not linked
+        // a second time (claim() asks the same of a virtual server).
+        if (! $request->boolean('provision') && $linkUserId !== '' && ! empty($validated['server_id'])) {
+            $linkModule = app(ModuleRegistry::class)->getServerModule((string) Server::find($validated['server_id'])?->type);
+            $accountOf = is_callable([$linkModule, 'linkedPanelAccount'])
+                ? fn ($s) => (string) $linkModule->linkedPanelAccount($s)
+                : fn ($s) => (string) (($s->module_data ?? [])['panelica_user_id'] ?? '');
+            $taken = Service::where('server_id', $validated['server_id'])
+                ->whereNotIn('status', ['terminated', 'cancelled', 'fraud'])
+                ->get(['id', 'module_data'])
+                ->first(fn ($s) => $accountOf($s) === $linkUserId);
+            if ($taken) {
+                return back()->withInput()->with('error', __('admin.clients.link_taken', ['service' => $taken->id]));
+            }
+        }
+
+        // The product's order options (operating system, memory...), checked
+        // against what the product offers before anything is written.
+        $optionService = app(\App\Services\ConfigOptionService::class);
+        $optionPayload = [];
+        if ($request->filled('config_options')) {
+            $optionPayload = $optionService->toCartPayload($optionService->normalise(
+                Product::findOrFail($validated['product_id']),
+                (array) $request->input('config_options'),
+                $validated['billing_cycle'],
+            ));
+        }
+
+        // Two modes, the way WHMCS lets you choose a module command on a manual
+        // add: provision on, and we run the server module's Create to build a
+        // real account; provision off, and we only write the billing record for
+        // a service that already exists (migration). Provisioning starts the
+        // service pending; createAccount() activates it when the module says ok.
+        $provision = $request->boolean('provision');
+
+        $service = Service::create([
+            'client_id' => $client->id,
+            'product_id' => $validated['product_id'],
+            'server_id' => $validated['server_id'] ?? null,
+            'domain' => $validated['domain'] ?? null,
+            'qty' => 1,
+            'first_payment_amount' => $validated['amount'],
+            'amount' => $validated['amount'],
+            'billing_cycle' => $validated['billing_cycle'],
+            'next_due_date' => $validated['next_due_date'] ?? null,
+            'registration_date' => now()->toDateString(),
+            'status' => $provision ? ServiceStatus::Pending->value : $validated['status'],
+            'auto_renew' => true,
+        ]);
+
+        $optionService->attachToService($service, $optionPayload);
+
+        ActivityLog::log(
+            $provision
+                ? "Service #{$service->id} added to client #{$client->id} and provisioned on the server"
+                : "Existing service #{$service->id} added to client #{$client->id} (manual migration)",
+            auth('admin')->user()?->full_name ?: 'admin',
+            $client->id,
+        );
+
+        // Migration: link this billing record to an account that already exists
+        // on the server so PNLCS can manage it. suspend()/terminate() address the
+        // panel user id stored in module_data; we also copy the username for show.
+        $linked = false;
+        if (! $provision && $linkUserId !== '') {
+            // A virtual server is linked by tagging the guest for this service.
+            $module = $service->server ? app(ModuleRegistry::class)->getServerModule($service->server->type) : null;
+            if ($module instanceof \Modules\Servers\Proxmox\ProxmoxModule) {
+                $claimed = $module->claim($service, (int) $linkUserId);
+
+                return redirect()->route('admin.clients.show', ['client' => $client, 'tab' => 'services'])
+                    ->with($claimed['success'] ? 'success' : 'error', $claimed['message']);
+            }
+            // A module that records its own account ids (Plesk: subscription
+            // and owner) links the service itself.
+            if (is_callable([$module, 'linkAccount'])) {
+                $linkResult = $module->linkAccount($service, $linkUserId);
+
+                return redirect()->route('admin.clients.show', ['client' => $client, 'tab' => 'services'])
+                    ->with($linkResult['success'] ? 'success' : 'error', $linkResult['message']);
+            }
+            if ($service->server) {
+                $module = app(ModuleRegistry::class)->getServerModule($service->server->type);
+                if ($module && method_exists($module, 'listAccounts')) {
+                    foreach ($module->listAccounts($service->server) as $a) {
+                        if (($a['id'] ?? '') === $linkUserId) {
+                            $service->username = $a['username'] ?? $service->username;
+                            break;
+                        }
+                    }
+                }
+            }
+            $service->module_data = ['panelica_user_id' => $linkUserId];
+            $service->save();
+            $linked = true;
+        }
+
+        $redirect = redirect()->route('admin.clients.show', ['client' => $client, 'tab' => 'services']);
+
+        if ($provision) {
+            $result = $provisioning->createAccount($service);
+
+            return ($result['success'] ?? false)
+                ? $redirect->with('success', __('admin.clients.service_provisioned'))
+                : $redirect->with('error', __('admin.clients.service_provision_failed', ['error' => $result['message'] ?? '']));
+        }
+
+        return $redirect->with('success', __($linked ? 'admin.clients.service_linked' : 'admin.clients.service_added'));
+    }
+
+    /**
+     * The accounts that already exist on a server, for the "link existing
+     * account" picker when adding a service by hand. Returns an empty list for
+     * modules that cannot enumerate accounts, so the picker just stays empty.
+     */
+    public function serverAccounts(Server $server)
+    {
+        $module = app(ModuleRegistry::class)->getServerModule($server->type);
+
+        $accounts = ($module && method_exists($module, 'listAccounts'))
+            ? $module->listAccounts($server)
+            : [];
+
+        return response()->json(['accounts' => $accounts]);
+    }
+
+    /**
+     * The active registrars as [module key => display name], for the client
+     * domain form. Matches the registrars screen: a registrar is active when
+     * its "visible" setting is on (manual defaults on).
+     */
+    protected function activeRegistrars(): array
+    {
+        $registry = app(ModuleRegistry::class);
+        $visible = RegistrarSettings::where('setting', 'visible')->pluck('value', 'registrar');
+
+        return collect($registry->getRegistrarModules())
+            ->filter(function (string $name) use ($visible): bool {
+                return $name === 'manual'
+                    ? $visible->get($name, '1') !== '0'
+                    : $visible->get($name) === '1';
+            })
+            ->mapWithKeys(function (string $name) use ($registry): array {
+                $module = $registry->getRegistrarModule($name);
+
+                return [$name => $module?->getModuleName() ?? ucfirst($name)];
+            })
+            ->sort()
+            ->toArray();
+    }
+
+    /**
+     * Record a domain the client already has registered elsewhere as a
+     * billing-only entry (migration), the same way storeService links an
+     * existing service. No registrar API call is made — this only writes the
+     * billing record so PNLCS renews it from next_due_date + recurring_amount.
+     */
+    public function storeDomainForClient(Request $request, Client $client)
+    {
+        // Validate what the operator meant, not the raw paste: normalise the
+        // scheme, www, path, port and trailing dot away first, then require a
+        // real domain name that is not already in the panel for anyone.
+        $request->merge(['domain' => Domain::normalise($request->input('domain'))]);
+
+        $validated = $request->validate([
+            'domain' => ['required', 'string', 'max:253', function ($attribute, $value, $fail) {
+                if (! filter_var($value, FILTER_VALIDATE_DOMAIN, FILTER_FLAG_HOSTNAME) || ! str_contains((string) $value, '.')) {
+                    $fail(__('admin.clients.domain_invalid'));
+
+                    return;
+                }
+                if (Domain::where('domain', $value)->exists()) {
+                    $fail(__('admin.clients.domain_exists'));
+                }
+            }],
+            'registrar' => ['nullable', 'string', 'max:100'],
+            'registration_date' => ['nullable', 'date'],
+            'expiry_date' => ['nullable', 'date'],
+            'next_due_date' => ['nullable', 'date'],
+            // Renewal only fires when recurring_amount > 0, so it is required —
+            // migrating a domain the operator wants billed with a zero price
+            // would silently never raise a renewal invoice.
+            'recurring_amount' => ['required', 'numeric', 'min:0'],
+            'first_payment_amount' => ['nullable', 'numeric', 'min:0'],
+            'payment_method' => ['nullable', 'string', 'max:50'],
+            'status' => ['required', Rule::in(array_column(DomainStatus::cases(), 'value'))],
+        ]);
+
+        $domain = Domain::create([
+            'client_id' => $client->id,
+            'type' => 'register',
+            'domain' => Domain::normalise($validated['domain']),
+            'registrar' => $validated['registrar'] ?? null,
+            'registration_date' => $validated['registration_date'] ?? null,
+            'expiry_date' => $validated['expiry_date'] ?? null,
+            'next_due_date' => $validated['next_due_date'] ?? null,
+            'recurring_amount' => $validated['recurring_amount'],
+            'first_payment_amount' => $validated['first_payment_amount'] ?? $validated['recurring_amount'],
+            'payment_method' => ($validated['payment_method'] ?? null) ?: null,
+            'status' => $validated['status'],
+        ]);
+
+        ActivityLog::log(
+            "Existing domain #{$domain->id} ({$domain->domain}) added to client #{$client->id} (manual migration)",
+            auth('admin')->user()?->full_name ?: 'admin',
+            $client->id,
+        );
+
+        return redirect()->route('admin.clients.show', ['client' => $client, 'tab' => 'domains'])
+            ->with('success', __('admin.clients.domain_added'));
+    }
+
+    public function edit(Client $client)
+    {
+        $groups = ClientGroup::all();
+        $currencies = Currency::all();
+        $customFields = CustomField::clientFields()->with(['values' => fn ($q) => $q->where('rel_id', $client->id)])->get();
+        $paymentMethods = $this->paymentMethods();
+        $languages = \App\Models\Language::getActiveLanguages();
+
+        return view('admin.clients.edit', compact('client', 'groups', 'currencies', 'customFields', 'paymentMethods', 'languages'));
+    }
+
+    /**
+     * Payment methods the client's default can be picked from: every usable
+     * gateway plus the offline options offered on the invoice form.
+     *
+     * @return array<int, string>
+     */
+    protected function paymentMethods(): array
+    {
+        $gateways = app(ModuleRegistry::class)->usableGateways();
+
+        if (! in_array('banktransfer', $gateways, true)) {
+            $gateways[] = 'banktransfer';
+        }
+
+        $gateways[] = 'manual';
+
+        return $gateways;
+    }
+
+    public function update(Request $request, Client $client)
+    {
+        $validated = $request->validate([
+            'first_name' => 'required|string|max:255',
+            'last_name' => 'required|string|max:255',
+            // Excluding the row being edited: without it a client's own
+            // address counted as taken and no change could be saved at all.
+            'email' => ['required', 'email', 'max:255', Rule::unique('clients', 'email')->ignore($client->id)->withoutTrashed()],
+            'billing_email' => 'nullable|email|max:255',
+            'company_name' => 'nullable|string|max:255',
+            'tax_id' => 'nullable|string|max:20',
+            // The billing identity. These were displayed on the form and never
+            // saved: a field that is not in the array validate() returns never
+            // reaches update(), so an admin typed a value, saved, and found
+            // the field empty.
+            'client_type' => 'nullable|in:individual,company',
+            'tax_office' => 'nullable|string|max:100',
+            'national_id' => 'nullable|string|max:20',
+            'address1' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:255',
+            'state' => 'nullable|string|max:255',
+            'postcode' => 'nullable|string|max:20',
+            // The column will not hold a null, so asking beats a 500.
+            'country' => 'required|string|size:2',
+            'phone_number' => 'nullable|string|max:30',
+            'phone_prefix' => 'nullable|string|max:4',
+            'status' => 'required|in:active,inactive,closed',
+            'group_id' => 'nullable|exists:client_groups,id',
+            'currency_id' => 'nullable|exists:currencies,id',
+            'default_payment_method' => 'nullable|string|max:50',
+            'language' => 'nullable|string|max:10',
+            'password' => 'nullable|string|min:8|confirmed',
+            'tax_exempt' => 'sometimes|boolean',
+            'override_auto_suspend' => 'sometimes|boolean',
+        ]);
+
+        // The customer who signs in with the account's address moves with it
+        // (#210). Checked before anything is saved: another login already on
+        // the new address would make the move fail half way. A password for an
+        // account with no login yet opens one on the new address, so that
+        // address must be free too.
+        $login = \App\Services\ClientLoginEmail::loginToMove($client, (string) $client->email, $validated['email']);
+        $opensLogin = ! empty($validated['password']) && ! $client->users()->exists();
+        if (($login && \App\Services\ClientLoginEmail::takenByAnother($login, $validated['email']))
+            || ($opensLogin && User::where('email', $validated['email'])->exists())) {
+            return back()->withInput($request->except(['password', 'password_confirmation']))
+                ->withErrors(['email' => __('admin.clients.login_email_taken')]);
+        }
+
+        $password = $validated['password'] ?? null;
+        unset($validated['password'], $validated['password_confirmation']);
+
+        $client->update($validated);
+        $this->saveCustomFieldValues($client, $request);
+
+        // An optional new login password (blank leaves it unchanged). After the
+        // update: a login opened here takes the account's new address, not the
+        // one it had before this save.
+        if (! empty($password)) {
+            $this->setClientPassword($client, $password);
+        }
+
+        if ($login) {
+            \App\Services\ClientLoginEmail::move($login, $validated['email']);
+
+            return redirect()->route('admin.clients.show', $client)
+                ->with('success', __('admin.clients.updated_login_moved', ['email' => $validated['email']]));
+        }
+
+        return redirect()->route('admin.clients.show', $client)->with('success', __('messages.success.client_updated'));
+    }
+
+    /**
+     * Set (or create) the linked login user's password for a client.
+     */
+    protected function setClientPassword(Client $client, string $password): void
+    {
+        $user = $client->users()->wherePivot('owner', true)->first()
+            ?? $client->users()->first();
+
+        if (! $user) {
+            $user = User::create([
+                'first_name' => $client->first_name,
+                'last_name' => $client->last_name,
+                'email' => $client->email,
+                'password' => Hash::make($password),
+                'is_active' => true,
+            ]);
+
+            $client->users()->attach($user->id, ['owner' => true]);
+
+            return;
+        }
+
+        $user->password = Hash::make($password);
+        $user->save();
+    }
+
+    public function destroy(Client $client)
+    {
+        // Deleting a client cascades their services away, but the accounts
+        // themselves are never terminated on the control panel - the hosting
+        // would carry on running with nothing left to say it exists or who it
+        // belongs to. Terminate first, then delete.
+        $live = $client->liveServiceCount();
+
+        if ($live > 0) {
+            return back()->with('error', __('admin.messages.client_has_live_services', ['count' => $live]));
+        }
+
+        // A registration outlives the panel record: delete the customer and the
+        // domain row goes with them, so nothing renews it and nothing says it
+        // is theirs, while it stays registered until it quietly lapses.
+        $domains = $client->liveDomainCount();
+
+        if ($domains > 0) {
+            return back()->with('error', __('admin.messages.client_has_live_domains', ['count' => $domains]));
+        }
+
+        $client->delete();
+
+        return redirect()->route('admin.clients.index')->with('success', __('messages.success.client_deleted'));
+    }
+
+    /**
+     * The customer's personal data as JSON, to answer a GDPR / KVKK request
+     * that came by email or post. Same document the account owner can
+     * download from the client area.
+     */
+    public function exportPersonalData(Client $client, \App\Services\PersonalDataExport $export)
+    {
+        \App\Models\ActivityLog::log('Personal data export downloaded by '.(auth('admin')->user()->username ?? 'admin'), auth('admin')->user()->email ?? null, $client->id);
+
+        return response()->json($export->build($client), 200, [
+            'Content-Disposition' => 'attachment; filename="personal-data-'.$client->id.'-'.now()->format('Y-m-d').'.json"',
+            'Cache-Control' => 'no-store',
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    /**
+     * Export clients list as CSV.
+     */
+    public function exportCsv(Request $request): StreamedResponse
+    {
+        $query = Client::query();
+        if ($request->filled('search')) {
+            $query->search($request->search);
+        }
+        if ($request->filled('status')) {
+            $query->where('status', $request->status);
+        }
+        if ($request->filled('group_id')) {
+            $query->where('group_id', $request->group_id);
+        }
+
+        $clients = $query->orderBy('id', 'asc')->get([
+            'id', 'first_name', 'last_name', 'email', 'company_name',
+            'status', 'country', 'phone_number', 'credit', 'created_at',
+        ]);
+
+        $rows = $clients->map(fn ($c) => [
+            $c->id,
+            $c->first_name,
+            $c->last_name,
+            $c->email,
+            $c->company_name ?? '',
+            $c->status->value ?? $c->status,
+            $c->country ?? '',
+            $c->phone_number ?? '',
+            $c->credit ?? '0.00',
+            $c->created_at?->format('Y-m-d H:i:s') ?? '',
+        ]);
+
+        return $this->streamCsvDownload(
+            'clients-'.now()->format('Y-m-d').'.csv',
+            ['ID', 'First Name', 'Last Name', 'Email', 'Company', 'Status', 'Country', 'Phone', 'Credit', 'Created At'],
+            $rows
+        );
+    }
+
+    /**
+     * Login as a client (impersonation).
+     */
+    public function impersonate(Client $client)
+    {
+        // Store admin session info
+        session(['impersonating_admin_id' => auth('admin')->id()]);
+        session(['impersonating_admin_name' => auth('admin')->user()->username]);
+
+        // Find the user associated with this client
+        $user = $client->users()->first();
+        if (! $user) {
+            return back()->with('error', __('messages.error.no_user_linked'));
+        }
+
+        // Login as the client's user
+        auth()->login($user);
+
+        // The customer's second factor must not stand in the way of an admin
+        // taking the account over: the admin has already authenticated as an
+        // admin, carries the edit_clients permission, and cannot hold the
+        // customer's TOTP. Without this the client area's 2fa middleware
+        // bounced the admin to the customer's 2FA screen with no way through,
+        // so a 2FA-enabled client could not be impersonated at all.
+        session(['2fa_verified' => true]);
+
+        // The user may belong to more than one account: open the one that was
+        // clicked, not whichever happens to come first.
+        session(['active_client_id' => $client->id]);
+
+        // r141-trail: leave a record of who was in the account.
+        //
+        // Nine ordinary events are written to the activity log with the
+        // customer's id on them and the customer's own Log tab reads them
+        // back; taking the account over wrote nothing at all. Staff could sign
+        // in as the customer, place an order, open a ticket, change the
+        // account, and there was no record that anyone had been there - so a
+        // customer saying "I never ordered that" could not be answered.
+        ActivityLog::log(
+            "Admin signed in as this client (account #{$client->id})",
+            session('impersonating_admin_name'),
+            $client->id
+        );
+
+        return redirect()->route('client.home')->with('success', __('admin.messages.viewing_as', ['name' => $client->first_name.' '.$client->last_name]));
+    }
+
+    /**
+     * Email the customer the link to their own Add card page.
+     *
+     * Staff signed in as the customer cannot store a card for them: the card
+     * and the agreement to charge it are the cardholder's
+     * (App\Support\Impersonation). This is the way round it that keeps the
+     * consent where it belongs. Offered only where the customer's own page
+     * would offer a card, so the link never lands on a 404.
+     */
+    public function sendCardRequest(Client $client)
+    {
+        if (! \App\Support\AutoCharge::cardStorageOffered()) {
+            return back()->with('error', __('admin.clients.card_request_unavailable'));
+        }
+
+        if (blank($client->email)) {
+            return back()->with('error', __('admin.clients.card_request_no_email'));
+        }
+
+        \Illuminate\Support\Facades\Mail::to($client->email)->send(new \App\Mail\CardSetupRequestMail($client));
+
+        ActivityLog::log(
+            "Staff emailed client #{$client->id} a link to add a card",
+            auth('admin')->user()?->full_name ?: 'admin',
+            $client->id,
+        );
+
+        return back()->with('success', __('admin.clients.card_request_sent', ['email' => $client->email]));
+    }
+
+    /**
+     * Confirm the account owner's email address on their behalf.
+     *
+     * Verification is on by default and holds an unverified customer at the
+     * payment step. When the email never arrives - a typo fixed by staff, a
+     * mailbox that rejects us, an account staff created over the phone - the
+     * customer had no way forward and staff had no button. The address is
+     * only marked as verified: nobody is signed in and nothing is sent.
+     */
+    public function verifyEmail(Client $client)
+    {
+        $login = $client->owner();
+
+        if (! $login) {
+            return back()->with('error', __('admin.clients.verify_email_no_login'));
+        }
+
+        if ($login->hasVerifiedEmail()) {
+            return back()->with('success', __('admin.clients.verify_email_already', ['email' => $login->email]));
+        }
+
+        $login->markEmailAsVerified();
+
+        ActivityLog::log(
+            "Staff marked the email address of client #{$client->id} ({$login->email}) as verified",
+            auth('admin')->user()?->full_name ?: 'admin',
+            $client->id,
+        );
+
+        return back()->with('success', __('admin.clients.verify_email_done', ['email' => $login->email]));
+    }
+
+    /**
+     * Stop impersonation and return to admin.
+     */
+    public function stopImpersonation()
+    {
+        $adminId = session('impersonating_admin_id');
+        if (! $adminId) {
+            return redirect()->route('admin.dashboard');
+        }
+
+        // Logout client
+        auth()->logout();
+
+        // Login back as admin
+        $admin = Admin::find($adminId);
+        if ($admin) {
+            auth('admin')->login($admin);
+        }
+
+        // The other half of the record: when they stopped.
+        if ($clientId = session('active_client_id')) {
+            ActivityLog::log(
+                "Admin stopped signing in as this client (account #{$clientId})",
+                session('impersonating_admin_name'),
+                (int) $clientId
+            );
+        }
+
+        // Clear impersonation session, including the 2FA pass impersonation
+        // granted itself: leaving it set would let the next real client login
+        // in this browser skip its own second factor.
+        session()->forget(['impersonating_admin_id', 'impersonating_admin_name', 'active_client_id', '2fa_verified']);
+
+        return redirect()->route('admin.clients.index')->with('success', __('messages.success.impersonation_stopped'));
+    }
+
+    /**
+     * Persist the submitted custom field values for a client.
+     */
+    protected function saveCustomFieldValues(Client $client, Request $request)
+    {
+        $fields = CustomField::clientFields()->get()->keyBy('id');
+
+        foreach ($fields as $id => $field) {
+            $raw = $request->input("custom_fields.$id");
+
+            $value = is_array($raw) ? implode(', ', array_filter((array) $raw)) : (string) $raw;
+
+            if ($value === '') {
+                CustomFieldValue::where('field_id', $id)->where('rel_id', $client->id)->delete();
+
+                continue;
+            }
+
+            CustomFieldValue::updateOrCreate(
+                ['field_id' => $id, 'rel_id' => $client->id],
+                ['value' => $value]
+            );
+        }
+    }
+}

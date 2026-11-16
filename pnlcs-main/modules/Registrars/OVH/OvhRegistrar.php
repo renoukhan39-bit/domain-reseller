@@ -1,0 +1,995 @@
+<?php
+
+namespace Modules\Registrars\OVH;
+
+use App\Contracts\ManagesWhoisPrivacy;
+use App\Contracts\RegistrarModuleInterface;
+use App\Contracts\SyncsDomainData;
+use App\Models\Client;
+use App\Models\Currency;
+use App\Models\Domain;
+use App\Models\DomainPricing;
+use App\Models\ModuleLog;
+use App\Models\RegistrarSettings;
+use App\Services\DomainHosting;
+use App\Support\MapsClientFields;
+use App\Support\MapsTldCategories;
+use App\Support\MapsTldGracePeriods;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * OVHcloud domain registrar.
+ *
+ * Speaks to the OVHcloud REST API (api.ovh.com) using the self-contained
+ * OvhClient in this module, so there is no third-party SDK dependency.
+ *
+ * Registration and transfers go through OVH's order-cart flow, so they return
+ * an order id rather than a finished domain; the domain is kept pending and
+ * syncDomain() flips it to active once OVH reports it. The simple operations
+ * (nameservers, auth code, transfer lock, renew, info) hit the domain service
+ * endpoints directly.
+ */
+class OvhRegistrar implements ManagesWhoisPrivacy, RegistrarModuleInterface, SyncsDomainData
+{
+    use MapsClientFields;
+    use MapsTldCategories;
+    use MapsTldGracePeriods;
+
+    /** The WHOIS fields OVH's OWO lets a registrant publish (and we opt back in). */
+    private const WHOIS_FIELDS = ['address', 'city', 'country', 'email', 'fax', 'name', 'organisation', 'phone', 'province', 'zip'];
+
+    protected ?OvhClient $client = null;
+
+    protected array $settings = [];
+
+    public function __construct()
+    {
+        $this->settings = $this->loadSettings();
+    }
+
+    public function getModuleName(): string
+    {
+        return 'OVH';
+    }
+
+    public function getConfigFields(): array
+    {
+        $fieldOptions = ['' => '— Auto —'] + $this->clientCustomFieldOptions();
+
+        return [
+            ['name' => 'app_key', 'label' => 'Application Key', 'type' => 'text', 'required' => true],
+            ['name' => 'app_secret', 'label' => 'Application Secret', 'type' => 'password', 'required' => true],
+            ['name' => 'consumer_key', 'label' => 'Consumer Key', 'type' => 'password', 'required' => true],
+            ['name' => 'region', 'label' => 'API Region', 'type' => 'select', 'options' => ['eu' => 'Europe (EU)', 'ca' => 'Canada (CA)', 'us' => 'United States (US)'], 'default' => 'eu'],
+            ['name' => 'subsidiary', 'label' => 'Subsidiary (ovhSubsidiary)', 'type' => 'text', 'required' => false, 'default' => 'PL'],
+            ['name' => 'margin_percent', 'label' => 'Margin (%)', 'type' => 'text', 'required' => false, 'default' => '0'],
+            ['name' => 'csa_field', 'label' => 'OVH contact field', 'type' => 'select', 'options' => $fieldOptions, 'required' => false],
+        ];
+    }
+
+    /** Verify the credentials and reach the API, for the registrars screen. */
+    public function testConnection(): array
+    {
+        try {
+            $me = $this->client()->get('/me');
+
+            return [
+                'success' => true,
+                'message' => 'Połączenie z OVH działa. Konto: '.($me['nichandle'] ?? ($me['firstname'] ?? 'n/d')),
+            ];
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /** The prepaid account (OVH points) balance, for the dashboard balance watch. */
+    public function getBalance(): array
+    {
+        try {
+            $accounts = $this->client()->get('/me/prepaid/account');
+            $account = is_array($accounts) ? ($accounts[0] ?? null) : null;
+
+            $balance = null;
+            $currency = 'eur';
+
+            if (is_array($account)) {
+                $raw = $account['balance'] ?? $account['value'] ?? null;
+
+                if (is_array($raw)) {
+                    $balance = $raw['value'] ?? null;
+                    $currency = strtolower((string) ($raw['currencyCode'] ?? 'eur'));
+                } else {
+                    $balance = $raw;
+                }
+            }
+
+            return ['success' => true, $currency => $balance, 'message' => null];
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function register(Domain $domain, int $years, array $params = []): array
+    {
+        try {
+            $order = $this->orderDomain($domain, max(1, $years), $params);
+            $orderId = $order['order_id'];
+
+            // Not domains.order_id: that column is the PNLCS order this domain
+            // was bought on (Domain::order(), and OrderService finds an order's
+            // domains through it). OVH's own order number lives in the module
+            // log and in the message below.
+            $domain->update([
+                'status' => 'pending',
+                'registrar' => 'ovh',
+                'registrar_contact_id' => (string) $order['contact_id'],
+                'registration_date' => now()->toDateString(),
+                'next_due_date' => now()->addYears($years)->toDateString(),
+            ]);
+
+            $this->logAction('register', $domain, ['order_id' => $orderId, 'contact_id' => $order['contact_id']], ['success' => true, 'order_id' => $orderId]);
+
+            // "pending" (not "active"): OVH processes the order asynchronously,
+            // and the domain must not look registered until syncDomain() sees it.
+            return ['success' => true, 'status' => 'pending', 'message' => "Domain ordered at OVH (order #{$orderId})."];
+        } catch (\Throwable $e) {
+            Log::error("OVH register failed for {$domain->domain}: {$e->getMessage()}");
+            $this->logAction('register', $domain, [], ['success' => false, 'error' => $e->getMessage()]);
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function transfer(Domain $domain, string $eppCode): array
+    {
+        try {
+            $order = $this->orderDomain($domain, max(1, (int) ($domain->registration_period ?? 1)), [], $eppCode);
+            $orderId = $order['order_id'];
+
+            // The PNLCS order link is left alone; see register().
+            $domain->update([
+                'status' => 'pending_transfer',
+                'registrar' => 'ovh',
+                'registrar_contact_id' => (string) $order['contact_id'],
+            ]);
+
+            return ['success' => true, 'status' => 'pending_transfer', 'message' => "Transfer ordered at OVH (order #{$orderId})."];
+        } catch (\Throwable $e) {
+            Log::error("OVH transfer failed for {$domain->domain}: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function renew(Domain $domain, int $years): array
+    {
+        try {
+            $this->client()->post('/domain/'.$domain->domain.'/renew', ['duration' => 'P'.$years.'Y']);
+
+            $newExpiry = ($domain->expiry_date ?? now())->addYears($years);
+            $domain->update(['expiry_date' => $newExpiry, 'next_due_date' => $newExpiry]);
+
+            return ['success' => true, 'message' => "Domain renewed for {$years} year(s).", 'expiry_date' => $newExpiry->toDateString()];
+        } catch (\Throwable $e) {
+            Log::error("OVH renew failed for {$domain->domain}: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    public function getNameservers(Domain $domain): array
+    {
+        try {
+            $info = $this->client()->get('/domain/'.$domain->domain);
+
+            $names = array_map(
+                fn ($ns) => is_array($ns) ? (string) ($ns['nameServer'] ?? '') : (string) $ns,
+                is_array($info['nameServers'] ?? null) ? $info['nameServers'] : []
+            );
+
+            return array_values(array_filter(array_map('strtolower', array_map('trim', $names))));
+        } catch (\Throwable $e) {
+            Log::warning("OVH getNameservers failed for {$domain->domain}: {$e->getMessage()}");
+
+            return $domain->nameserverList();
+        }
+    }
+
+    public function saveNameservers(Domain $domain, array $nameservers): bool
+    {
+        try {
+            $this->client()->post('/domain/'.$domain->domain.'/nameServers/update', [
+                'nameServers' => array_map(
+                    fn ($ns) => ['host' => (string) $ns],
+                    array_values(array_filter($nameservers))
+                ),
+            ]);
+
+            $domain->update(['nameservers' => json_encode(array_values($nameservers))]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("OVH saveNameservers failed for {$domain->domain}: {$e->getMessage()}");
+
+            return false;
+        }
+    }
+
+    public function getEPPCode(Domain $domain): string
+    {
+        try {
+            $result = $this->client()->get('/domain/'.$domain->domain.'/authInfo');
+
+            if (is_string($result) && $result !== '') {
+                return $result;
+            }
+
+            if (is_array($result)) {
+                return (string) ($result['authInfo'] ?? $result['authcode'] ?? $result['transferAuthInfo'] ?? '(unavailable)');
+            }
+
+            return '(unavailable)';
+        } catch (\Throwable $e) {
+            Log::warning("OVH getEPPCode failed for {$domain->domain}: {$e->getMessage()}");
+
+            return '(unavailable)';
+        }
+    }
+
+    public function getLockStatus(Domain $domain): bool
+    {
+        try {
+            $info = $this->client()->get('/domain/'.$domain->domain);
+
+            return ($info['transferLockStatus'] ?? 'locked') !== 'unlocked';
+        } catch (\Throwable $e) {
+            Log::warning("OVH getLockStatus failed for {$domain->domain}: {$e->getMessage()}");
+
+            return true;
+        }
+    }
+
+    public function toggleLock(Domain $domain, bool $lock): bool
+    {
+        try {
+            $this->client()->put('/domain/'.$domain->domain, [
+                'transferLockStatus' => $lock ? 'locked' : 'unlocked',
+            ]);
+
+            return true;
+        } catch (\Throwable $e) {
+            Log::error("OVH toggleLock failed for {$domain->domain}: {$e->getMessage()}");
+
+            return false;
+        }
+    }
+
+    /**
+     * Switch WHOIS privacy (OVH calls it OWO). Opting in publishes fields, so
+     * enabling protection removes the opt-in and disabling it opts every
+     * field back in.
+     *
+     * @return array{success: bool, message: string}
+     */
+    public function setPrivacy(Domain $domain, bool $enabled): array
+    {
+        try {
+            if ($enabled) {
+                $this->client()->delete('/domain/'.$domain->domain.'/configurations/optin');
+            } else {
+                $this->client()->put('/domain/'.$domain->domain.'/configurations/optin', [
+                    'optin' => [['type' => 'all', 'fields' => self::WHOIS_FIELDS]],
+                ]);
+            }
+
+            return ['success' => true, 'message' => ''];
+        } catch (\Throwable $e) {
+            Log::warning("OVH setPrivacy failed for {$domain->domain}: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /** Whether any WHOIS field is opted in for public display. */
+    private function hasPublicWhoisFields(mixed $optin): bool
+    {
+        foreach ((array) $optin as $entry) {
+            if (is_array($entry) && ! empty($entry['fields'])) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    public function checkAvailability(string $domain): array
+    {
+        try {
+            $modes = array_column($this->domainOffers($domain), 'pricingMode');
+
+            return [
+                'available' => collect($modes)->contains(fn ($m) => str_starts_with((string) $m, 'create')),
+                'domain' => $domain,
+                'method' => 'ovh_api',
+            ];
+        } catch (\Throwable $e) {
+            Log::warning("OVH checkAvailability failed for {$domain}: {$e->getMessage()}");
+
+            return ['available' => false, 'domain' => $domain, 'method' => 'ovh_api', 'error' => $e->getMessage()];
+        }
+    }
+
+    public function syncDomain(Domain $domain): array
+    {
+        try {
+            $info = $this->client()->get('/domain/'.$domain->domain);
+            $serviceInfos = $this->client()->get('/domain/'.$domain->domain.'/serviceInfos');
+
+            // OVH returns nameServers as objects ({id, nameServerType, nameServer});
+            // the sync contract wants the hostnames alone.
+            $nameservers = array_values(array_filter(array_map(
+                fn ($ns) => is_array($ns) ? (string) ($ns['nameServer'] ?? '') : (string) $ns,
+                is_array($info['nameServers'] ?? null) ? $info['nameServers'] : []
+            )));
+
+            // The owner contact OVH actually holds, so the panel can see (and
+            // later reconcile) who owns the domain even after a change at OVH.
+            $ownerId = $info['contactOwner']['id'] ?? $info['whoisOwner'] ?? null;
+
+            // OVH calls WHOIS privacy "OWO": the fields opted in there are the
+            // ones shown publicly, so a protected domain has nothing opted in.
+            // A domain that cannot report it leaves the stored flag alone.
+            $idProtection = null;
+            try {
+                $optin = $this->client()->get('/domain/'.$domain->domain.'/configurations/optin');
+                $idProtection = ! $this->hasPublicWhoisFields($optin);
+            } catch (\Throwable) {
+                $idProtection = null;
+            }
+
+            return [
+                'success' => true,
+                // No registration date from here. serviceInfos.creation is when
+                // the service was created in the OVH account, which for a
+                // transferred domain is the transfer date, not the registry's.
+                // Writing it would fill registration_date and RdapRegistrationDate
+                // only ever fills a null one - so the wrong date would stick for
+                // good. RDAP answers with the real one in the pass after the sync.
+                'expiry_date' => $this->parseDate($serviceInfos['expiration'] ?? null),
+                'status' => $this->mapStatus($info['status'] ?? null),
+                'locked' => isset($info['transferLockStatus']) ? $info['transferLockStatus'] === 'locked' : null,
+                'id_protection' => $idProtection,
+                'nameservers' => $nameservers,
+                'registrar_contact_id' => $ownerId !== null ? (string) $ownerId : null,
+            ];
+        } catch (\Throwable $e) {
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Pull the OVH purchase prices — with the configured margin applied and
+     * rounded up to a whole unit of the shop currency — onto the TLDs whose
+     * auto registrar is OVH. Refused unless OVH quotes in that currency.
+     * Run manually from the registrars screen.
+     */
+    public function syncPrices(): array
+    {
+        try {
+            $margin = (float) ($this->settings['margin_percent'] ?? 0);
+
+            // The catalog quotes every TLD in one call, in the account's
+            // currency. Resolve that currency once, then the conversion factor.
+            // A currency that cannot be read refuses the sync: guessing the
+            // shop currency would write wrong prices into the live list.
+            $quoted = $this->accountCurrency();
+            if ($quoted === null) {
+                return ['success' => false, 'message' => __('admin.registrars.sync_currency_unavailable', [
+                    'registrar' => 'OVH',
+                    'shop' => Currency::getDefault()?->code ?? '—',
+                ])];
+            }
+            $factor = Currency::rateToShop($quoted);
+            if ($factor === null) {
+                return ['success' => false, 'message' => __('admin.registrars.sync_currency_unavailable', [
+                    'registrar' => $quoted,
+                    'shop' => Currency::getDefault()?->code ?? '—',
+                ])];
+            }
+
+            $subsidiary = $this->subsidiary();
+            if ($subsidiary === '') {
+                return ['success' => false, 'message' => __('admin.registrars.sync_subsidiary_unset')];
+            }
+
+            $catalog = $this->catalogPrices();
+
+            $updated = 0;
+            $unchanged = 0;
+            $skipped = 0;
+            $changes = [];
+            $skippedExtensions = [];
+
+            foreach (DomainPricing::whereNotNull('auto_registrar')->get() as $tld) {
+                if (strtolower(trim((string) $tld->auto_registrar)) !== 'ovh') {
+                    continue;
+                }
+
+                $ext = ltrim((string) $tld->extension, '.');
+                if ($ext === '') {
+                    continue;
+                }
+
+                $price = $catalog[$ext] ?? null;
+                if ($price === null) {
+                    $skipped++;
+                    $skippedExtensions[] = $tld->extension;
+
+                    continue;
+                }
+
+                // Only the prices OVH quotes. One it does not is not a price
+                // of zero and not a null the column refuses: it is one the
+                // panel does not know, so the operator's own number stays.
+                $next = [];
+                foreach (['register' => 'register_price', 'renew' => 'renew_price', 'transfer' => 'transfer_price'] as $from => $column) {
+                    $value = $this->withMargin($price[$from] ?? null, $margin, $factor);
+                    if ($value !== null) {
+                        $next[$column] = $value;
+                    }
+                }
+
+                if ($next === []) {
+                    $skipped++;
+                    $skippedExtensions[] = $tld->extension;
+
+                    continue;
+                }
+
+                $current = [];
+                foreach (array_keys($next) as $column) {
+                    $current[$column] = (float) $tld->{$column};
+                }
+
+                if ($next == $current) {
+                    $unchanged++;
+
+                    continue;
+                }
+
+                $tld->update($next);
+                $changes[] = ['extension' => $tld->extension, 'before' => $current, 'after' => $next];
+                $updated++;
+            }
+
+            $this->logSync($updated, $unchanged, $skipped, $changes, $skippedExtensions, $margin, $quoted, $factor);
+
+            RegistrarSettings::updateOrCreate(
+                ['registrar' => 'ovh', 'setting' => 'last_price_sync'],
+                ['value' => now()->toDateTimeString()],
+            );
+
+            return ['success' => true, 'updated' => $updated, 'unchanged' => $unchanged, 'skipped' => $skipped];
+        } catch (\Throwable $e) {
+            Log::error("OVH syncPrices failed: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    /**
+     * Add every extension OVH offers to the price list as an OVH TLD, without
+     * touching the rows that already exist (so nothing is duplicated and a TLD
+     * already on another registrar is left alone). Prices are left at their
+     * defaults: "Sync prices" fills them in a separate step.
+     *
+     * @return array{success: bool, added?: int, skipped?: int, message?: string}
+     */
+    public function importTlds(): array
+    {
+        try {
+            $extensions = $this->client()->get('/domain/extensions');
+
+            $added = 0;
+            $skipped = 0;
+
+            foreach ((is_array($extensions) ? $extensions : []) as $ext) {
+                [$grace, $redemption] = $this->tldGracePeriod((string) $ext);
+
+                $tld = DomainPricing::firstOrCreate(
+                    ['extension' => '.'.$ext],
+                    [
+                        'auto_registrar' => 'ovh',
+                        'min_years' => 1,
+                        'max_years' => 10,
+                        'grace_period' => $grace,
+                        'redemption_grace_period' => $redemption,
+                        // Off: the import knows the extension, not what to
+                        // charge for it. Every price column defaults to 0, so
+                        // an enabled row would be on sale for nothing until
+                        // "Sync prices" runs and somebody notices. The
+                        // operator switches it on when it is priced, the way a
+                        // copied product arrives hidden (#348).
+                        'enabled' => false,
+                        'category' => $this->tldCategory((string) $ext),
+                        'is_popular' => false,
+                    ]
+                );
+
+                if ($tld->wasRecentlyCreated) {
+                    $added++;
+                } else {
+                    $skipped++;
+                }
+            }
+
+            return ['success' => true, 'added' => $added, 'skipped' => $skipped];
+        } catch (\Throwable $e) {
+            Log::error("OVH importTlds failed: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage()];
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Cart flow
+    // ---------------------------------------------------------------------
+
+    /**
+     * The OVH subsidiary every cart is opened under (e.g. "PL"). OVH refuses
+     * a cart without it, and the offers/prices depend on it, so it is never
+     * guessed: it must be set explicitly, and an empty value refuses the sync.
+     */
+    protected function subsidiary(): string
+    {
+        return strtoupper(trim((string) ($this->settings['subsidiary'] ?? '')));
+    }
+
+    /** Open an order cart under the account's subsidiary. */
+    protected function createCart(): array
+    {
+        return $this->client()->post('/order/cart', ['ovhSubsidiary' => $this->subsidiary()]);
+    }
+
+    /**
+     * The offers OVH returns for a domain: create-default / create-premium
+     * (available), transfer-* (taken but transferable), aftermarket.
+     *
+     * @return array<int, array<string, mixed>>
+     */
+    protected function domainOffers(string $domain): array
+    {
+        $cart = $this->createCart();
+        $cartId = (string) ($cart['cartId'] ?? '');
+
+        if ($cartId === '') {
+            throw new \RuntimeException('OVH: could not create an order cart.');
+        }
+
+        return $this->client()->get('/order/cart/'.$cartId.'/domain', ['domain' => $domain]);
+    }
+
+    /**
+     * Order a domain (registration or transfer) through OVH's cart and return
+     * the order id. The registrant contact is created once per client and
+     * reused via the CSA custom field.
+     */
+    /**
+     * Order a domain (registration or transfer) through OVH's cart and return
+     * the order and the owner contact it was placed with.
+     *
+     * @return array{order_id: int, contact_id: int}
+     */
+    protected function orderDomain(Domain $domain, int $years, array $params = [], ?string $eppCode = null): array
+    {
+        $client = $domain->client;
+        if (! $client) {
+            throw new \RuntimeException('Domain has no client — cannot create the OVH registrant.');
+        }
+
+        $offers = $this->domainOffers($domain->domain);
+        $prefix = $eppCode !== null ? 'transfer' : 'create';
+        $offer = collect($offers)->first(fn ($o) => str_starts_with((string) ($o['pricingMode'] ?? ''), $prefix));
+
+        if (! $offer) {
+            throw new \RuntimeException('OVH: no '.($eppCode !== null ? 'transfer' : 'registration').' offer for '.$domain->domain.'.');
+        }
+
+        $isCompany = ($client->client_type ?? null) === 'company'
+            || (($client->client_type ?? null) === null && filled($client->company_name));
+
+        $contactId = $this->registrantContactId($client, $isCompany, $params);
+
+        $cart = $this->createCart();
+        $cartId = (string) ($cart['cartId'] ?? '');
+        if ($cartId === '') {
+            throw new \RuntimeException('OVH: could not create an order cart.');
+        }
+
+        $item = $this->client()->post('/order/cart/'.$cartId.'/domain', [
+            'domain' => $domain->domain,
+            'offerId' => $offer['offerId'] ?? null,
+            'duration' => 'P'.$years.'Y',
+            'quantity' => 1,
+        ]);
+        $itemId = (int) ($item['itemId'] ?? 0);
+
+        $this->configureCart($cartId, $itemId, $contactId, $this->nameserversFor($domain, $params), $eppCode);
+
+        $this->client()->post('/order/cart/'.$cartId.'/assign');
+        $checkout = $this->client()->post('/order/cart/'.$cartId.'/checkout');
+
+        $orderId = (int) ($checkout['orderId'] ?? ($checkout['order']['orderId'] ?? 0));
+        if ($orderId === 0) {
+            throw new \RuntimeException('OVH: checkout returned no order id for '.$domain->domain.'.');
+        }
+
+        return ['order_id' => $orderId, 'contact_id' => $contactId];
+    }
+
+    /**
+     * Fill the cart's required configurations, classified by their `type`
+     * rather than their label. The owner contact and the boolean gates are set;
+     * the admin/tech accounts are left alone so they stay the operator's own.
+     *
+     * A configuration this module cannot satisfy throws instead of being
+     * silently skipped: a skipped required configuration fails checkout anyway,
+     * but only after the operator has paid for an order that never completes.
+     */
+    protected function configureCart(string $cartId, int $itemId, int $contactId, array $nameservers, ?string $eppCode): void
+    {
+        $required = $this->client()->get('/order/cart/'.$cartId.'/item/'.$itemId.'/requiredConfiguration');
+
+        foreach ($required as $config) {
+            $label = (string) ($config['label'] ?? '');
+            $value = $this->configurationValue($label, (string) ($config['type'] ?? ''), $contactId, $nameservers, $eppCode);
+
+            if ($value === null) {
+                continue;
+            }
+
+            $this->client()->post('/order/cart/'.$cartId.'/item/'.$itemId.'/configuration', [
+                'label' => $label,
+                'value' => $value,
+            ]);
+        }
+    }
+
+    /**
+     * The value for one cart configuration, or null to leave it untouched.
+     */
+    protected function configurationValue(string $label, string $type, int $contactId, array $nameservers, ?string $eppCode): ?string
+    {
+        $type = strtolower($type);
+
+        // The client's own contact as owner. OVH wants the full resource path,
+        // not the bare numeric id.
+        if ($type === '/me/contact' || $type === 'contact') {
+            return '/me/contact/'.$contactId;
+        }
+
+        // The Nichandle that administers the domain. Left alone: it defaults to
+        // the account the cart is assigned to — the operator's, not the client's.
+        if ($type === 'nichandle') {
+            return null;
+        }
+
+        // A boolean gate the registry imposes (legal age, terms acceptance).
+        if ($type === 'bool' || $type === 'boolean') {
+            return 'true';
+        }
+
+        // Free-form strings, keyed by label.
+        $labelLower = strtolower($label);
+        if (str_contains($labelLower, 'dns') || str_contains($labelLower, 'nameserver')) {
+            return implode(',', $nameservers);
+        }
+        if (str_contains($labelLower, 'auth') || str_contains($labelLower, 'epp')) {
+            return (string) $eppCode;
+        }
+
+        throw new \RuntimeException("OVH: cannot fill cart configuration '{$label}' (type '{$type}').");
+    }
+
+    /** The OVH contact id for a client, created once and remembered on the CSA field. */
+    protected function registrantContactId(Client $client, bool $isCompany, array $params): int
+    {
+        $csa = $this->resolveClientField($client, $this->settings['csa_field'] ?? null, ['csa', 'ovh_contact_id']);
+        if ($csa !== null && ctype_digit(trim($csa))) {
+            return (int) trim($csa);
+        }
+
+        $line1 = (string) ($params['address'] ?? $client->address1 ?? '');
+        $line2 = (string) ($params['address2'] ?? $client->address2 ?? '');
+        $city = (string) ($params['city'] ?? $client->city ?? '');
+        $zip = (string) ($params['postcode'] ?? $client->postcode ?? '');
+        $country = $this->normalizeCountry((string) ($params['country'] ?? $client->country));
+        $province = (string) ($params['state'] ?? $client->state ?? '');
+
+        $firstName = (string) ($client->first_name ?? '');
+        $lastName = (string) ($client->last_name ?? '');
+        $email = (string) ($client->email ?? '');
+
+        $this->assertContactable($firstName, $lastName, $email, $line1, $city, $zip, $country);
+
+        $address = [
+            'line1' => $line1,
+            'city' => $city,
+            'zip' => $zip,
+            'country' => $country,
+        ];
+        if ($line2 !== '') {
+            $address['line2'] = $line2;
+        }
+        if ($province !== '') {
+            $address['province'] = $province;
+        }
+
+        $contact = [
+            'firstName' => $firstName,
+            'lastName' => $lastName,
+            'email' => $email,
+            'phone' => $this->normalizePhone((string) ($client->phone_number ?? '')),
+            'address' => $address,
+            'legalForm' => $isCompany ? 'corporation' : 'individual',
+        ];
+
+        if ($isCompany) {
+            $contact['organisationName'] = (string) ($client->company_name ?? '');
+            $contact['vat'] = (string) ($client->tax_id ?? '');
+        } else {
+            $contact['nationalIdentificationNumber'] = (string) ($client->national_id ?? '');
+        }
+
+        $created = $this->client()->post('/me/contact', $contact);
+        $id = (int) ($created['id'] ?? 0);
+
+        if ($id === 0) {
+            throw new \RuntimeException('OVH: contact creation returned no id.');
+        }
+
+        $this->storeClientField($client, $this->settings['csa_field'] ?? null, (string) $id, ['csa', 'ovh_contact_id']);
+
+        return $id;
+    }
+
+    /** The nameservers a new domain should point at: the order's, then General Settings → Domains. */
+    protected function nameserversFor(Domain $domain, array $params): array
+    {
+        $provided = array_values(array_filter([
+            $params['ns1'] ?? null,
+            $params['ns2'] ?? null,
+            $params['ns3'] ?? null,
+            $params['ns4'] ?? null,
+            $params['ns5'] ?? null,
+        ]));
+
+        if (count($provided) >= 2) {
+            return $provided;
+        }
+
+        return DomainHosting::defaultNameservers();
+    }
+
+    /**
+     * The register / renew / transfer prices for every TLD OVH sells, read
+     * from the public order catalog in one call. Prices are in the account's
+     * currency; the key is the extension without its dot.
+     *
+     * @return array<string, array{register: ?float, renew: ?float, transfer: ?float}>
+     */
+    protected function catalogPrices(): array
+    {
+        $catalog = $this->client()->get('/order/catalog/public/domain', ['ovhSubsidiary' => $this->subsidiary()]);
+
+        $prices = [];
+
+        foreach ($catalog['plans'] ?? [] as $plan) {
+            $tld = ltrim((string) ($plan['planCode'] ?? ''), '.');
+            if ($tld === '') {
+                continue;
+            }
+
+            $row = ['register' => null, 'renew' => null, 'transfer' => null];
+
+            foreach ($plan['pricings'] ?? [] as $pricing) {
+                // One year, and the standard offer (not premium/aftermarket).
+                if ((int) ($pricing['interval'] ?? 0) !== 12) {
+                    continue;
+                }
+
+                $mode = (string) ($pricing['mode'] ?? '');
+                $phase = (int) ($pricing['phase'] ?? -1);
+                $value = $pricing['price'] ?? null;
+
+                // OVH prices the unavailable rows at 99999900000000; keep null.
+                $amount = is_numeric($value) && (float) $value < 90000000000000 ? (float) $value / 100000000 : null;
+
+                if ($mode === 'create-default' && $phase === 0) {
+                    $row['register'] = $amount;
+                } elseif ($mode === 'create-default' && $phase === 1) {
+                    $row['renew'] = $amount;
+                } elseif ($mode === 'transfer-default' && $phase === 0) {
+                    $row['transfer'] = $amount;
+                }
+            }
+
+            if ($row['register'] !== null || $row['renew'] !== null || $row['transfer'] !== null) {
+                $prices[$tld] = $row;
+            }
+        }
+
+        return $prices;
+    }
+
+    /** The OVH account's currency code (the one the catalog quotes in). */
+    protected function accountCurrency(): ?string
+    {
+        try {
+            $me = $this->client()->get('/me');
+
+            return isset($me['currency']['code']) ? strtoupper((string) $me['currency']['code']) : null;
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------
+
+    protected function client(): OvhClient
+    {
+        if ($this->client !== null) {
+            return $this->client;
+        }
+
+        $this->client = new OvhClient(
+            (string) ($this->settings['app_key'] ?? ''),
+            (string) ($this->settings['app_secret'] ?? ''),
+            (string) ($this->settings['consumer_key'] ?? ''),
+            (string) ($this->settings['region'] ?? 'eu'),
+        );
+
+        return $this->client;
+    }
+
+    /** A purchase price with the margin applied. */
+    protected function withMargin(?float $price, float $margin, float $factor = 1.0): ?float
+    {
+        if ($price === null) {
+            return null;
+        }
+
+        $value = $price * $factor;
+
+        return $value > 0 ? round($value * (1 + $margin / 100), 2) : 0.0;
+    }
+
+    /**
+     * Refuse to build an OVH contact the registry will reject. OVH wants the
+     * fields below for every legal form; a missing one is a client-data
+     * problem, not a network one, so it fails here with a clear message.
+     */
+    protected function assertContactable(string $firstName, string $lastName, string $email, string $line1, string $city, string $zip, string $country): void
+    {
+        $missing = array_keys(array_filter([
+            'first name' => $firstName,
+            'last name' => $lastName,
+            'email' => $email,
+            'address' => $line1,
+            'city' => $city,
+            'postcode' => $zip,
+            'country' => $country,
+        ], fn ($value) => trim($value) === ''));
+
+        if ($missing !== []) {
+            throw new \RuntimeException('OVH: the client is missing '.implode(', ', $missing).' to register a domain.');
+        }
+    }
+
+    /** Two-letter ISO country, uppercased, defaulting to PL. */
+    protected function normalizeCountry(?string $country): string
+    {
+        $country = strtoupper(trim((string) $country));
+
+        return strlen($country) === 2 ? $country : 'PL';
+    }
+
+    /** A phone OVH accepts: digits and a leading + only. */
+    protected function normalizePhone(?string $phone): ?string
+    {
+        $phone = trim((string) $phone);
+        if ($phone === '') {
+            return null;
+        }
+
+        $digits = preg_replace('/[^0-9+]/', '', $phone) ?? $phone;
+
+        if (preg_match('/^\+(\d{1,3})(\d+)$/', $digits, $m)) {
+            return '+'.$m[1].'.'.$m[2];
+        }
+
+        return $digits;
+    }
+
+    protected function loadSettings(): array
+    {
+        try {
+            return RegistrarSettings::where('registrar', 'ovh')->pluck('value', 'setting')->all();
+        } catch (\Throwable) {
+            return [];
+        }
+    }
+
+    protected function parseDate(?string $value): ?string
+    {
+        if (! $value) {
+            return null;
+        }
+
+        try {
+            return Carbon::parse($value)->toDateString();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
+    protected function mapStatus(?string $status): ?string
+    {
+        return match (strtolower((string) $status)) {
+            'ok' => 'active',
+            'expired' => 'expired',
+            'pendingdelete' => 'expired',
+            'pendingoutgoingtransfer' => 'transferred_away',
+            default => $status,
+        };
+    }
+
+    protected function logAction(string $action, Domain $domain, array $request, array $response): void
+    {
+        try {
+            ModuleLog::create([
+                'module' => $this->getModuleName(),
+                'action' => $action,
+                'request' => json_encode(['domain' => $domain->domain] + $request, JSON_UNESCAPED_SLASHES),
+                'response' => json_encode($response, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                'service_id' => $domain->id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('OVH module log failed: '.$e->getMessage());
+        }
+    }
+
+    protected function logSync(int $updated, int $unchanged, int $skipped, array $changes, array $skippedExtensions, float $margin, ?string $currency = null, ?float $rate = null): void
+    {
+        $details = collect($changes)->map(function (array $c): string {
+            return $c['extension']
+                .' reg:'.($c['before']['register_price'] ?? '-').'→'.($c['after']['register_price'] ?? '-')
+                .' renew:'.($c['before']['renew_price'] ?? '-').'→'.($c['after']['renew_price'] ?? '-')
+                .' transfer:'.($c['before']['transfer_price'] ?? '-').'→'.($c['after']['transfer_price'] ?? '-');
+        })->implode(' | ');
+
+        Log::info('OVH price sync: '.$updated.' changed, '.$unchanged.' unchanged, '.$skipped.' skipped'
+            .($details !== '' ? ' — '.$details : ''));
+
+        try {
+            ModuleLog::create([
+                'module' => $this->getModuleName(),
+                'action' => 'sync_prices',
+                'request' => json_encode(['margin_percent' => $margin, 'currency' => $currency, 'rate' => $rate], JSON_UNESCAPED_SLASHES),
+                'response' => json_encode([
+                    'updated' => $updated,
+                    'unchanged' => $unchanged,
+                    'skipped' => $skipped,
+                    'changed_extensions' => array_column($changes, 'extension'),
+                    'skipped_extensions' => $skippedExtensions,
+                    'changes' => $changes,
+                ], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            ]);
+        } catch (\Throwable $e) {
+            Log::warning('OVH module log failed: '.$e->getMessage());
+        }
+    }
+}

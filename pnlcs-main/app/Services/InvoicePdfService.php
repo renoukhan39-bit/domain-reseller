@@ -1,0 +1,842 @@
+<?php
+
+namespace App\Services;
+
+use App\Enums\InvoiceStatus;
+use App\Models\Invoice;
+use App\Models\InvoiceItem;
+use App\Models\Setting;
+use App\Models\TaxRule;
+use App\Services\AddonManager;
+use Barryvdh\DomPDF\Facade\Pdf;
+use Modules\Gateways\BankTransfer\BankTransferModule;
+use Symfony\Component\HttpFoundation\Response;
+
+class InvoicePdfService
+{
+    /**
+     * The company block printed on the invoice.
+     *
+     * Settings — General saves the address as Address, the phone as
+     * PhoneNumber and the email as Email. The Company* names are what older
+     * installations set by hand, so they still count when the screen's own
+     * field is empty.
+     *
+     * @return array<string, string>
+     */
+    public function companyDetails(): array
+    {
+        return [
+            'name' => company_name(),
+            // The registered company title, which is not the brand. An invoice
+            // that will be fed to an official e-invoicing integration has to
+            // carry the legal entity, not the trading name.
+            'legal_name' => $this->firstFilled(['CompanyLegalName']),
+            // The company's own website, shown as {company_domain}. Falls back to
+            // the panel address so installations that only ever set Domain keep
+            // printing something.
+            'domain' => $this->firstFilled(['CompanyWebsite', 'Domain']),
+            // The screen's key first, then the older hand-set name. The
+            // fallbacks are not writable from any screen, but honouring a value
+            // someone put straight into the database is a deliberate, tested
+            // decision (CompanyDetailsTest) - the same stance the logo takes.
+            'address' => $this->firstFilled(['Address', 'CompanyAddress']),
+            'city' => $this->firstFilled(['CompanyCity', 'City']),
+            'postcode' => $this->firstFilled(['Postcode']),
+            'country' => $this->firstFilled(['Country', 'CompanyCountry']),
+            'phone' => $this->firstFilled(['PhoneNumber', 'CompanyPhone']),
+            'email' => $this->firstFilled(['Email', 'CompanyEmail']),
+            'tax_office' => $this->firstFilled(['TaxOffice']),
+            'tax_id' => $this->firstFilled(['TaxID']),
+            'mersis' => $this->firstFilled(['MersisNo']),
+            'logo' => $this->logoFile(),
+        ];
+    }
+
+    /** @param array<int, string> $keys */
+    private function firstFilled(array $keys): string
+    {
+        foreach ($keys as $key) {
+            $value = trim((string) Setting::get($key, ''));
+
+            if ($value !== '') {
+                return $value;
+            }
+        }
+
+        return '';
+    }
+
+    /**
+     * The logo as a file on disk, or nothing.
+     *
+     * The 'Logo' key was read here for as long as this service existed, and no
+     * screen has ever written it - the appearance screen writes
+     * custom_logo_path - so no invoice ever carried a logo. Both are honoured
+     * now, and the answer is a filesystem path because the PDF renderer does
+     * not fetch URLs: a web path that looks right would render a broken image.
+     * A recorded logo whose file has since gone renders as no logo, not as a
+     * broken invoice.
+     */
+    private function logoFile(): string
+    {
+        foreach (['Logo', 'custom_logo_path'] as $key) {
+            $web = trim((string) Setting::get($key, ''));
+            if ($web === '' || str_contains($web, '..')) {
+                continue;
+            }
+            $file = public_path(ltrim($web, '/'));
+            if (is_file($file)) {
+                return $file;
+            }
+        }
+
+        return '';
+    }
+
+
+    public function generate(Invoice $invoice): \Barryvdh\DomPDF\PDF
+    {
+        $invoice->load('client', 'items', 'ksefInvoice');
+
+        $company = $this->companyDetails();
+        $ksef = $this->ksefInfo($invoice);
+
+        $template = $this->customTemplate($invoice);
+
+        // Every label — the items table, the VAT summary, the status and
+        // payment method — is written in the invoice's own language, frozen
+        // at issue time, not in whatever locale the admin happened to be in.
+        return $this->withInvoiceLocale($invoice, function () use ($invoice, $company, $ksef, $template) {
+            if ($template !== null) {
+                // The uploaded template is a plain HTML document whose
+                // {placeholders} are replaced here. It is data, never code.
+                $html = $this->merge(
+                    (string) file_get_contents($template),
+                    $this->placeholderVars($invoice, $company, $ksef)
+                );
+
+                return Pdf::loadHTML($html)->setPaper('a4');
+            }
+
+            return Pdf::loadView('pdf.invoice', [
+                'invoice' => $invoice,
+                'company' => $company,
+                'ksef' => $ksef,
+            ])->setPaper('a4');
+        });
+    }
+
+    /**
+     * The uploaded language template's path for this invoice, or null when
+     * none is in use. A template named "<LANG>_invoice_template_v<VER>.html"
+     * matching the invoice's own language wins (the highest version among
+     * matches); English is the fallback for any language without one.
+     */
+    public function customTemplate(Invoice $invoice): ?string
+    {
+        $language = strtoupper((string) ($invoice->language ?: self::defaultLanguage()));
+
+        foreach (array_unique([$language, 'EN']) as $candidate) {
+            $path = $this->languageTemplatePath($candidate);
+
+            if ($path !== null) {
+                return $path;
+            }
+        }
+
+        return null;
+    }
+
+    /** The language an invoice is written in when nothing else is set: the company's own. */
+    public static function defaultLanguage(): string
+    {
+        return (string) Setting::get('DefaultLanguage', config('app.locale', 'en'));
+    }
+
+    /**
+     * Render with the app locale switched to the invoice's language for the
+     * duration of the callback, then restore it. The locale is never left
+     * changed for the rest of the request.
+     */
+    private function withInvoiceLocale(Invoice $invoice, callable $callback): mixed
+    {
+        $locale = $invoice->language ?: self::defaultLanguage();
+        $original = app()->getLocale();
+
+        if ($locale === $original) {
+            return $callback();
+        }
+
+        app()->setLocale($locale);
+        try {
+            return $callback();
+        } finally {
+            app()->setLocale($original);
+        }
+    }
+
+    /** Where an uploaded custom invoice template lives. */
+    public static function customTemplatePath(): string
+    {
+        return storage_path('app/invoice-templates/custom.html');
+    }
+
+    /**
+     * Parse a language template filename "<LANG>_invoice_template_v<VER>.html"
+     * into its language (upper-cased) and version, or null when it does not
+     * follow the convention. Anything else is the plain custom.html template.
+     *
+     * @return array{language: string, version: string}|null
+     */
+    public static function parseTemplateFilename(string $filename): ?array
+    {
+        if (! preg_match('/^(?<lang>[a-z]{2})_invoice_template_v(?<ver>\d+(?:\.\d+)?)\.html$/i', $filename, $m)) {
+            return null;
+        }
+
+        return ['language' => strtoupper($m['lang']), 'version' => $m['ver']];
+    }
+
+    /**
+     * Every uploaded language template, parsed off its filename. The files
+     * live next to custom.html in the one template directory; there is no
+     * database behind them.
+     *
+     * @return list<array{path: string, filename: string, language: string, version: string}>
+     */
+    public static function languageTemplates(): array
+    {
+        $dir = dirname(self::customTemplatePath());
+
+        if (! is_dir($dir)) {
+            return [];
+        }
+
+        $templates = [];
+
+        foreach (glob($dir.'/*_invoice_template_v*.html') ?: [] as $file) {
+            $parsed = self::parseTemplateFilename(basename($file));
+
+            if ($parsed === null) {
+                continue;
+            }
+
+            $templates[] = ['path' => $file, 'filename' => basename($file)] + $parsed;
+        }
+
+        usort($templates, fn ($a, $b) => $a['language'] === $b['language']
+            ? version_compare($b['version'], $a['version'])
+            : strcmp($a['language'], $b['language']));
+
+        return $templates;
+    }
+
+    /** The highest-version language template for a language, or null. */
+    protected function languageTemplatePath(string $language): ?string
+    {
+        $best = null;
+        $bestVersion = null;
+
+        foreach (self::languageTemplates() as $template) {
+            if ($template['language'] !== $language) {
+                continue;
+            }
+
+            if ($bestVersion === null || version_compare($template['version'], $bestVersion, '>')) {
+                $bestVersion = $template['version'];
+                $best = $template['path'];
+            }
+        }
+
+        return $best;
+    }
+
+    /**
+     * Replace the template's {placeholders} with their values and resolve its
+     * conditional blocks. Anything left over is not a known placeholder and is
+     * left untouched, so a stray brace cannot break the document.
+     *
+     * A block {?key} … {/key} renders only when {key} has a value;
+     * {!key} … {/key} renders only when it is empty. The test is against the
+     * value, so it stays data, never code — nothing in the template runs.
+     *
+     * @param  array<string, string>  $vars
+     */
+    public function merge(string $template, array $vars): string
+    {
+        $block = '/\{(?<mark>[?!])(?<key>[a-z0-9_]+)\}(?<body>.*?)\{\/\k<key>\}/s';
+
+        // Resolve blocks innermost-first until none remain, so a block shown
+        // around another block is still processed.
+        $count = 0;
+        do {
+            $template = preg_replace_callback($block, function (array $m) use ($vars): string {
+                $empty = ! filled($vars[$m['key']] ?? null);
+                $show = $m['mark'] === '!' ? $empty : ! $empty;
+
+                return $show ? $m['body'] : '';
+            }, $template, -1, $count);
+        } while ($count > 0);
+
+        foreach ($vars as $key => $value) {
+            $template = str_replace('{'.$key.'}', (string) $value, $template);
+        }
+
+        return $template;
+    }
+
+    /**
+     * The values the custom template can refer to. The keys are the vocabulary
+     * listed on the settings screen (see customTemplateVocabulary).
+     *
+     * Every label among them is written in the invoice's own language, whoever
+     * asks for them: generate() already renders inside that locale, but the
+     * values are read on their own too, and a document's words do not depend
+     * on who is looking at it.
+     *
+     * @return array<string, string>
+     */
+    public function placeholderVars(Invoice $invoice, ?array $company = null, ?array $ksef = null): array
+    {
+        return $this->withInvoiceLocale($invoice, fn () => $this->placeholderValues($invoice, $company, $ksef));
+    }
+
+    /**
+     * placeholderVars() with the locale already switched.
+     *
+     * @return array<string, string>
+     */
+    private function placeholderValues(Invoice $invoice, ?array $company, ?array $ksef): array
+    {
+        $company ??= $this->companyDetails();
+        $buyer = fn (string $field) => (string) $invoice->buyer($field);
+
+        $logo = $company['logo'] ?? '';
+
+        $vars = [
+            'company_name' => $company['name'],
+            'company_legal_name' => $company['legal_name'],
+            'company_domain' => $company['domain'],
+            'company_address' => $company['address'],
+            'company_city' => $company['city'],
+            'company_postcode' => $company['postcode'],
+            'company_country' => $company['country'],
+            'company_phone' => $company['phone'],
+            'company_email' => $company['email'],
+            'company_tax_office' => $company['tax_office'],
+            'company_tax_id' => $company['tax_id'],
+            'company_mersis' => $company['mersis'],
+            'company_logo' => $logo !== '' ? '<img src="'.e($logo).'" alt="">' : '',
+
+            'client_name' => trim($buyer('first_name').' '.$buyer('last_name')),
+            'client_company' => $buyer('company_name'),
+            'client_address' => $buyer('address1'),
+            'client_address2' => $buyer('address2'),
+            'client_city' => $buyer('city'),
+            'client_state' => $buyer('state'),
+            'client_postcode' => $buyer('postcode'),
+            'client_country' => $buyer('country'),
+            'client_tax_id' => $buyer('tax_id'),
+            'client_email' => $buyer('email'),
+
+            'invoice_number' => (string) ($invoice->invoice_num ?? $invoice->id),
+            'invoice_type' => $invoice->isProforma() ? __('pdf.proforma') : __('pdf.invoice'),
+            'is_proforma' => $invoice->isProforma() ? '1' : '',
+            'invoice_date' => $invoice->date?->format(date_fmt()) ?? '',
+            'due_date' => $invoice->due_date?->format(date_fmt()) ?? '',
+            'date_paid' => $invoice->date_paid?->format(date_fmt()) ?? '',
+            'status' => invoice_status_label($invoice->status),
+            'payment_method' => $invoice->payment_method ? payment_method_label((string) $invoice->payment_method) : '',
+            'subtotal' => invoice_money_fmt((float) $invoice->subtotal, $invoice),
+            'tax' => invoice_money_fmt((float) $invoice->tax, $invoice),
+            'tax2' => invoice_money_fmt((float) $invoice->tax2, $invoice),
+            'credit' => invoice_money_fmt((float) $invoice->credit, $invoice),
+            'total' => invoice_money_fmt((float) $invoice->total, $invoice),
+            'notes' => $invoice->notes ? nl2br(e($invoice->notes)) : '',
+            'items' => $this->itemsHtml($invoice),
+            'vat_summary' => $this->vatSummaryHtml($invoice),
+            'company_bank_accounts' => $this->bankAccountsHtml(),
+        ];
+
+        // Everything above is text the customer or the operator typed, and it
+        // is about to become HTML: a company called "Müller & Sohn" must read
+        // that way in the PDF, not break the document around it. The values
+        // that ARE markup - the logo, the tables and the notes - are built
+        // here and escaped as they are built.
+        $markup = ['company_logo', 'items', 'notes', 'vat_summary', 'company_bank_accounts'];
+        foreach ($vars as $key => $value) {
+            if (! in_array($key, $markup, true)) {
+                $vars[$key] = e((string) $value);
+            }
+        }
+
+        $ksef ??= $this->ksefInfo($invoice);
+        $vars['ksef_number'] = e((string) ($ksef['number'] ?? ''));
+        $vars['ksef_qr'] = ! empty($ksef['qr']) ? '<img src="'.e((string) $ksef['qr']).'" alt="">' : '';
+        $vars['payment_qr'] = $this->paymentQr($invoice);
+
+        return $vars;
+    }
+
+    /**
+     * The invoice line items as the 9-column table the {items} placeholder
+     * emits. The table carries its own style block and classes so a custom
+     * template's CSS cannot flatten it, and every value is escaped.
+     */
+    protected function itemsHtml(Invoice $invoice): string
+    {
+        // Nothing on this invoice is taxed, so the VAT columns would be three
+        // zeros and a "0%" - which, where VAT registration is a legal claim,
+        // says something that is not true. Such an invoice keeps the four
+        // column table it has always had, byte for byte, including its lack of
+        // a style block: a template that styles .invoice-items itself is not
+        // overruled.
+        if ($invoice->tax_mode === Invoice::TAX_NONE) {
+            return $this->plainItemsHtml($invoice);
+        }
+
+        $rows = '';
+        $index = 0;
+        foreach ($invoice->items as $item) {
+            $index++;
+            $line = $invoice->lineTax($item);
+            $rate = (float) $line['rate'];
+            $unitNet = $this->unitNetPrice($invoice, $item, $rate);
+            $net = (float) $line['net'];
+            $vat = (float) $line['vat'];
+
+            $rows .= '<tr>'
+                .'<td class="c">'.$index.'</td>'
+                .'<td>'.e((string) $item->description).'</td>'
+                .'<td class="c">'.max(1, (int) ($item->qty ?? 1)).'</td>'
+                .'<td class="c">'.e((string) ($item->unit ?? '')).'</td>'
+                .'<td class="num">'.e($this->lineAmount($invoice, $unitNet)).'</td>'
+                .'<td class="c">'.e($this->vatLabel($item, $rate)).'</td>'
+                .'<td class="num">'.e($this->lineAmount($invoice, $vat)).'</td>'
+                .'<td class="num">'.e($this->lineAmount($invoice, $net)).'</td>'
+                .'<td class="num">'.e($this->lineAmount($invoice, $net + $vat)).'</td>'
+                .'</tr>';
+        }
+
+        return $this->itemsTableStyle()
+            .'<table class="invoice-items"><thead><tr>'
+            .'<th class="lp">'.e(__('pdf.items_lp')).'</th>'
+            .'<th class="name">'.e(__('pdf.items_name')).'</th>'
+            .'<th class="qty">'.e(__('pdf.items_qty')).'</th>'
+            .'<th class="unit">'.e(__('pdf.items_unit')).'</th>'
+            .'<th class="net-price">'.e(__('pdf.items_net_price')).'</th>'
+            .'<th class="vat-rate">'.e(__('pdf.items_vat_rate')).'</th>'
+            .'<th class="vat-amount">'.e(__('pdf.items_vat_amount')).'</th>'
+            .'<th class="net-amount">'.e(__('pdf.items_net_amount')).'</th>'
+            .'<th class="gross-amount">'.e(__('pdf.items_gross_amount')).'</th>'
+            .'</tr></thead><tbody>'.$rows.'</tbody></table>';
+    }
+
+    /** The line items of an untaxed invoice: description, quantity, price, total. */
+    protected function plainItemsHtml(Invoice $invoice): string
+    {
+        $rows = '';
+        foreach ($invoice->items as $item) {
+            $rows .= '<tr>'
+                .'<td>'.e((string) $item->description).'</td>'
+                .'<td class="num">'.max(1, (int) ($item->qty ?? 1)).'</td>'
+                .'<td class="num">'.e(invoice_money_fmt((float) $item->amount, $invoice)).'</td>'
+                .'<td class="num">'.e(invoice_money_fmt((float) $item->amount * max(1, (int) ($item->qty ?? 1)), $invoice)).'</td>'
+                .'</tr>';
+        }
+
+        return '<table class="invoice-items"><thead><tr>'
+            .'<th>'.e(__('common.table.description')).'</th>'
+            .'<th class="num">'.e(__('common.table.qty')).'</th>'
+            .'<th class="num">'.e(__('common.table.price')).'</th>'
+            .'<th class="num">'.e(__('common.table.total')).'</th>'
+            .'</tr></thead><tbody>'.$rows.'</tbody></table>';
+    }
+
+    /** The self-contained stylesheet for the {items} table. */
+    protected function itemsTableStyle(): string
+    {
+        return '<style>'
+            .'table.invoice-items{width:100%;border-collapse:collapse;font-size:8.5pt;table-layout:fixed;}'
+            .'table.invoice-items th,table.invoice-items td{border:0.5pt solid #111;padding:2pt 4pt;vertical-align:top;}'
+            .'table.invoice-items thead th{background:#eaeaea;text-align:center;font-weight:bold;line-height:1.15;word-wrap:break-word;overflow-wrap:break-word;}'
+            .'table.invoice-items td{word-wrap:break-word;overflow-wrap:break-word;}'
+            .'table.invoice-items tbody tr{page-break-inside:avoid;}'
+            .'table.invoice-items th.lp{width:4%;}'
+            .'table.invoice-items th.name{width:29%;}'
+            .'table.invoice-items th.qty{width:7%;}'
+            .'table.invoice-items th.unit{width:6%;}'
+            .'table.invoice-items th.net-price{width:12%;}'
+            .'table.invoice-items th.vat-rate{width:7%;}'
+            .'table.invoice-items th.vat-amount{width:11%;}'
+            .'table.invoice-items th.net-amount{width:11%;}'
+            .'table.invoice-items th.gross-amount{width:13%;}'
+            .'table.invoice-items td.c{text-align:center;}'
+            .'table.invoice-items td.num{text-align:right;}'
+            .'</style>';
+    }
+
+    /**
+     * The complete invoice summary the {vat_summary} placeholder emits: the net
+     * total, one row per VAT rate — or tax treatment, "zw." / "np." and the
+     * like — with its tax amount, the VAT total and the gross amount due. Empty
+     * when the invoice has no VAT breakdown, so the {?vat_summary} conditional
+     * block hides it by itself.
+     */
+    protected function vatSummaryHtml(Invoice $invoice): string
+    {
+        $groups = $invoice->vatBreakdown();
+
+        if ($groups === []) {
+            return '';
+        }
+
+        $rows = '<tr>'
+            .'<td>'.e(__('pdf.vat_net_total')).'</td>'
+            .'<td>'.e(invoice_money_fmt((float) $invoice->subtotal, $invoice)).'</td>'
+            .'</tr>';
+
+        foreach ($groups as $label => $group) {
+            $rows .= '<tr>'
+                .'<td>'.e((string) $label).'</td>'
+                .'<td>'.e(invoice_money_fmt((float) $group['amount'], $invoice)).'</td>'
+                .'</tr>';
+        }
+
+        $rows .= '<tr>'
+            .'<td>'.e(__('pdf.vat_total')).'</td>'
+            .'<td>'.e(invoice_money_fmt((float) $invoice->tax, $invoice)).'</td>'
+            .'</tr>';
+
+        $rows .= '<tr class="total">'
+            .'<td>'.e(__('pdf.vat_gross_total')).'</td>'
+            .'<td>'.e(invoice_money_fmt((float) $invoice->total, $invoice)).'</td>'
+            .'</tr>';
+
+        // Credit spent on the invoice is a payment: the gross above is the
+        // invoice's value, this is how much of it the balance covered.
+        if ((float) $invoice->credit > 0.009) {
+            $rows .= '<tr>'
+                .'<td>'.e(__('pdf.credit')).'</td>'
+                .'<td>-'.e(invoice_money_fmt((float) $invoice->credit, $invoice)).'</td>'
+                .'</tr>';
+            $rows .= '<tr class="total">'
+                .'<td>'.e(__('pdf.amount_due')).'</td>'
+                .'<td>'.e(invoice_money_fmt($invoice->amountDue(), $invoice)).'</td>'
+                .'</tr>';
+        }
+
+        return '<table class="vat-summary"><thead><tr>'
+            .'<th>'.e(__('pdf.vat_summary_desc')).'</th>'
+            .'<th>'.e(__('pdf.amount')).'</th>'
+            .'</tr></thead><tbody>'.$rows.'</tbody></table>';
+    }
+
+    /**
+     * The bank accounts the {company_bank_accounts} placeholder emits: one
+     * line per account with its bank name, currency and number — plain text,
+     * no table. Empty when no accounts are configured, so the conditional
+     * block {?company_bank_accounts}…{/company_bank_accounts} hides it itself.
+     */
+    protected function bankAccountsHtml(): string
+    {
+        $module = new BankTransferModule;
+
+        // The gateway's own switch, the one checkout and the payment QR read.
+        // An operator who stopped taking transfers should not keep printing
+        // the account numbers on every invoice.
+        if (! $module->isActive()) {
+            return '';
+        }
+
+        $accounts = $module->accounts();
+
+        if ($accounts === []) {
+            return '';
+        }
+
+        $html = '';
+        foreach ($accounts as $account) {
+            $name = trim((string) ($account['name'] ?? ''));
+            $currency = trim((string) ($account['currency'] ?? ''));
+            $number = trim((string) ($account['iban'] ?? ''));
+            if ($number === '') {
+                $number = trim((string) ($account['account_number'] ?? ''));
+            }
+
+            $label = implode(' · ', array_filter([$name, $currency]));
+
+            if ($label !== '') {
+                $html .= '<div>'.e($label).'</div>';
+            }
+
+            $html .= '<div>- '.e($number).'</div>';
+        }
+
+        return $html;
+    }
+
+    /** The unit net price: gross less its tax share when prices include tax. */
+    protected function unitNetPrice(Invoice $invoice, InvoiceItem $item, float $rate): float
+    {
+        $unit = (float) $item->amount;
+
+        return $invoice->tax_mode === Invoice::TAX_INCLUSIVE
+            ? $unit - TaxRule::taxShare($unit, $rate, true)
+            : $unit;
+    }
+
+    /**
+     * The VAT column value: the line's rate ("23%"), or its label ("zw.",
+     * "np.") when there is no rate. The tax rule's full name ("VAT 23%") is
+     * the VAT-breakdown group, not what the column prints.
+     */
+    protected function vatLabel(InvoiceItem $item, float $rate): string
+    {
+        if ($rate <= 0) {
+            return $item->tax_label ?: '0%';
+        }
+
+        return rtrim(rtrim(number_format($rate, 2), '0'), '.').'%';
+    }
+
+    /** An amount in the invoice's currency, with its symbol. */
+    protected function lineAmount(Invoice $invoice, float|int|string|null $amount): string
+    {
+        return invoice_money_fmt($amount, $invoice);
+    }
+
+    /**
+     * The placeholder vocabulary an uploaded template can use, for the
+     * settings screen to list.
+     *
+     * @return list<string>
+     */
+    public static function customTemplateVocabulary(): array
+    {
+        return [
+            'company_name', 'company_legal_name', 'company_domain', 'company_address',
+            'company_city', 'company_postcode', 'company_country', 'company_phone',
+            'company_email', 'company_tax_office', 'company_tax_id', 'company_mersis',
+            'company_logo', 'company_bank_accounts',
+            'client_name', 'client_company', 'client_address', 'client_address2',
+            'client_city', 'client_state', 'client_postcode', 'client_country',
+            'client_tax_id', 'client_email',
+            'invoice_number', 'invoice_type', 'is_proforma', 'invoice_date', 'due_date', 'date_paid', 'status',
+            'payment_method', 'subtotal', 'tax', 'tax2', 'credit', 'total', 'notes',
+            'items', 'vat_summary', 'ksef_number', 'ksef_qr', 'payment_qr',
+        ];
+    }
+
+    /**
+     * A payment QR code as an inline <img>, from the bank-transfer module. The
+     * creditor's own account decides the payload, not the customer's country:
+     *
+     * - a Polish company gets the Polish ZBP "Przyjazny Przelew" (an NRB)
+     *   against its PLN account;
+     * - any other company gets the EPC SEPA payload (an IBAN) against its EUR
+     *   account, with the amount left out so the payer types it;
+     * - with no matching account, no QR.
+     */
+    public function paymentQr(Invoice $invoice): string
+    {
+        // A settled invoice owes nothing: a zero amount is "type it yourself"
+        // in ZBP and below the minimum in EPC. A paid invoice that was partly
+        // refunded still has a balance on paper - the refunded amount - so
+        // the status decides, not the figure.
+        if (in_array(strtolower((string) $invoice->status), InvoiceStatus::settled(), true)
+            || (float) $invoice->amountDue() <= 0) {
+            return '';
+        }
+
+        $module = new BankTransferModule;
+
+        // The gateway's own switch, the one checkout reads.
+        if (! $module->isActive()) {
+            return '';
+        }
+
+        $companyCountry = strtoupper(trim($this->firstFilled(['Country', 'CompanyCountry'])));
+        $nip = (string) Setting::get('TaxID', '');
+
+        $payload = '';
+        $size = 200;
+        $level = null;
+
+        // The ZBP field is an amount in grosze, so it can only carry a złoty
+        // invoice. A Polish shop that prices in euro would otherwise hand the
+        // payer the euro figure as złoty - a quarter of what is owed - so an
+        // invoice in another currency falls through to the EPC code, which
+        // states no amount at all. An invoice with no currency stamped on it
+        // predates the column and is read as the shop's own, the same fallback
+        // invoice_money_fmt() makes.
+        $invoiceCurrency = strtoupper(trim((string) ($invoice->source_currency ?? '')));
+
+        if ($companyCountry === 'PL' && ($invoiceCurrency === '' || $invoiceCurrency === 'PLN')) {
+            $bank = $module->bankByCurrency('PLN');
+            if ($bank !== null) {
+                $account = trim((string) ($bank['account_number'] ?? ''));
+                $nrb = $this->nrb($account !== '' ? $account : (string) ($bank['iban'] ?? ''));
+
+                if ($nrb !== '') {
+                    $holder = trim((string) ($bank['holder'] ?? ''));
+                    if ($holder === '') {
+                        $holder = company_name();
+                    }
+                    $payload = $this->zbpPayload($holder, $nrb, $nip, 'PL', $invoice);
+                    $size = 250;
+                }
+            }
+        }
+
+        if ($payload === '') {
+            $bank = $module->bankByCurrency('EUR');
+            if ($bank !== null && trim((string) ($bank['iban'] ?? '')) !== '') {
+                $holder = trim((string) ($bank['holder'] ?? ''));
+                if ($holder === '') {
+                    $holder = company_name();
+                }
+                $payload = $this->epcPayload($holder, (string) $bank['iban'], (string) ($bank['swift'] ?? ''), $invoice);
+                $level = \BaconQrCode\Common\ErrorCorrectionLevel::M();
+            }
+        }
+
+        if ($payload === '') {
+            return '';
+        }
+
+        $uri = $this->qrDataUri($payload, $size, $level);
+
+        return $uri !== '' ? '<img src="'.$uri.'" alt="">' : '';
+    }
+
+    /** The 26-digit NRB from an NRB or a PL-prefixed IBAN; '' when foreign. */
+    protected function nrb(string $ibanOrAccount): string
+    {
+        $digits = preg_replace('/\D/', '', $ibanOrAccount) ?? '';
+        $digits = strlen($digits) === 28 ? substr($digits, 2) : $digits;
+
+        return preg_match('/^\d{26}$/', $digits) === 1 ? $digits : '';
+    }
+
+    /** The Polish ZBP ("Przyjazny Przelew") payload: nine pipe-delimited fields. */
+    protected function zbpPayload(string $holder, string $account, string $nip, string $country, Invoice $invoice): string
+    {
+        $name = $this->zbpChars(mb_substr($holder, 0, 20));
+        $amount = sprintf('%06d', (int) round((float) $invoice->amountDue() * 100));
+        $title = $this->zbpChars(mb_substr((string) ($invoice->invoice_num ?? $invoice->id), 0, 32));
+        $nip = preg_replace('/\D/', '', $nip) ?? '';
+
+        return implode('|', [$nip, $country, $account, $amount, $name, $title, '', '', '']);
+    }
+
+    /** The EPC SEPA payload (BCD tag), one field per line, amount left out. */
+    protected function epcPayload(string $holder, string $iban, string $swift, Invoice $invoice): string
+    {
+        if ($iban === '') {
+            return '';
+        }
+
+        $iban = strtoupper((string) preg_replace('/\s+/', '', $iban));
+        $name = mb_substr($holder, 0, 70);
+        $title = mb_substr((string) ($invoice->invoice_num ?? $invoice->id), 0, 35);
+
+        // The amount is optional in EPC and declared per currency there; the
+        // invoice is in the shop currency, so a number here would claim a
+        // currency it isn't in. Leave it out and let the payer type it.
+        return implode("\n", ['BCD', '002', '1', 'SCT', $swift, $name, $iban, '', '', '', $title]);
+    }
+
+    /**
+     * Characters the ZBP "Przyjazny Przelew" recommendation allows: letters
+     * (with the Polish diacritics), digits, space and ,./\-@#&*_. Anything
+     * else is dropped so a "Müller & Söhne (Pl)" does not go in verbatim.
+     */
+    protected function zbpChars(string $value): string
+    {
+        return preg_replace('~[^A-Za-z0-9 ,./\\\\\-@#&*_ĄĆĘŁŃÓŚŹŻąćęłńóśźż]~u', '', $value) ?? '';
+    }
+
+    /**
+     * The KSeF number and verification QR for an invoice, or null when the
+     * KSeF addon is not active or the invoice has not been accepted yet.
+     *
+     * KSeF is a Polish-only scheme; on installations where the addon is turned
+     * off nothing is printed, so invoices still render cleanly everywhere.
+     *
+     * @return array{number: string, qr: string}|null
+     */
+    public function ksefInfo(Invoice $invoice): ?array
+    {
+        if (! app(AddonManager::class)->isActive('ksef')) {
+            return null;
+        }
+
+        $ksef = $invoice->ksefInvoice;
+
+        // Accepted only: rows saved before this check could carry the send
+        // reference as their number on a rejected or unconfirmed invoice.
+        if (! $ksef || ! filled($ksef->ksef_number) || ! filled($ksef->accepted_at)) {
+            return null;
+        }
+
+        $number = (string) $ksef->ksef_number;
+        $url = $this->ksefVerifyUrl($number);
+
+        return [
+            'number' => $number,
+            'qr' => $this->qrDataUri($url),
+        ];
+    }
+
+    /**
+     * The official KSeF verification URL encoded into the QR. Test
+     * environments point at ksef-test so a scanned code is not mistaken for a
+     * production invoice.
+     */
+    private function ksefVerifyUrl(string $number): string
+    {
+        // The environment the operator chose in the addon's settings. The
+        // config value is only the module's file default ("integration"), so
+        // reading it pointed production invoices at the test site.
+        $env = class_exists(\Modules\Ksef\KsefSettings::class)
+            ? (string) \Modules\Ksef\KsefSettings::resolve()['environment']
+            : (string) config('ksef.environment', 'prod');
+        $base = in_array($env, ['integration', 'demo'], true)
+            ? 'https://ksef-test.mf.gov.pl/web/verify'
+            : 'https://ksef.mf.gov.pl/web/verify';
+
+        return $base.'?nr='.rawurlencode($number);
+    }
+
+    /**
+     * The QR code as an inline PNG data URI, ready for the PDF renderer (which
+     * does not fetch remote URLs). Empty string when generation fails, so an
+     * invoice never breaks on a missing image extension.
+     */
+    private function qrDataUri(string $content, int $size = 200, ?\BaconQrCode\Common\ErrorCorrectionLevel $level = null): string
+    {
+        try {
+            $renderer = new \BaconQrCode\Renderer\GDLibRenderer($size, 2);
+            $writer = new \BaconQrCode\Writer($renderer);
+            $png = $writer->writeString($content, ecLevel: $level);
+
+            return 'data:image/png;base64,'.base64_encode($png);
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    public function download(Invoice $invoice): Response
+    {
+        $pdf = $this->generate($invoice);
+
+        // The numbering scheme may put "/" or separators in the invoice
+        // number, which the file name cannot carry.
+        $num = str_replace(['/', '\\'], '-', (string) ($invoice->invoice_num ?? $invoice->id));
+        $filename = "invoice-{$num}.pdf";
+
+        return $pdf->download($filename);
+    }
+}

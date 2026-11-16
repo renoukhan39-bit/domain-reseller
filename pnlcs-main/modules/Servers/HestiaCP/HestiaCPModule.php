@@ -1,0 +1,455 @@
+<?php
+
+namespace Modules\Servers\HestiaCP;
+
+use App\Models\Server;
+use App\Models\Service;
+use Illuminate\Support\Facades\Http;
+use Illuminate\Support\Facades\Log;
+use Modules\Servers\AbstractServerModule;
+
+class HestiaCPModule extends AbstractServerModule
+{
+    /** HestiaCP's exit code for "already exists" (E_EXISTS). */
+    private const E_EXISTS = 4;
+
+    public function getModuleName(): string
+    {
+        return 'hestiacp';
+    }
+
+    public function getConfigFields(): array
+    {
+        return [
+            ['name' => 'username', 'label' => 'HestiaCP Admin Username', 'type' => 'text'],
+            ['name' => 'password', 'label' => 'HestiaCP Admin Password', 'type' => 'password'],
+        ];
+    }
+
+    /**
+     * The hosting packages (plans) this server offers, for the product form to
+     * pick one by name. Reads v-list-user-packages, whose keys are the plan names.
+     *
+     * @return array<int, array{id: string, name: string}>
+     */
+    public function listPackages(Server $server): array
+    {
+        $result = $this->call($server, 'v-list-user-packages', ['arg1' => 'json'], json: true);
+
+        if (! $result['success'] || ! is_array($result['raw'])) {
+            return [];
+        }
+
+        $packages = [];
+        foreach ($result['raw'] as $name => $package) {
+            if (is_array($package)) {
+                $packages[$name] = ['id' => $name, 'name' => $name];
+            }
+        }
+
+        ksort($packages);
+
+        return array_values($packages);
+    }
+
+    private function baseUrl(Server $server): string
+    {
+        $port = $server->port ?: 8083;
+
+        return "https://{$this->serverHost($server)}:{$port}/api/";
+    }
+
+    /**
+     * Action commands run with returncode=yes → body is the numeric exit code.
+     * List commands ($json = true) run with returncode=no → body is JSON.
+     * (With returncode=no a FAILING command returns an error STRING, which the
+     * old integer-cast logic silently treated as success.)
+     */
+    private function call(Server $server, string $command, array $params = [], bool $json = false): array
+    {
+        $url = $this->baseUrl($server);
+        $username = $server->username ?: 'admin';
+
+        $postData = array_merge([
+            'returncode' => $json ? 'no' : 'yes',
+            'cmd' => $command,
+        ], $params);
+
+        // HestiaCP v1.4+ authenticates with an access key: `access_hash` holds
+        // the Access Key ID and Secret Key joined by a colon (ID:Secret), as
+        // printed by `v-add-access-key`. Fall back to the deprecated admin
+        // user/password form for installs that still use it.
+        $accessHash = trim((string) $server->access_hash);
+        if ($accessHash !== '') {
+            $postData['hash'] = $accessHash;
+        } else {
+            $postData['user'] = $username;
+            $postData['password'] = (string) ($server->password ?? '');
+        }
+
+        try {
+            $response = Http::asForm()
+                ->withoutVerifying()
+                ->timeout(30)
+                ->post($url, $postData);
+
+            if (! $response->successful()) {
+                return ['success' => false, 'message' => "HestiaCP API HTTP {$response->status()}", 'raw' => []];
+            }
+
+            $body = trim($response->body());
+
+            if ($json) {
+                $decoded = json_decode($body, true);
+                if (is_array($decoded)) {
+                    return ['success' => true, 'message' => 'OK', 'raw' => $decoded];
+                }
+
+                return ['success' => false, 'message' => 'HestiaCP returned non-JSON: '.substr($body, 0, 200), 'raw' => []];
+            }
+
+            // returncode=yes → body must be a bare exit code
+            if (! preg_match('/^\d+$/', $body)) {
+                return ['success' => false, 'message' => 'Unexpected HestiaCP response: '.substr($body, 0, 200), 'raw' => []];
+            }
+
+            $exitCode = (int) $body;
+
+            return [
+                'success' => $exitCode === 0,
+                'message' => $exitCode === 0 ? 'OK' : "HestiaCP command failed (exit code {$exitCode})",
+                'raw' => ['exit_code' => $exitCode],
+            ];
+        } catch (\Throwable $e) {
+            Log::error("HestiaCPModule API error: {$e->getMessage()}");
+
+            return ['success' => false, 'message' => $e->getMessage(), 'raw' => []];
+        }
+    }
+
+    public function create(Service $service): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $client = $service->client;
+        $domain = $service->domain;
+        if (! $client || ! $domain) {
+            return $this->buildResult(false, 'Service is missing client or domain.');
+        }
+
+        // Create username: lowercase, no special chars, max 16
+        $username = preg_replace('/[^a-z0-9]/', '', strtolower(explode('.', $domain)[0]));
+        $username = substr($username ?: 'user', 0, 16);
+        $password = $service->password ?: bin2hex(random_bytes(8));
+        $package = $this->getRemotePackage($service) ?? 'default';
+
+        // v-add-user
+        $addUser = fn (string $name) => $this->call($server, 'v-add-user', [
+            'arg1' => $name,
+            'arg2' => $password,
+            'arg3' => $client->email,
+            'arg4' => $package,
+        ]);
+        $result = $addUser($username);
+
+        // Exit code 4 is HestiaCP's "already exists": a second customer whose
+        // domain starts the same way (example.com, example.net). The name is
+        // made unique with the service id instead of failing the order.
+        if (! $result['success'] && ($result['raw']['exit_code'] ?? null) === self::E_EXISTS) {
+            $username = substr($username, 0, 16 - strlen((string) $service->id) - 1).'s'.$service->id;
+            $result = $addUser($username);
+        }
+
+        if (! $result['success']) {
+            return $this->buildResult(false, "Account creation failed: {$result['message']}");
+        }
+
+        // v-add-domain
+        $domResult = $this->call($server, 'v-add-domain', [
+            'arg1' => $username,
+            'arg2' => $domain,
+        ]);
+
+        // An account without its site is not the service that was sold. It
+        // used to be marked active anyway, with the failure only in the log;
+        // now the half-made user is removed and provisioning fails, so the
+        // usual retry and admin notice apply (as the Plesk module does).
+        if (! $domResult['success']) {
+            Log::warning("HestiaCP: domain add failed, removing the new user: {$domResult['message']}");
+            $this->call($server, 'v-delete-user', ['arg1' => $username]);
+
+            return $this->buildResult(false, "Domain creation failed: {$domResult['message']}");
+        }
+
+        $this->setModuleData($service, ['hestia_username' => $username]);
+        $service->update(['username' => $username, 'password' => $password, 'status' => 'active']);
+
+        $out = $this->buildResult(true, 'HestiaCP account created.', ['hestia_username' => $username]);
+        $this->logAction($service, 'create', $out);
+
+        return $out;
+    }
+
+    public function suspend(Service $service, string $reason = ''): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $data = $this->getModuleData($service);
+        $username = $data['hestia_username'] ?? $service->username;
+        if (! $username) {
+            return $this->buildResult(false, 'HestiaCP username not found.');
+        }
+
+        $result = $this->call($server, 'v-suspend-user', ['arg1' => $username]);
+        if (! $result['success']) {
+            return $this->buildResult(false, "Suspend failed: {$result['message']}");
+        }
+
+        $service->update(['status' => 'suspended', 'suspension_date' => now(), 'suspension_reason' => $reason]);
+        $out = $this->buildResult(true, 'HestiaCP account suspended.');
+        $this->logAction($service, 'suspend', $out);
+
+        return $out;
+    }
+
+    public function unsuspend(Service $service): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $data = $this->getModuleData($service);
+        $username = $data['hestia_username'] ?? $service->username;
+        if (! $username) {
+            return $this->buildResult(false, 'HestiaCP username not found.');
+        }
+
+        $result = $this->call($server, 'v-unsuspend-user', ['arg1' => $username]);
+        if (! $result['success']) {
+            return $this->buildResult(false, "Unsuspend failed: {$result['message']}");
+        }
+
+        $service->update(['status' => 'active', 'suspension_date' => null, 'suspension_reason' => null]);
+        $out = $this->buildResult(true, 'HestiaCP account unsuspended.');
+        $this->logAction($service, 'unsuspend', $out);
+
+        return $out;
+    }
+
+    public function terminate(Service $service): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $data = $this->getModuleData($service);
+        $username = $data['hestia_username'] ?? $service->username;
+        if (! $username) {
+            return $this->buildResult(false, 'HestiaCP username not found.');
+        }
+
+        $result = $this->call($server, 'v-delete-user', ['arg1' => $username]);
+        if (! $result['success']) {
+            return $this->buildResult(false, "Terminate failed: {$result['message']}");
+        }
+
+        $service->update(['status' => 'terminated', 'termination_date' => now()]);
+        $out = $this->buildResult(true, 'HestiaCP account terminated.');
+        $this->logAction($service, 'terminate', $out);
+
+        return $out;
+    }
+
+    public function changePassword(Service $service, string $newPassword): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $data = $this->getModuleData($service);
+        $username = $data['hestia_username'] ?? $service->username;
+        if (! $username) {
+            return $this->buildResult(false, 'HestiaCP username not found.');
+        }
+
+        $result = $this->call($server, 'v-change-user-password', [
+            'arg1' => $username,
+            'arg2' => $newPassword,
+        ]);
+
+        if (! $result['success']) {
+            return $this->buildResult(false, "Password change failed: {$result['message']}");
+        }
+
+        $service->update(['password' => $newPassword]);
+        $out = $this->buildResult(true, 'Password changed.');
+        $this->logAction($service, 'changePassword', $out);
+
+        return $out;
+    }
+
+    public function changePackage(Service $service, array $newPackage): array
+    {
+        $server = $this->getServer($service);
+        if (! $server) {
+            return $this->buildResult(false, 'No HestiaCP server configured.');
+        }
+
+        $data = $this->getModuleData($service);
+        $username = $data['hestia_username'] ?? $service->username;
+        if (! $username) {
+            return $this->buildResult(false, 'HestiaCP username not found.');
+        }
+
+        $config = is_string($newPackage['config_options'] ?? null)
+            ? json_decode($newPackage['config_options'], true)
+            : ($newPackage['config_options'] ?? []);
+        $packageName = self::planFrom($config, ['hestia_package', 'package_name']);
+
+        if (! $packageName) {
+            return $this->buildResult(false, 'No hestia_package configured in product.');
+        }
+
+        $result = $this->call($server, 'v-change-user-package', [
+            'arg1' => $username,
+            'arg2' => $packageName,
+        ]);
+
+        if (! $result['success']) {
+            return $this->buildResult(false, "Package change failed: {$result['message']}");
+        }
+
+        $out = $this->buildResult(true, 'Package changed.');
+        $this->logAction($service, 'changePackage', $out);
+
+        return $out;
+    }
+
+    /**
+     * Disk and bandwidth for the accounts this panel put on this server.
+     *
+     * HestiaCP names these the way its own bin/v-list-users writes them:
+     * DISK_QUOTA and BANDWIDTH are the limits, U_DISK and U_BANDWIDTH are what
+     * has been used. This read DISK_USED, which is not a field HestiaCP has, so
+     * no disk figure was ever recorded - and BANDWIDTH for usage, so every
+     * account was shown using its whole allowance from the day it was made.
+     */
+    public function usageUpdate(Server $server): array
+    {
+        $result = $this->call($server, 'v-list-users', ['arg1' => 'json'], json: true);
+
+        if (! $result['success'] || ! is_array($result['raw'])) {
+            return ['updated' => 0, 'errors' => 1];
+        }
+
+        $accounts = [];
+
+        foreach ($result['raw'] as $username => $account) {
+            if (is_array($account)) {
+                $accounts[strtolower((string) $username)] = $account;
+            }
+        }
+
+        $services = Service::where('server_id', $server->id)
+            ->where('status', 'active')
+            ->get();
+
+        $updated = 0;
+        $errors = 0;
+
+        foreach ($services as $service) {
+            // The name on the server, not whatever the service was renamed to.
+            $username = strtolower((string) (
+                $this->getModuleData($service)['hestia_username'] ?? $service->username ?? ''
+            ));
+
+            $account = $username !== '' ? ($accounts[$username] ?? null) : null;
+
+            if (! $account) {
+                $errors++;
+
+                continue;
+            }
+
+            $updateData = [];
+
+            // "unlimited" is not a number, and writing it as 0 would read as an
+            // allowance of nothing.
+            foreach ([
+                'U_DISK' => 'disk_usage',
+                'U_BANDWIDTH' => 'bw_usage',
+                'DISK_QUOTA' => 'disk_limit',
+                'BANDWIDTH' => 'bw_limit',
+            ] as $field => $column) {
+                $value = $account[$field] ?? null;
+
+                if ($value !== null && is_numeric($value)) {
+                    $updateData[$column] = (int) $value;
+                }
+            }
+
+            if ($updateData !== []) {
+                $service->update($updateData);
+                $updated++;
+            }
+        }
+
+        return ['updated' => $updated, 'errors' => $errors];
+    }
+
+    /**
+     * Live disk and bandwidth for one account, shown on the customer's service
+     * page. Reads v-list-user for the service's HestiaCP username.
+     */
+    public function liveUsage(Service $service): array
+    {
+        $server = $this->getServer($service);
+        $username = strtolower((string) ($this->getModuleData($service)['hestia_username'] ?? $service->username ?? ''));
+        if (! $server || $username === '') {
+            return ['available' => false];
+        }
+
+        $out = ['available' => true, 'disk' => null, 'bandwidth' => null, 'cpu' => null, 'ram' => null, 'domains' => []];
+
+        $result = $this->call($server, 'v-list-user', ['arg1' => $username, 'arg2' => 'json'], json: true);
+        if (! $result['success'] || ! is_array($result['raw'])) {
+            return $out;
+        }
+
+        $account = $result['raw'][$username] ?? null;
+        if (! is_array($account)) {
+            return $out;
+        }
+
+        $quota = $account['DISK_QUOTA'] ?? null;
+        $out['disk'] = [
+            'used_mb' => (int) ($account['U_DISK'] ?? 0),
+            'quota_mb' => is_numeric($quota) ? (int) $quota : 0,
+        ];
+        $out['bandwidth'] = ['used_mb' => (int) ($account['U_BANDWIDTH'] ?? 0)];
+
+        return $out;
+    }
+
+    public function testConnection(Server $server): bool
+    {
+        try {
+            $result = $this->call($server, 'v-list-sys-info', ['arg1' => 'json'], json: true);
+
+            return $result['success'];
+        } catch (\Throwable $e) {
+            Log::error("HestiaCPModule::testConnection: {$e->getMessage()}");
+
+            return false;
+        }
+    }
+}

@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: DejaVu Sans, sans-serif; font-size: 12px; color: #1a1a1a; line-height: 1.5; }
+        .container { padding: 40px; }
+        .header { display: table; width: 100%; margin-bottom: 30px; }
+        .header-left { display: table-cell; width: 50%; vertical-align: top; }
+        .header-right { display: table-cell; width: 50%; vertical-align: top; text-align: right; }
+        .company-name { font-size: 20px; font-weight: bold; color: #111; margin-bottom: 5px; }
+        .invoice-title { font-size: 26px; font-weight: bold; color: #111; letter-spacing: 1px; }
+        .invoice-number { font-size: 14px; color: #444; margin-top: 5px; }
+        .meta-table { width: 100%; margin-bottom: 25px; }
+        .meta-table td { padding: 3px 0; }
+        .meta-label { font-weight: bold; color: #333; width: 120px; }
+        .addresses { display: table; width: 100%; margin-bottom: 30px; }
+        .address-box { display: table-cell; width: 50%; vertical-align: top; }
+        .address-box h4 { font-size: 11px; text-transform: uppercase; color: #555; margin-bottom: 8px; letter-spacing: 1px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+        .items-table { width: 100%; border-collapse: collapse; margin-bottom: 25px; }
+        .items-table thead th { background: #1a1a1a; color: #fff; padding: 10px 12px; text-align: left; font-size: 11px; text-transform: uppercase; }
+        .items-table tbody td { padding: 10px 12px; border-bottom: 1px solid #ddd; }
+        .items-table tbody tr:last-child td { border-bottom: 2px solid #1a1a1a; }
+        .text-right { text-align: right; }
+        .totals { width: 300px; margin-left: auto; }
+        .totals table { width: 100%; }
+        .totals td { padding: 6px 12px; }
+        .totals .total-row { font-size: 16px; font-weight: bold; color: #111; border-top: 2px solid #1a1a1a; }
+        .status-badge { display: inline-block; padding: 4px 12px; border: 1px solid #999; border-radius: 4px; font-size: 11px; font-weight: bold; text-transform: uppercase; color: #333; }
+        .notes { margin-top: 20px; padding: 12px; background: #f4f4f5; border-radius: 4px; font-size: 11px; }
+        .ksef-block { margin-top: 24px; padding: 12px; border: 1px solid #777; display: table; width: 100%; }
+        .ksef-cell { display: table-cell; vertical-align: middle; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <div class="header-left">
+            @if(!empty($company['logo']))
+                {{-- A filesystem path, resolved and checked by the service: the
+                     PDF renderer does not fetch URLs. --}}
+                <img src="{{ $company['logo'] }}" style="max-height:50px; max-width:200px; margin-bottom:8px;" alt="">
+            @endif
+            <div class="company-name">{{ $company['name'] }}</div>
+            @if($company['address'])<div>{{ $company['address'] }}</div>@endif
+            @if(!empty($company['legal_name']) && $company['legal_name'] !== $company['name'])
+                {{-- The registered title under the brand: the brand is what the
+                     customer recognises, the title is who invoiced them. --}}
+                <div>{{ $company['legal_name'] }}</div>
+            @endif
+            @if($company['city'])<div>{{ trim(($company['postcode'] ?? '').' '.$company['city']) }} {{ $company['country'] }}</div>@endif
+            @if(!empty($company['tax_office']))<div>{{ __('pdf.tax_office') }}: {{ $company['tax_office'] }}</div>@endif
+            @if(!empty($company['mersis']))<div>{{ __('pdf.registry_no') }}: {{ $company['mersis'] }}</div>@endif
+            @if($company['phone'])<div>{{ $company['phone'] }}</div>@endif
+            @if($company['email'])<div>{{ $company['email'] }}</div>@endif
+            @if($company['tax_id'])<div>{{ __('pdf.tax_id') }}: {{ $company['tax_id'] }}</div>@endif
+        </div>
+        <div class="header-right">
+            {{-- A proforma is not a VAT invoice and must not be headed as one
+                 (Invoice::isProforma), the same distinction {invoice_type}
+                 makes for an uploaded template. --}}
+            <div class="invoice-title">{{ $invoice->isProforma() ? __('pdf.proforma') : __('pdf.invoice') }}</div>
+            <div class="invoice-number">#{{ $invoice->invoice_num ?? $invoice->id }}</div>
+            @if($invoice->sourceInvoice)
+            <div style="font-size:11px;color:#777;margin-top:4px;">{{ __('admin.invoices.source_proforma') }}: {{ $invoice->sourceInvoice->invoice_num }}</div>
+            @endif
+            <div style="margin-top: 10px;">
+                @php
+                    $statusClass = match(strtolower($invoice->status)) {
+                        'paid' => 'status-paid',
+                        'overdue' => 'status-overdue',
+                        'cancelled', 'canceled' => 'status-cancelled',
+                        default => 'status-unpaid',
+                    };
+                @endphp
+                <span class="status-badge {{ $statusClass }}">{{ invoice_status_label($invoice->status) }}</span>
+            </div>
+        </div>
+    </div>
+
+    <div class="addresses">
+        <div class="address-box">
+            <h4>{{ __('pdf.bill_to') }}</h4>
+            @if($invoice->client)
+                {{-- Buyer as it stood when the invoice was issued (issue #7). For VAT
+                     the address and tax id on the document must be the ones that applied
+                     on the invoice date, so these read the snapshot; invoices issued
+                     before snapshots existed fall back to the live client record. --}}
+                <strong>{{ $invoice->buyer('first_name') }} {{ $invoice->buyer('last_name') }}</strong><br>
+                @if($invoice->buyer('company_name')){{ $invoice->buyer('company_name') }}<br>@endif
+                @if($invoice->buyer('address1')){{ $invoice->buyer('address1') }}<br>@endif
+                @if($invoice->buyer('address2')){{ $invoice->buyer('address2') }}<br>@endif
+                @if($invoice->buyer('city')){{ $invoice->buyer('city') }}, {{ $invoice->buyer('state') }} {{ $invoice->buyer('postcode') }}<br>@endif
+                @if($invoice->buyer('country')){{ $invoice->buyer('country') }}<br>@endif
+                @if($invoice->buyer('tax_id')){{ __('pdf.tax_id') ?? 'Tax ID' }}: {{ $invoice->buyer('tax_id') }}<br>@endif
+                {{-- Custom fields marked "show on invoice" (e.g. NIP), as frozen
+                     at issue time; invoices before snapshots fall back to the
+                     live client record. --}}
+                @foreach($invoice->buyerCustomFields() as $label => $value)
+                    {{ $label }}: {{ $value }}<br>
+                @endforeach
+                {{ $invoice->buyer('email') }}
+            @endif
+        </div>
+        <div class="address-box">
+            <h4>{{ __('pdf.invoice_details') }}</h4>
+            <table class="meta-table">
+                <tr><td class="meta-label">{{ __('pdf.invoice_date') }}:</td><td>{{ $invoice->date?->format(date_fmt()) ?? '-' }}</td></tr>
+                <tr><td class="meta-label">{{ __('pdf.due_date') }}:</td><td>{{ $invoice->due_date?->format(date_fmt()) ?? '-' }}</td></tr>
+                @if($invoice->date_paid)
+                <tr><td class="meta-label">{{ __('pdf.date_paid') }}:</td><td>{{ $invoice->date_paid->format(date_fmt()) }}</td></tr>
+                @endif
+                @if($invoice->payment_method)
+                <tr><td class="meta-label">{{ __('pdf.payment_method') }}:</td><td>{{ payment_method_label((string) $invoice->payment_method) }}</td></tr>
+                @endif
+            </table>
+        </div>
+    </div>
+
+    <table class="items-table">
+        <thead>
+            <tr>
+                <th style="width: 38%;">{{ __('common.table.description') }}</th>
+                <th class="text-right" style="width: 7%;">{{ __('common.table.qty') }}</th>
+                <th class="text-right" style="width: 14%;">{{ __('common.table.price') }}</th>
+                <th class="text-right" style="width: 13%;">{{ __('common.table.tax') }}</th>
+                <th class="text-right" style="width: 28%;">{{ __('common.table.total') }}</th>
+            </tr>
+        </thead>
+        <tbody>
+            @forelse($invoice->items as $item)
+            @php $rate = $invoice->lineTax($item)['rate']; @endphp
+            <tr>
+                <td>{{ $item->description }}</td>
+                <td class="text-right">{{ (int) $item->qty }}</td>
+                <td class="text-right">{{ invoice_money_fmt((float)$item->amount, $invoice) }}</td>
+                <td class="text-right">{{ $rate > 0 ? rtrim(rtrim(number_format($rate, 2), '0'), '.') . '%' : '—' }}</td>
+                <td class="text-right">{{ invoice_money_fmt((float)$item->amount * (int)$item->qty, $invoice) }}</td>
+            </tr>
+            @empty
+            <tr><td colspan="5" style="text-align:center; color:#999;">{{ __('pdf.no_items') }}</td></tr>
+            @endforelse
+        </tbody>
+    </table>
+
+    @php
+    // One computation for every invoice document (Invoice::vatBreakdown): the line rates, the tax mode it was
+    // issued under (on top, included, none), each rate's net and VAT rounded once.
+    $vatGroups = $invoice->vatBreakdown();
+    @endphp
+
+    <div class="totals">
+        <table>
+            <tr><td>{{ __('pdf.subtotal') }}:</td><td class="text-right"></td><td class="text-right">{{ invoice_money_fmt((float)$invoice->subtotal, $invoice) }}</td></tr>
+            @foreach($vatGroups as $label => $g)
+            <tr><td>{{ $label }}:</td><td class="text-right">{{ invoice_money_fmt($g['amount'], $invoice) }}</td><td class="text-right">{{ invoice_money_fmt($g['net'], $invoice) }}</td></tr>
+            @endforeach
+            {{-- The second tax. An invoice has carried two since the tax screen
+                 grew a level for each; this document showed only the first, so
+                 the lines did not add up to the total being asked for. --}}
+            @if((float)($invoice->tax2 ?? 0) > 0)
+            <tr><td>{{ __('pdf.tax') }} 2{{ $invoice->tax_rate2 ? ' ('.rtrim(rtrim(number_format((float)$invoice->tax_rate2, 2), '0'), '.').'%)' : '' }}:</td><td class="text-right">{{ invoice_money_fmt((float)$invoice->tax2, $invoice) }}</td><td class="text-right"></td></tr>
+            @endif
+            <tr class="total-row"><td>{{ __('pdf.total') }}:</td><td class="text-right"></td><td class="text-right">{{ invoice_money_fmt((float)$invoice->total, $invoice) }}</td></tr>
+            @if((float)$invoice->credit > 0)
+            <tr><td>{{ __('pdf.credit') }}:</td><td class="text-right">-{{ invoice_money_fmt((float)$invoice->credit, $invoice) }}</td><td class="text-right"></td></tr>
+            <tr class="total-row"><td>{{ __('pdf.amount_due') }}:</td><td class="text-right"></td><td class="text-right">{{ invoice_money_fmt($invoice->amountDue(), $invoice) }}</td></tr>
+            @endif
+            @if(billing_rate_note($invoice))
+            {{-- What the customer actually pays, in the currency they pay in,
+                 under the rate the document was struck at. --}}
+            <tr class="total-row"><td>{{ __('pdf.amount_in') }} ({{ strtoupper($invoice->billing_currency) }}):</td><td class="text-right"></td><td class="text-right">{{ billing_money_fmt((float)$invoice->total, $invoice) }}</td></tr>
+            @endif
+        </table>
+    @if(billing_rate_note($invoice))
+    <div style="clear:both; margin-top:14px; font-size:10px; color:#666; text-align:right;">{{ billing_rate_note($invoice) }}</div>
+    @endif
+    </div>
+
+    @if($invoice->notes)
+    <div class="notes">
+        <strong>{{ __('pdf.notes') }}:</strong><br>
+        {{ $invoice->notes }}
+    </div>
+    @endif
+
+    @if(!empty($ksef) && $ksef['qr'] !== '')
+    <div class="ksef-block">
+        <div class="ksef-cell" style="width:80px;">
+            <img src="{{ $ksef['qr'] }}" style="width:76px;height:76px;" alt="KSeF">
+        </div>
+        <div class="ksef-cell" style="padding-left:12px;">
+            <div style="font-size:10px;text-transform:uppercase;color:#555;letter-spacing:1px;margin-bottom:2px;">{{ __('pdf.ksef_number') }}</div>
+            <div style="font-size:14px;font-weight:bold;color:#111;">{{ $ksef['number'] }}</div>
+        </div>
+    </div>
+    @endif
+</div>
+</body>
+</html>

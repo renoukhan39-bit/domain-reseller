@@ -1,0 +1,470 @@
+<?php
+
+namespace App\Http\Controllers\Client;
+
+use App\Http\Controllers\Concerns\ResolvesClient;
+use App\Http\Controllers\Controller;
+use App\Mail\LoginEmailChangedMail;
+use App\Models\Client;
+use App\Models\Contact;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Hash;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+use Illuminate\Validation\Rules\Password;
+
+class AccountController extends Controller
+{
+    use ResolvesClient;
+
+    /** ISO 3166-1 alpha-2 country list for the profile form. */
+    private const COUNTRIES = [
+        'AF' => 'Afghanistan', 'AL' => 'Albania', 'DZ' => 'Algeria', 'AR' => 'Argentina', 'AM' => 'Armenia',
+        'AU' => 'Australia', 'AT' => 'Austria', 'AZ' => 'Azerbaijan', 'BH' => 'Bahrain', 'BD' => 'Bangladesh',
+        'BY' => 'Belarus', 'BE' => 'Belgium', 'BA' => 'Bosnia and Herzegovina', 'BR' => 'Brazil',
+        'BG' => 'Bulgaria', 'KH' => 'Cambodia', 'CA' => 'Canada', 'CL' => 'Chile', 'CN' => 'China',
+        'CO' => 'Colombia', 'CR' => 'Costa Rica', 'HR' => 'Croatia', 'CY' => 'Cyprus', 'CZ' => 'Czechia',
+        'DK' => 'Denmark', 'DO' => 'Dominican Republic', 'EC' => 'Ecuador', 'EG' => 'Egypt', 'EE' => 'Estonia',
+        'ET' => 'Ethiopia', 'FI' => 'Finland', 'FR' => 'France', 'GE' => 'Georgia', 'DE' => 'Germany',
+        'GH' => 'Ghana', 'GR' => 'Greece', 'HK' => 'Hong Kong', 'HU' => 'Hungary', 'IS' => 'Iceland',
+        'IN' => 'India', 'ID' => 'Indonesia', 'IQ' => 'Iraq', 'IE' => 'Ireland', 'IL' => 'Israel',
+        'IT' => 'Italy', 'JP' => 'Japan', 'JO' => 'Jordan', 'KZ' => 'Kazakhstan', 'KE' => 'Kenya',
+        'KW' => 'Kuwait', 'LV' => 'Latvia', 'LB' => 'Lebanon', 'LT' => 'Lithuania', 'LU' => 'Luxembourg',
+        'MY' => 'Malaysia', 'MT' => 'Malta', 'MX' => 'Mexico', 'MD' => 'Moldova', 'MA' => 'Morocco',
+        'NL' => 'Netherlands', 'NZ' => 'New Zealand', 'NG' => 'Nigeria', 'MK' => 'North Macedonia',
+        'NO' => 'Norway', 'OM' => 'Oman', 'PK' => 'Pakistan', 'PS' => 'Palestine', 'PA' => 'Panama',
+        'PY' => 'Paraguay', 'PE' => 'Peru', 'PH' => 'Philippines', 'PL' => 'Poland', 'PT' => 'Portugal',
+        'QA' => 'Qatar', 'RO' => 'Romania', 'RU' => 'Russia', 'SA' => 'Saudi Arabia', 'RS' => 'Serbia',
+        'SG' => 'Singapore', 'SK' => 'Slovakia', 'SI' => 'Slovenia', 'ZA' => 'South Africa',
+        'KR' => 'South Korea', 'ES' => 'Spain', 'LK' => 'Sri Lanka', 'SE' => 'Sweden', 'CH' => 'Switzerland',
+        'TW' => 'Taiwan', 'TZ' => 'Tanzania', 'TH' => 'Thailand', 'TN' => 'Tunisia', 'TR' => 'Türkiye',
+        'UA' => 'Ukraine', 'AE' => 'United Arab Emirates', 'GB' => 'United Kingdom', 'US' => 'United States',
+        'UY' => 'Uruguay', 'UZ' => 'Uzbekistan', 'VE' => 'Venezuela', 'VN' => 'Vietnam',
+    ];
+
+    public function profile()
+    {
+        $user = auth()->user();
+        $client = $this->currentClient();
+        // The blade renders a country <select> from $countries; without it the
+        // dropdown had nothing but its placeholder and no country could be set.
+        $countries = \App\Support\Countries::all();
+
+        // Active languages the client may set as their preferred email/UI language.
+        $languages = \App\Models\Language::getActiveLanguages();
+
+        // Most logins have one account and never see the switch.
+        $accounts = $user->clients()->orderBy('id')->get();
+
+        // Custom fields the client is allowed to see and edit (admin-only ones
+        // stay out of the client area entirely), with the values already set.
+        $customFields = collect();
+        if ($client) {
+            $customFields = \App\Models\CustomField::clientFields()
+                ->where('admin_only', false)
+                ->with(['values' => fn ($q) => $q->where('rel_id', $client->id)])
+                ->get();
+        }
+
+        return view('client.account.profile', compact('user', 'client', 'countries', 'accounts', 'customFields', 'languages'));
+    }
+
+    public function updateProfile(Request $request)
+    {
+        $user = auth()->user();
+        $client = $this->currentClient();
+
+        $rules = [
+            'first_name' => 'required|string|max:100',
+            'last_name' => 'required|string|max:100',
+            'email' => ['required', 'email', 'max:255', Rule::unique('users', 'email')->ignore($user->id)],
+            'billing_email' => 'nullable|email|max:255',
+            'company_name' => 'nullable|string|max:255',
+            'address1' => 'nullable|string|max:255',
+            'address2' => 'nullable|string|max:255',
+            'city' => 'nullable|string|max:100',
+            'state' => 'nullable|string|max:100',
+            'postcode' => 'nullable|string|max:20',
+            'tax_id' => 'nullable|string|max:50',
+            'client_type' => 'nullable|in:individual,company',
+            'tax_office' => 'nullable|string|max:100',
+            'national_id' => 'nullable|string|max:20',
+            // The column will not hold null, so asking is better than crashing.
+            'country' => 'required|string|size:2',
+            'phone_number' => 'nullable|string|max:50',
+            'phone_prefix' => 'nullable|string|max:4',
+            'language' => 'nullable|string|max:10',
+            'new_password' => ['nullable', 'confirmed', Password::min(8)->mixedCase()->numbers()],
+            'new_password_confirmation' => 'required_with:new_password|string',
+        ];
+
+        // The identity an invoice needs is required here as it is at checkout
+        // and on the admin form; the profile used to be the one door through
+        // which those details could be taken away again. array_merge, not +:
+        // these keys exist above as optional and must be replaced.
+        if (\App\Support\BillingIdentity::turkish()) {
+            $rules = array_merge($rules, [
+                'phone_number' => 'required|string|max:50',
+                'client_type' => 'required|in:individual,company',
+                'company_name' => 'required_if:client_type,company|nullable|string|max:255',
+                'tax_office' => 'required_if:client_type,company|nullable|string|max:100',
+                'tax_id' => 'required_if:client_type,company|nullable|string|max:50',
+                'national_id' => 'required_if:client_type,individual|nullable|string|max:20',
+            ]);
+        }
+
+        $request->validate($rules);
+
+        $previousEmail = (string) $user->email;
+        $changingLogin = strcasecmp($previousEmail, (string) $request->email) !== 0;
+        $changingPassword = ! empty($request->new_password);
+
+        // The sign-in address is where a password reset is delivered, so
+        // changing it is as good as changing the password - and that asks for
+        // the current one. Setting a new password also asks for it.
+        if ($changingLogin || $changingPassword) {
+            $request->validate(['current_password' => 'required|string']);
+
+            if (! Hash::check((string) $request->current_password, (string) $user->password)) {
+                return back()->withInput()->withErrors([
+                    'current_password' => __('messages.error.current_password_incorrect'),
+                ]);
+            }
+        }
+
+        // Before anything is saved: a new password refused here used to come
+        // after the new sign-in address was already stored, which then
+        // skipped its verification and the warning to the old address.
+        if ($changingPassword && \App\Support\PasswordHistory::isReused($user, $request->new_password)) {
+            return back()->withInput($request->except(['current_password', 'new_password', 'new_password_confirmation']))->withErrors([
+                'new_password' => __('client.password.recently_used', ['count' => \App\Support\PasswordHistory::KEEP]),
+            ]);
+        }
+
+        $user->update([
+            'first_name' => $request->first_name,
+            'last_name' => $request->last_name,
+            'email' => $request->email,
+        ]);
+
+        if ($changingPassword) {
+            $previousHash = (string) $user->password;
+            $user->update(['password' => Hash::make($request->new_password)]);
+            \App\Support\PasswordHistory::remember($user, $previousHash);
+
+            // A "remember me" cookie signs its holder in on its own for as long
+            // as the token behind it stays put. Changing the password is how
+            // somebody ends a session they did not start, so the token goes
+            // with it and the cookie stops working - this one included, which
+            // is why the current session is re-remembered below.
+            $user->setRememberToken(Str::random(60));
+            $user->save();
+
+            Auth::guard('web')->login($user, true);
+        }
+
+        if ($changingLogin) {
+            // The verification stamp belonged to the old address. The new one
+            // proves itself the way a sign-up does; until then the account is
+            // back on the "verify your address" page.
+            $user->forceFill(['email_verified_at' => null])->save();
+            \App\Http\Controllers\Client\EmailVerificationController::send($user->fresh());
+
+            // The address losing the account hears about it; that is the one
+            // warning somebody has if it was not them.
+            try {
+                Mail::to($previousEmail)->send(
+                    new LoginEmailChangedMail($previousEmail, (string) $request->email)
+                );
+            } catch (\Throwable $e) {
+                Log::warning('Could not tell the previous address its account moved', [
+                    'user_id' => $user->id,
+                    'error' => $e->getMessage(),
+                ]);
+            }
+        }
+
+        if ($client) {
+            // The name and address at the top of this form are the signed-in
+            // login's own. They are the account's too only when this login is
+            // the account holder: a colleague invited onto the account used to
+            // save their own profile and rename the account after themselves,
+            // moving its contact address (and the invoices mailed to it) to
+            // their own. Held by the owner flag, or, for a login made before
+            // that flag, by the account carrying the same address.
+            $holder = (bool) $client->pivot?->owner || strcasecmp((string) $client->email, $previousEmail) === 0;
+            if ($holder) {
+                $client->update([
+                    'first_name' => $request->first_name,
+                    'last_name' => $request->last_name,
+                    'email' => $request->email,
+                ]);
+            }
+
+            $client->update([
+                'billing_email' => $request->billing_email,
+                'company_name' => $request->company_name,
+                'address1' => $request->address1,
+                'address2' => $request->address2,
+                'city' => $request->city,
+                'state' => $request->state,
+                'postcode' => $request->postcode,
+                'country' => $request->country,
+                'tax_id' => $request->tax_id,
+                'client_type' => $request->client_type ?: $client->client_type,
+                'tax_office' => $request->tax_office,
+                'national_id' => $request->national_id,
+                'phone_number' => $request->phone_number,
+                'phone_prefix' => $request->phone_prefix,
+                // clients.language is NOT NULL; a profile update that does not
+                // carry the field must keep the current value, not null it.
+                'language' => $request->input('language') ?: $client->language,
+            ]);
+        }
+
+        // Custom field values editable from the client area (admin-only fields
+        // are never rendered, so only the visible ones are ever submitted).
+        if ($client) {
+            $visibleFields = \App\Models\CustomField::clientFields()
+                ->where('admin_only', false)
+                ->get();
+
+            \App\Models\CustomField::storeValues($client->id, $visibleFields, (array) $request->input('custom_fields', []));
+        }
+
+        if ($client && $request->boolean('marketing_section')) {
+            \App\Models\MarketingConsent::record($client, $request->boolean('marketing_emails'), 'account', $request->ip());
+        }
+
+        return redirect()->route('client.account.profile')
+            ->with('success', __('messages.success.profile_updated'));
+    }
+
+    public function changePassword()
+    {
+        return view('client.account.password');
+    }
+
+    public function updatePassword(Request $request)
+    {
+        $user = auth()->user();
+
+        $request->validate([
+            'current_password' => 'required|string',
+            'password' => ['required', 'confirmed', Password::min(8)->mixedCase()->numbers()],
+            'password_confirmation' => 'required|string',
+        ]);
+
+        if (! Hash::check($request->current_password, $user->password)) {
+            return back()->withErrors(['current_password' => __('messages.error.current_password_incorrect')]);
+        }
+
+        if (\App\Support\PasswordHistory::isReused($user, $request->password)) {
+            return back()->withErrors([
+                'password' => __('client.password.recently_used', ['count' => \App\Support\PasswordHistory::KEEP]),
+            ]);
+        }
+
+        $previousHash = (string) $user->password;
+        $user->update(['password' => Hash::make($request->password)]);
+        \App\Support\PasswordHistory::remember($user, $previousHash);
+
+        // A "remember me" cookie signs its holder in on its own for as long as
+        // the token behind it stays put. Changing the password is how somebody
+        // ends a session they did not start, so the token goes with it and the
+        // cookie stops working - this one included, which is why the current
+        // session is re-remembered below.
+        $user->setRememberToken(Str::random(60));
+        $user->save();
+
+        Auth::guard('web')->login($user, true);
+
+        return redirect()->route('client.account.password')
+            ->with('success', __('messages.success.password_changed'));
+    }
+
+    public function paymentMethods()
+    {
+        // Legacy alias for client.payment-methods.index (the nav links there).
+        // It used to render an unconditionally empty list.
+        return redirect()->route('client.payment-methods.index');
+    }
+
+    public function contacts()
+    {
+        $client = $this->currentClient();
+        $contacts = $client ? $client->contacts()->orderBy('id')->get() : collect();
+
+        return view('client.account.contacts', compact('contacts'));
+    }
+
+    public function storeContact(Request $request)
+    {
+        $client = $this->currentClient();
+
+        if (! $client) {
+            return redirect()->route('client.account.contacts')
+                ->with('error', __('messages.error.client_profile_not_found'));
+        }
+
+        $request->validate([
+            'first_name' => 'required|string|max:100',
+            'last_name' => 'required|string|max:100',
+            'email' => 'required|email|max:255',
+            'company_name' => 'nullable|string|max:255',
+            'phone_number' => 'nullable|string|max:50',
+        ]);
+
+        // Only the preferences the form actually asked about. The add form has
+        // no boxes for these - they are on the edit form below it - and a box
+        // that is not on the form is a box nobody unticked, so writing
+        // boolean() for all five made every new contact receive nothing. Left
+        // alone, the columns take their own defaults, which is every kind.
+        $kinds = ['general_emails', 'product_emails', 'domain_emails', 'invoice_emails', 'support_emails'];
+        $preferences = [];
+
+        // A form that asks is answered exactly as it was ticked, unticked boxes
+        // included - the same way the edit form below is handled. A form that
+        // does not ask at all is not an answer of "none": leave the columns to
+        // their own defaults, which is every kind.
+        if (array_filter($kinds, fn ($kind) => $request->has($kind))) {
+            foreach ($kinds as $kind) {
+                $preferences[$kind] = $request->boolean($kind);
+            }
+        }
+
+        Contact::create($preferences + [
+            'client_id' => $client->id,
+            'first_name' => $request->first_name,
+            'last_name' => $request->last_name,
+            'email' => $request->email,
+            'company_name' => $request->company_name,
+            'phone_number' => $request->phone_number,
+        ]);
+
+        return redirect()->route('client.account.contacts')
+            ->with('success', __('messages.success.contact_created'));
+    }
+
+    /**
+     * Look at a different one of the accounts this login belongs to.
+     *
+     * Most customers have exactly one and never see this; the client area used
+     * to answer with the first account whatever the login was attached to.
+     */
+    public function switchAccount(Client $client)
+    {
+        abort_unless(auth()->user()->clients()->whereKey($client->id)->exists(), 403);
+
+        session(['active_client_id' => $client->id]);
+
+        return back()->with('success', __('client.account.account_switched', [
+            'name' => trim($client->first_name.' '.$client->last_name),
+        ]));
+    }
+
+    /** The Edit button used to be a link to nowhere. */
+    public function updateContact(Request $request, Contact $contact)
+    {
+        $client = $this->currentClient();
+
+        abort_if(! $client || $contact->client_id !== $client->id, 403);
+
+        $validated = $request->validate([
+            'first_name' => 'required|string|max:100',
+            'last_name' => 'required|string|max:100',
+            'email' => 'required|email|max:255',
+            'company_name' => 'nullable|string|max:255',
+            'phone_number' => 'nullable|string|max:50',
+        ]);
+
+        $contact->update($validated + [
+            'general_emails' => $request->boolean('general_emails'),
+            'product_emails' => $request->boolean('product_emails'),
+            'domain_emails' => $request->boolean('domain_emails'),
+            'invoice_emails' => $request->boolean('invoice_emails'),
+            'support_emails' => $request->boolean('support_emails'),
+        ]);
+
+        return redirect()->route('client.account.contacts')
+            ->with('success', __('messages.success.contact_updated'));
+    }
+
+    /**
+     * A copy of everything kept about this account, as JSON (GDPR Art. 15
+     * and 20, KVKK Art. 11). Only the account owner: it carries the whole
+     * account, invoices and tickets included.
+     */
+    public function exportData(\App\Services\PersonalDataExport $export)
+    {
+        $client = $this->currentClient();
+        abort_unless($client && $client->users()->whereKey(auth()->id())->wherePivot('owner', true)->exists(), 403);
+
+        \App\Models\ActivityLog::log('Personal data export downloaded by the account owner', auth()->user()->email, $client->id);
+
+        return $this->dataDownload($export->build($client), $client);
+    }
+
+    private function dataDownload(array $data, \App\Models\Client $client)
+    {
+        $name = 'personal-data-'.$client->id.'-'.now()->format('Y-m-d').'.json';
+
+        return response()->json($data, 200, [
+            'Content-Disposition' => 'attachment; filename="'.$name.'"',
+            'Cache-Control' => 'no-store',
+        ], JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    }
+
+    public function security()
+    {
+        $user = auth()->user();
+        $twoFactorEnabled = ! empty($user->second_factor_type) && ! empty($user->second_factor_secret);
+
+        // Session listing only works when sessions are stored in the database;
+        // with file/redis drivers there is nothing safe to enumerate.
+        $sessionsSupported = config('session.driver') === 'database';
+        $sessions = $sessionsSupported
+            ? DB::table(config('session.table', 'sessions'))
+                ->where('user_id', $user->id)
+                ->orderByDesc('last_activity')
+                ->get()
+            : collect();
+
+        $client = $this->currentClient();
+        $phoneVerifyAvailable = app(\App\Contracts\PhoneVerifier::class)->enabled();
+
+        // The last sign-ins and wrong passwords for this login, newest first.
+        $logins = \App\Models\UserLogin::where('user_id', $user->id)->orderByDesc('id')->limit(20)->get();
+        $ownsAccount = $client && $client->users()->whereKey($user->id)->wherePivot('owner', true)->exists();
+
+        return view('client.account.security', compact('ownsAccount', 'user', 'twoFactorEnabled', 'sessions', 'sessionsSupported', 'client', 'phoneVerifyAvailable', 'logins'));
+    }
+
+    public function logoutSession(string $sessionId)
+    {
+        if (config('session.driver') !== 'database') {
+            abort(404);
+        }
+        DB::table(config('session.table', 'sessions'))
+            ->where('id', $sessionId)
+            ->where('user_id', auth()->id())
+            ->delete();
+
+        return back()->with('success', __('client.security.session_revoked'));
+    }
+
+    public function destroyContact(Contact $contact)
+    {
+        $client = $this->currentClient();
+        if (! $client || $contact->client_id !== $client->id) {
+            abort(403);
+        }
+        $contact->delete();
+
+        return back()->with('success', __('messages.success.contact_removed'));
+    }
+}

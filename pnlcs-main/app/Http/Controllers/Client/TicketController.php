@@ -1,0 +1,222 @@
+<?php
+
+namespace App\Http\Controllers\Client;
+
+use App\Events\TicketOpened;
+use App\Events\TicketReplied;
+use App\Http\Controllers\Concerns\ResolvesClient;
+use App\Http\Controllers\Controller;
+use App\Models\Admin;
+use App\Models\Service;
+use App\Models\Ticket;
+use App\Models\TicketDepartment;
+use App\Services\RecaptchaService;
+use App\Services\TicketService;
+use App\Services\TicketSpamService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+
+class TicketController extends Controller
+{
+    use ResolvesClient;
+
+    public function index()
+    {
+        $tickets = Ticket::with('department')->where('client_id', $this->getClientId())->orderBy('last_reply', 'desc')->paginate(25);
+
+        return view('client.tickets.index', compact('tickets'));
+    }
+
+    public function create()
+    {
+        $departments = TicketDepartment::where('hidden', false)->orderBy('sort_order')->get();
+
+        // The form has always had a picker for the service the ticket is
+        // about; nothing ever gave it anything to show.
+        $services = Service::with('product')
+            ->where('client_id', $this->getClientId())
+            ->whereNotIn('status', ['terminated', 'cancelled', 'fraud'])
+            ->orderBy('domain')
+            ->get();
+
+        return view('client.tickets.create', compact('departments', 'services'));
+    }
+
+    public function store(Request $request)
+    {
+        $validated = $request->validate([
+            // Not merely a department that exists: one the customer was
+            // actually offered. Hidden ones are not for them to post into.
+            'department_id' => ['required', Rule::exists('ticket_departments', 'id')->where('hidden', false)],
+            'subject' => 'required|string|max:255',
+            'message' => 'required|string',
+            'priority' => 'nullable|in:low,medium,high',
+            'attachment' => 'nullable|file|max:10240|mimes:jpg,png,gif,pdf,doc,docx,txt,zip',
+            'related_service' => 'nullable|integer',
+        ]);
+
+        // Signed-in accounts can be made in bulk too. With the tickets switch
+        // on, an unanswered or refused challenge is sent back with what was
+        // typed, and no ticket is opened. Shares the keys of the contact form.
+        $recaptcha = app(RecaptchaService::class);
+        if ($recaptcha->enabled('tickets')
+            && ! $recaptcha->verify($request->input(RecaptchaService::FIELD), $request->ip())) {
+            return back()
+                ->withErrors([RecaptchaService::FIELD => __('client.contact.recaptcha_failed')])
+                ->withInput();
+        }
+
+        // The picker only lists the customer's own services, but the request
+        // that follows it would take any id at all.
+        if (! empty($validated['related_service'])) {
+            $owned = Service::where('id', $validated['related_service'])
+                ->where('client_id', $this->getClientId())
+                ->exists();
+
+            if (! $owned) {
+                return back()->withErrors(['related_service' => __('client.tickets.service_not_yours')])->withInput();
+            }
+        }
+
+        $spamService = app(TicketSpamService::class);
+        // The signed-in customer's own address, which is what the ticket is
+        // opened under. It was read from the request first, so an extra
+        // "email" field put another address through the blocked-sender list
+        // and the per-hour limit.
+        if ($spamService->isSpam((string) auth()->user()->email, $validated['subject'], $validated['message'])) {
+            return back()->with('error', __('messages.error.message_flagged_as_spam'));
+        }
+
+        // Through the one creator, which gives the ticket a six-digit reference
+        // and checks it is free. This used to make its own out of
+        // strtoupper(Str::random(6)): letters and digits, unchecked, and
+        // nothing the mail import can match - it recognises six digits in the
+        // subject. So a customer replying by email to a ticket they had opened
+        // in the panel did not join the thread, they opened a second ticket,
+        // and the staff answer they were replying to sat in the first one.
+        $ticket = app(TicketService::class)->createTicket([
+            'department_id' => $validated['department_id'],
+            'client_id' => $this->getClientId(),
+            'email' => auth()->user()->email,
+            'name' => auth()->user()->full_name,
+            'title' => $validated['subject'],
+            'message' => $validated['message'],
+            'priority' => $validated['priority'] ?? 'medium',
+            'service' => ! empty($validated['related_service']) ? (string) $validated['related_service'] : null,
+        ]);
+
+        if ($request->hasFile('attachment')) {
+            $file = $request->file('attachment');
+            $path = $file->store("ticket-attachments/{$ticket->id}", 'local');
+            $ticket->update(['attachment' => $path]);
+        }
+
+        event(new TicketOpened($ticket, false));
+
+        return redirect()->route('client.tickets.show', $ticket)->with('success', __('messages.success.ticket_opened'));
+    }
+
+    public function show(Ticket $ticket)
+    {
+        abort_if($ticket->client_id !== $this->getClientId(), 403);
+        $ticket->load('department', 'replies', 'feedback');
+
+        // A reply stores the staff member's sign-in username (ticket_replies.admin).
+        // That is half of an admin login and is not for the customer: they see
+        // the staff member's first name, or just "Support Staff".
+        $staffNames = Admin::whereIn('username', $ticket->replies->pluck('admin')->filter()->unique())
+            ->pluck('first_name', 'username');
+
+        return view('client.tickets.show', compact('ticket', 'staffNames'));
+    }
+
+    /**
+     * The customer closes their own ticket once the problem is solved.
+     *
+     * TicketService::closeTicket() existed and nothing called it: a solved
+     * ticket stayed open until staff noticed, and the customer could only
+     * write "you can close this" as one more reply.
+     */
+    public function close(Ticket $ticket)
+    {
+        abort_if($ticket->client_id !== $this->getClientId(), 403);
+
+        if (strtolower((string) $ticket->status) !== 'closed') {
+            app(\App\Services\TicketService::class)->closeTicket($ticket, byClient: true);
+        }
+
+        return redirect()->route('client.tickets.show', $ticket)
+            ->with('success', __('messages.success.ticket_closed'));
+    }
+
+    /**
+     * Rate a closed ticket, once: 1 to 5 and an optional comment. The Support
+     * reports read these; nothing used to write them.
+     */
+    public function feedback(Request $request, Ticket $ticket)
+    {
+        abort_if($ticket->client_id !== $this->getClientId(), 403);
+
+        if (strtolower((string) $ticket->status) !== 'closed' || $ticket->feedback()->exists()) {
+            return back()->with('error', __('client.tickets.feedback_not_available'));
+        }
+
+        $validated = $request->validate([
+            'rating' => 'required|integer|min:1|max:5',
+            'comments' => 'nullable|string|max:2000',
+        ]);
+
+        $ticket->feedback()->create([
+            'rating' => $validated['rating'],
+            'comments' => $validated['comments'] ?? null,
+        ]);
+
+        return back()->with('success', __('client.tickets.feedback_thanks'));
+    }
+
+    public function reply(Request $request, Ticket $ticket)
+    {
+        abort_if($ticket->client_id !== $this->getClientId(), 403);
+        $validated = $request->validate([
+            'message' => 'required|string',
+            'attachment' => 'nullable|file|max:10240|mimes:jpg,png,gif,pdf,doc,docx,txt,zip',
+        ]);
+
+        $replyData = ['message' => $validated['message'], 'client_id' => $this->getClientId()];
+
+        if ($request->hasFile('attachment')) {
+            $file = $request->file('attachment');
+            $path = $file->store("ticket-attachments/{$ticket->id}", 'local');
+            $replyData['attachment'] = $path;
+        }
+
+        $ticket->replies()->create($replyData);
+        // Clearing the escalation marker lets a later period of silence escalate
+        // again; leaving it set would freeze escalation for the ticket's life.
+        // Clearing escalated_at lets a later period of silence escalate again;
+        // leaving it set would freeze escalation for the ticket's life. flag is
+        // the assigned admin and must survive a reply.
+        $ticket->recordReply('Customer-Reply');
+        event(new TicketReplied($ticket, $validated['message'], false));
+
+        return back()->with('success', __('messages.success.reply_added'));
+    }
+
+    public function downloadAttachment(Ticket $ticket, ?int $replyId = null)
+    {
+        abort_if($ticket->client_id !== $this->getClientId(), 403);
+
+        if ($replyId) {
+            $reply = $ticket->replies()->findOrFail($replyId);
+            $path = $reply->attachment;
+        } else {
+            $path = $ticket->attachment;
+        }
+
+        abort_if(! $path || ! Storage::disk('local')->exists($path), 404);
+
+        return Storage::disk('local')->download($path, basename($path));
+    }
+}

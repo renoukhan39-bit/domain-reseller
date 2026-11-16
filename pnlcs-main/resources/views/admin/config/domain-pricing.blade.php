@@ -1,0 +1,216 @@
+@extends('admin.layouts.app')
+@section('title', __('admin.domain_pricing.title'))
+@section('content')
+
+<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h1>{{ __('admin.domain_pricing.title') }}</h1>
+    <div style="display:flex;gap:8px;align-items:center;">
+        <button type="button" onclick="openAddTLD()" class="btn btn-primary btn-sm">+ {{ __('admin.domain_pricing.add_tld') }}</button>
+        <button type="submit" form="tld-bulk-form" class="btn btn-danger btn-sm" id="tld-bulk-delete">{{ __('admin.domain_pricing.delete') }}</button>
+    </div>
+</div>
+
+<div style="display:flex;gap:8px;margin-bottom:12px;align-items:center;justify-content:space-between;flex-wrap:wrap;">
+    <form method="GET" style="display:flex;gap:8px;align-items:center;">
+        <input type="text" name="search" value="{{ request('search') }}" placeholder="{{ __('admin.domain_pricing.search_placeholder') }}" class="form-control" style="max-width:300px;">
+        <button type="submit" class="btn btn-default btn-sm">{{ __('admin.search') }}</button>
+        @if(request('search'))<a href="{{ route('admin.config.domain-pricing') }}" class="btn btn-default btn-sm">{{ __('common.actions.clear') }}</a>@endif
+    </form>
+    <div style="display:flex;gap:8px;align-items:center;">
+        <a href="{{ route('admin.config.domain-pricing.export', ['search' => request('search'), 'sort' => $sort, 'direction' => $direction]) }}" class="btn btn-default btn-sm">{{ __('admin.domain_pricing.export_csv') }}</a>
+        <form method="POST" action="{{ route('admin.config.domain-pricing.import') }}" enctype="multipart/form-data" style="display:flex;gap:6px;align-items:center;">
+            @csrf
+            <input type="file" name="file" accept=".csv,.txt" required class="form-control" style="max-width:200px;padding:4px;">
+            <button type="submit" class="btn btn-default btn-sm">{{ __('admin.domain_pricing.import_csv') }}</button>
+        </form>
+    </div>
+</div>
+
+@if($errors->any())
+<div class="alert alert-danger" style="margin-bottom:15px;">
+    <ul style="margin:0;padding-left:18px;">
+        @foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach
+    </ul>
+</div>
+@endif
+
+@php
+    $thSort = function (string $column, string $label) use ($sort, $direction) {
+        $url = route('admin.config.domain-pricing', [
+            'search' => request('search'),
+            'sort' => $column,
+            'direction' => ($sort === $column && $direction === 'asc') ? 'desc' : 'asc',
+        ]);
+        $arrow = $sort === $column ? ($direction === 'asc' ? ' ▲' : ' ▼') : '';
+
+        return '<a href="'.e($url).'" style="color:inherit;text-decoration:none;">'.e($label).$arrow.'</a>';
+    };
+@endphp
+
+<form id="tld-bulk-form" method="POST" action="{{ route('admin.config.domain-pricing.bulk-delete') }}">
+    @csrf
+    <input type="hidden" name="select_all" id="tld-select-all-flag" value="0">
+    <input type="hidden" name="search" value="{{ request('search') }}">
+</form>
+
+<div class="card">
+    @if($tlds->isEmpty())
+    <div class="card-body" style="text-align:center;padding:40px;color:#999;">{{ __('admin.domain_pricing.no_pricing') }}</div>
+    @else
+    <table class="data-table">
+        <thead><tr>
+            <th style="width:30px;"><input type="checkbox" id="tld-select-all" aria-label="{{ __('admin.bulk.select_all') }}"></th>
+            <th>{!! $thSort('extension', __('admin.domain_pricing.extension')) !!}</th>
+            <th>{!! $thSort('register_price', __('admin.domain_pricing.register')) !!}</th>
+            <th>{!! $thSort('transfer_price', __('admin.domain_pricing.transfer')) !!}</th>
+            <th>{!! $thSort('renew_price', __('admin.domain_pricing.renew')) !!}</th>
+            <th>{!! $thSort('restore_price', __('admin.domain_pricing.restore')) !!}</th>
+            <th>{!! $thSort('grace_period', __('admin.domain_pricing.grace')) !!}</th>
+            <th>{{ __('admin.domain_pricing.min_max_years') }}</th>
+            <th>{!! $thSort('auto_registrar', __('common.table.registrar')) !!}</th>
+            <th>{!! $thSort('enabled', __('common.table.status')) !!}</th>
+            <th style="text-align:right;">{{ __('common.table.actions') }}</th>
+        </tr></thead>
+        <tbody>
+        @foreach($tlds as $tld)
+        <tr>
+            <td><input type="checkbox" name="ids[]" form="tld-bulk-form" value="{{ $tld->id }}" class="tld-row-checkbox" aria-label="{{ $tld->extension }}"></td>
+            <td style="font-family:monospace;font-weight:600;">{{ $tld->extension }}</td>
+            <td>{{ money_fmt($tld->register_price) }}</td>
+            <td>{{ money_fmt($tld->transfer_price) }}</td>
+            <td>{{ money_fmt($tld->renew_price) }}</td>
+            <td>{{ $tld->restore_price > 0 ? money_fmt($tld->restore_price) : "-" }}</td>
+            <td>{{ $tld->grace_period }}d{{ $tld->redemption_grace_period ? ' + '.$tld->redemption_grace_period.'d' : '' }}</td>
+            <td>{{ $tld->min_years }}-{{ $tld->max_years }}</td>
+            <td>{{ $tld->auto_registrar ?: __('admin.domain_pricing.manual') }}</td>
+            <td><span class="badge-{{ $tld->enabled ? 'active' : 'suspended' }}">{{ $tld->enabled ? __('common.status.enabled') : __('common.status.disabled') }}</span></td>
+            <td style="text-align:right;">
+                <button type="button" class="btn btn-default btn-xs" onclick="openEditTLD({{ json_encode($tld) }})">{{ __('common.actions.edit') }}</button>
+                <form method="POST" action="{{ route('admin.config.domain-pricing.destroy', $tld) }}" style="display:inline;" onsubmit="return pnConfirm(event, @js(__('admin.domain_pricing.confirm_delete')))">
+                    @csrf @method('DELETE')
+                    <button type="submit" class="btn btn-danger btn-xs">{{ __('common.actions.delete') }}</button>
+                </form>
+            </td>
+        </tr>
+        @endforeach
+        </tbody>
+    </table>
+    <div style="padding:10px 15px;">{{ $tlds->withQueryString()->links() }}</div>
+    @endif
+</div>
+
+<div id="modal-tld" style="display:none;position:fixed;inset:0;z-index:1050;align-items:center;justify-content:center;">
+    <div style="position:fixed;inset:0;background:rgba(0,0,0,0.5);" onclick="document.getElementById('modal-tld').style.display='none'"></div>
+    <div style="position:relative;background:#fff;border-radius:4px;width:540px;max-width:95%;box-shadow:0 5px 30px rgba(0,0,0,0.3);max-height:90vh;overflow-y:auto;">
+        <div style="padding:15px 20px;border-bottom:1px solid #e5e5e5;display:flex;align-items:center;justify-content:space-between;">
+            <h4 style="margin:0;font-size:16px;" id="tld-modal-title">{{ __('admin.domain_pricing.add_tld') }}</h4>
+            <button type="button" onclick="document.getElementById('modal-tld').style.display='none'" style="background:none;border:none;font-size:22px;cursor:pointer;color:#777;">&times;</button>
+        </div>
+        <form method="POST" id="tld-form" action="">
+            @csrf
+            <span id="tld-method-field"></span>
+            <div style="padding:20px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;">
+                    <div class="form-group" style="grid-column:span 2;"><label class="form-label">{{ __('admin.domain_pricing.extension') }}</label><input type="text" name="extension" id="tld-ext" required class="form-control" placeholder=".com"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.register_price', ['currency' => $currencySymbol]) }}</label><input type="number" name="register_price" id="tld-reg" step="0.01" required class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.transfer_price', ['currency' => $currencySymbol]) }}</label><input type="number" name="transfer_price" id="tld-trans" step="0.01" required class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.renew_price', ['currency' => $currencySymbol]) }}</label><input type="number" name="renew_price" id="tld-ren" step="0.01" required class="form-control"></div>
+                    <div class="form-group"><label class="form-label"><input type="checkbox" name="is_popular" id="tld-popular" value="1"> {{ __('admin.domain_pricing.is_popular') }}</label></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.category') }}</label><select name="category" id="tld-cat" class="form-control"><option value="generic">{{ __('client.domain_pricing.generic') }}</option><option value="local">{{ __('client.domain_pricing.local_tlds') }}</option><option value="country">{{ __('client.domain_pricing.country_tab') }}</option><option value="new" selected>{{ __('client.domain_pricing.new_tlds') }}</option></select></div>
+                    <div class="form-group"><label class="form-label">{{ __("admin.domain_pricing.restore_price") }}</label><input type="number" name="restore_price" id="tld-restore" step="0.01" min="0" value="0" class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __("admin.domain_pricing.privacy_price") }}</label><input type="number" name="privacy_price" id="tld-privacy" step="0.01" min="0" class="form-control"><p style="font-size:11px;color:#999;margin-top:4px;">{{ __("admin.domain_pricing.privacy_price_hint") }}</p></div>
+                    <div class="form-group"><label class="form-label">{{ __("admin.domain_pricing.grace_period") }}</label><input type="number" name="grace_period" id="tld-grace" value="5" min="0" class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __("admin.domain_pricing.redemption_period") }}</label><input type="number" name="redemption_grace_period" id="tld-redemption" value="30" min="0" class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.min_years') }}</label><input type="number" name="min_years" id="tld-min" value="1" min="1" class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.max_years') }}</label><input type="number" name="max_years" id="tld-max" value="10" min="1" class="form-control"></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.auto_registrar') }}</label><select name="auto_registrar" id="tld-reg2" class="form-control"><option value="">{{ __('admin.domain_pricing.manual') }}</option>@foreach($registrars as $key => $label)<option value="{{ $key }}">{{ $label }}</option>@endforeach</select></div>
+                    <div class="form-group"><label class="form-label">{{ __('admin.domain_pricing.sort_order') }}</label><input type="number" name="sort_order" id="tld-sort" value="0" class="form-control"></div>
+                    <div class="form-group" style="grid-column:span 2;"><label style="font-size:13px;display:flex;align-items:center;gap:6px;"><input type="checkbox" name="enabled" value="1" id="tld-enabled" checked> {{ __('common.status.enabled') }}</label></div>
+                </div>
+            </div>
+            <div style="padding:12px 20px;border-top:1px solid #e5e5e5;display:flex;gap:8px;justify-content:flex-end;">
+                <button type="button" onclick="document.getElementById('modal-tld').style.display='none'" class="btn btn-default btn-sm">{{ __('common.actions.cancel') }}</button>
+                <button type="submit" class="btn btn-primary btn-sm">{{ __('common.actions.save') }}</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<script>
+function openAddTLD() {
+    document.getElementById('tld-modal-title').textContent = '{{ __("admin.domain_pricing.add_tld_title") }}';
+    document.getElementById('tld-form').action = '{{ route("admin.config.domain-pricing.store") }}';
+    document.getElementById('tld-method-field').innerHTML = '';
+    document.getElementById('tld-ext').value = '';
+    document.getElementById('tld-reg').value = '';
+    document.getElementById('tld-trans').value = '';
+    document.getElementById('tld-ren').value = '';
+    document.getElementById('tld-restore').value = 0;
+    document.getElementById('tld-privacy').value = '';
+    document.getElementById('tld-cat').value = 'new';
+    document.getElementById('tld-popular').checked = false;
+    document.getElementById('tld-grace').value = 5;
+    document.getElementById('tld-redemption').value = 30;
+    document.getElementById('tld-min').value = 1;
+    document.getElementById('tld-max').value = 10;
+    document.getElementById('tld-reg2').value = '';
+    document.getElementById('tld-sort').value = 0;
+    document.getElementById('tld-enabled').checked = true;
+    document.getElementById('modal-tld').style.display = 'flex';
+}
+function openEditTLD(d) {
+    document.getElementById('tld-modal-title').textContent = '{{ __("admin.domain_pricing.edit_tld_title") }}';
+    document.getElementById('tld-form').action = '/admin/config/domain-pricing/' + d.id;
+    document.getElementById('tld-method-field').innerHTML = '<input type="hidden" name="_method" value="PUT">';
+    document.getElementById('tld-ext').value = d.extension;
+    document.getElementById('tld-reg').value = d.register_price;
+    document.getElementById('tld-trans').value = d.transfer_price;
+    document.getElementById('tld-ren').value = d.renew_price;
+    document.getElementById('tld-restore').value = d.restore_price || 0;
+    document.getElementById('tld-privacy').value = d.privacy_price === null || d.privacy_price === undefined ? '' : d.privacy_price;
+    document.getElementById('tld-cat').value = d.category || 'new';
+    document.getElementById('tld-popular').checked = !!d.is_popular;
+    document.getElementById('tld-grace').value = d.grace_period || 0;
+    document.getElementById('tld-redemption').value = d.redemption_grace_period || 0;
+    document.getElementById('tld-min').value = d.min_years || 1;
+    document.getElementById('tld-max').value = d.max_years || 10;
+    document.getElementById('tld-reg2').value = d.auto_registrar || '';
+    document.getElementById('tld-sort').value = d.sort_order || 0;
+    document.getElementById('tld-enabled').checked = !!d.enabled;
+    document.getElementById('modal-tld').style.display = 'flex';
+}
+@if($errors->any())
+document.getElementById('modal-tld').style.display = 'flex';
+@endif
+
+document.getElementById('tld-select-all').addEventListener('change', function () {
+    document.getElementById('tld-select-all-flag').value = this.checked ? '1' : '0';
+    document.querySelectorAll('.tld-row-checkbox').forEach(function (cb) { cb.checked = this.checked; }, this);
+});
+document.querySelectorAll('.tld-row-checkbox').forEach(function (cb) {
+    cb.addEventListener('change', function () {
+        // The header checkbox mirrors the rows: ticking every row keeps it on,
+        // unticking one turns it off so the dialog does not promise a delete
+        // of "all" while the form carries only the ticked ids.
+        var rows = document.querySelectorAll('.tld-row-checkbox');
+        var checked = document.querySelectorAll('.tld-row-checkbox:checked').length;
+        var allChecked = rows.length > 0 && checked === rows.length;
+        document.getElementById('tld-select-all').checked = allChecked;
+        document.getElementById('tld-select-all-flag').value = allChecked ? '1' : '0';
+    });
+});
+document.getElementById('tld-bulk-delete').addEventListener('click', function (e) {
+    var all = document.getElementById('tld-select-all').checked;
+    var checked = document.querySelectorAll('.tld-row-checkbox:checked').length;
+    if (!all && checked === 0) {
+        e.preventDefault();
+        pnDialog.alert(@js(__('admin.domain_pricing.select_none')), { icon: 'warning' });
+        return;
+    }
+    var msg = all
+        ? @js(__('admin.domain_pricing.confirm_delete_all', ['count' => $tlds->total()]))
+        : @js(__('admin.domain_pricing.confirm_delete_selected'));
+    pnConfirm(e, msg, { danger: true });
+});
+</script>
+@endsection

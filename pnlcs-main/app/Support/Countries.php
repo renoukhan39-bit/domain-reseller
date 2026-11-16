@@ -1,0 +1,138 @@
+<?php
+
+namespace App\Support;
+
+class Countries
+{
+    /**
+     * ISO 3166-1 alpha-2 codes to English country names. The single source of
+     * truth for every country <select> in the application (client profile,
+     * settings, ...), so there is one complete, consistent list.
+     *
+     * @var array<string, string>
+     */
+    public const ALL = [
+        'AF' => 'Afghanistan', 'AX' => 'Åland Islands', 'AL' => 'Albania', 'DZ' => 'Algeria',
+        'AS' => 'American Samoa', 'AD' => 'Andorra', 'AO' => 'Angola', 'AI' => 'Anguilla',
+        'AQ' => 'Antarctica', 'AG' => 'Antigua and Barbuda', 'AR' => 'Argentina', 'AM' => 'Armenia',
+        'AW' => 'Aruba', 'AU' => 'Australia', 'AT' => 'Austria', 'AZ' => 'Azerbaijan',
+        'BS' => 'Bahamas', 'BH' => 'Bahrain', 'BD' => 'Bangladesh', 'BB' => 'Barbados',
+        'BY' => 'Belarus', 'BE' => 'Belgium', 'BZ' => 'Belize', 'BJ' => 'Benin',
+        'BM' => 'Bermuda', 'BT' => 'Bhutan', 'BO' => 'Bolivia', 'BQ' => 'Bonaire, Sint Eustatius and Saba',
+        'BA' => 'Bosnia and Herzegovina', 'BW' => 'Botswana', 'BV' => 'Bouvet Island', 'BR' => 'Brazil',
+        'IO' => 'British Indian Ocean Territory', 'BN' => 'Brunei Darussalam', 'BG' => 'Bulgaria',
+        'BF' => 'Burkina Faso', 'BI' => 'Burundi', 'CV' => 'Cabo Verde', 'KH' => 'Cambodia',
+        'CM' => 'Cameroon', 'CA' => 'Canada', 'KY' => 'Cayman Islands', 'CF' => 'Central African Republic',
+        'TD' => 'Chad', 'CL' => 'Chile', 'CN' => 'China', 'CX' => 'Christmas Island',
+        'CC' => 'Cocos (Keeling) Islands', 'CO' => 'Colombia', 'KM' => 'Comoros', 'CG' => 'Congo',
+        'CD' => 'Congo (Democratic Republic)', 'CK' => 'Cook Islands', 'CR' => 'Costa Rica',
+        'CI' => "Côte d'Ivoire", 'HR' => 'Croatia', 'CU' => 'Cuba', 'CW' => 'Curaçao',
+        'CY' => 'Cyprus', 'CZ' => 'Czechia', 'DK' => 'Denmark', 'DJ' => 'Djibouti',
+        'DM' => 'Dominica', 'DO' => 'Dominican Republic', 'EC' => 'Ecuador', 'EG' => 'Egypt',
+        'SV' => 'El Salvador', 'GQ' => 'Equatorial Guinea', 'ER' => 'Eritrea', 'EE' => 'Estonia',
+        'SZ' => 'Eswatini', 'ET' => 'Ethiopia', 'FK' => 'Falkland Islands', 'FO' => 'Faroe Islands',
+        'FJ' => 'Fiji', 'FI' => 'Finland', 'FR' => 'France', 'GF' => 'French Guiana',
+        'PF' => 'French Polynesia', 'TF' => 'French Southern Territories', 'GA' => 'Gabon',
+        'GM' => 'Gambia', 'GE' => 'Georgia', 'DE' => 'Germany', 'GH' => 'Ghana',
+        'GI' => 'Gibraltar', 'GR' => 'Greece', 'GL' => 'Greenland', 'GD' => 'Grenada',
+        'GP' => 'Guadeloupe', 'GU' => 'Guam', 'GT' => 'Guatemala', 'GG' => 'Guernsey',
+        'GN' => 'Guinea', 'GW' => 'Guinea-Bissau', 'GY' => 'Guyana', 'HT' => 'Haiti',
+        'HM' => 'Heard Island and McDonald Islands', 'VA' => 'Holy See', 'HN' => 'Honduras',
+        'HK' => 'Hong Kong', 'HU' => 'Hungary', 'IS' => 'Iceland', 'IN' => 'India',
+        'ID' => 'Indonesia', 'IR' => 'Iran', 'IQ' => 'Iraq', 'IE' => 'Ireland',
+        'IM' => 'Isle of Man', 'IL' => 'Israel', 'IT' => 'Italy', 'JM' => 'Jamaica',
+        'JP' => 'Japan', 'JE' => 'Jersey', 'JO' => 'Jordan', 'KZ' => 'Kazakhstan',
+        'KE' => 'Kenya', 'KI' => 'Kiribati', 'KP' => 'Korea (North)', 'KR' => 'Korea (South)',
+        'KW' => 'Kuwait', 'KG' => 'Kyrgyzstan', 'LA' => 'Laos', 'LV' => 'Latvia',
+        'LB' => 'Lebanon', 'LS' => 'Lesotho', 'LR' => 'Liberia', 'LY' => 'Libya',
+        'LI' => 'Liechtenstein', 'LT' => 'Lithuania', 'LU' => 'Luxembourg', 'MO' => 'Macao',
+        'MG' => 'Madagascar', 'MW' => 'Malawi', 'MY' => 'Malaysia', 'MV' => 'Maldives',
+        'ML' => 'Mali', 'MT' => 'Malta', 'MH' => 'Marshall Islands', 'MQ' => 'Martinique',
+        'MR' => 'Mauritania', 'MU' => 'Mauritius', 'YT' => 'Mayotte', 'MX' => 'Mexico',
+        'FM' => 'Micronesia', 'MD' => 'Moldova', 'MC' => 'Monaco', 'MN' => 'Mongolia',
+        'ME' => 'Montenegro', 'MS' => 'Montserrat', 'MA' => 'Morocco', 'MZ' => 'Mozambique',
+        'MM' => 'Myanmar', 'NA' => 'Namibia', 'NR' => 'Nauru', 'NP' => 'Nepal',
+        'NL' => 'Netherlands', 'NC' => 'New Caledonia', 'NZ' => 'New Zealand', 'NI' => 'Nicaragua',
+        'NE' => 'Niger', 'NG' => 'Nigeria', 'NU' => 'Niue', 'NF' => 'Norfolk Island',
+        'MK' => 'North Macedonia', 'MP' => 'Northern Mariana Islands', 'NO' => 'Norway', 'OM' => 'Oman',
+        'PK' => 'Pakistan', 'PW' => 'Palau', 'PS' => 'Palestine', 'PA' => 'Panama',
+        'PG' => 'Papua New Guinea', 'PY' => 'Paraguay', 'PE' => 'Peru', 'PH' => 'Philippines',
+        'PN' => 'Pitcairn', 'PL' => 'Poland', 'PT' => 'Portugal', 'PR' => 'Puerto Rico',
+        'QA' => 'Qatar', 'RE' => 'Réunion', 'RO' => 'Romania', 'RU' => 'Russia',
+        'RW' => 'Rwanda', 'BL' => 'Saint Barthélemy', 'SH' => 'Saint Helena', 'KN' => 'Saint Kitts and Nevis',
+        'LC' => 'Saint Lucia', 'MF' => 'Saint Martin (French)', 'PM' => 'Saint Pierre and Miquelon',
+        'VC' => 'Saint Vincent and the Grenadines', 'WS' => 'Samoa', 'SM' => 'San Marino',
+        'ST' => 'Sao Tome and Principe', 'SA' => 'Saudi Arabia', 'SN' => 'Senegal', 'RS' => 'Serbia',
+        'SC' => 'Seychelles', 'SL' => 'Sierra Leone', 'SG' => 'Singapore', 'SX' => 'Sint Maarten (Dutch)',
+        'SK' => 'Slovakia', 'SI' => 'Slovenia', 'SB' => 'Solomon Islands', 'SO' => 'Somalia',
+        'ZA' => 'South Africa', 'GS' => 'South Georgia and the South Sandwich Islands',
+        'SS' => 'South Sudan', 'ES' => 'Spain', 'LK' => 'Sri Lanka', 'SD' => 'Sudan',
+        'SR' => 'Suriname', 'SJ' => 'Svalbard and Jan Mayen', 'SE' => 'Sweden', 'CH' => 'Switzerland',
+        'SY' => 'Syria', 'TW' => 'Taiwan', 'TJ' => 'Tajikistan', 'TZ' => 'Tanzania',
+        'TH' => 'Thailand', 'TL' => 'Timor-Leste', 'TG' => 'Togo', 'TK' => 'Tokelau',
+        'TO' => 'Tonga', 'TT' => 'Trinidad and Tobago', 'TN' => 'Tunisia', 'TR' => 'Türkiye',
+        'TM' => 'Turkmenistan', 'TC' => 'Turks and Caicos Islands', 'TV' => 'Tuvalu', 'UG' => 'Uganda',
+        'UA' => 'Ukraine', 'AE' => 'United Arab Emirates', 'GB' => 'United Kingdom', 'US' => 'United States',
+        'UM' => 'United States Minor Outlying Islands', 'UY' => 'Uruguay', 'UZ' => 'Uzbekistan',
+        'VU' => 'Vanuatu', 'VE' => 'Venezuela', 'VN' => 'Vietnam', 'VG' => 'Virgin Islands (British)',
+        'VI' => 'Virgin Islands (U.S.)', 'WF' => 'Wallis and Futuna', 'EH' => 'Western Sahara',
+        'YE' => 'Yemen', 'ZM' => 'Zambia', 'ZW' => 'Zimbabwe',
+    ];
+
+    /** @return array<string, string> */
+    public static function all(): array
+    {
+        return self::ALL;
+    }
+
+    /**
+     * ISO 3166-1 alpha-2 country codes to their international dialling
+     * prefixes (leading + included, e.g. 'PL' => '+48'). Kept intentionally
+     * incomplete: only codes present here get a prefix option in the client
+     * phone selector, everything else falls back to '+0'.
+     *
+     * @var array<string, string>
+     */
+    public const PHONE_PREFIXES = [
+        'AF' => '+93', 'AL' => '+355', 'DZ' => '+213', 'AR' => '+54',
+        'AU' => '+61', 'AT' => '+43', 'BY' => '+375', 'BE' => '+32',
+        'BA' => '+387', 'BR' => '+55', 'BG' => '+359', 'CA' => '+1',
+        'CL' => '+56', 'CN' => '+86', 'HR' => '+385', 'CZ' => '+420',
+        'DK' => '+45', 'EG' => '+20', 'EE' => '+372', 'FI' => '+358',
+        'FR' => '+33', 'DE' => '+49', 'GR' => '+30', 'HU' => '+36',
+        'IS' => '+354', 'IN' => '+91', 'ID' => '+62', 'IE' => '+353',
+        'IL' => '+972', 'IT' => '+39', 'JP' => '+81', 'KZ' => '+7',
+        'LV' => '+371', 'LT' => '+370', 'LU' => '+352', 'MY' => '+60',
+        'MX' => '+52', 'MD' => '+373', 'ME' => '+382', 'NL' => '+31',
+        'NZ' => '+64', 'NO' => '+47', 'PK' => '+92', 'PE' => '+51',
+        'PH' => '+63', 'PL' => '+48', 'PT' => '+351', 'RO' => '+40',
+        'RU' => '+7', 'RS' => '+381', 'SG' => '+65', 'SK' => '+421',
+        'SI' => '+386', 'ZA' => '+27', 'KR' => '+82', 'ES' => '+34',
+        'SE' => '+46', 'CH' => '+41', 'TW' => '+886', 'TH' => '+66',
+        'TR' => '+90', 'UA' => '+380', 'AE' => '+971', 'GB' => '+44',
+        'US' => '+1', 'VN' => '+84',
+    ];
+
+    /**
+     * Polish voivodeships (województwa), offered as a pick list for the
+     * state/region field when the country is Poland.
+     *
+     * @var list<string>
+     */
+    public const PL_STATES = [
+        'Dolnośląskie', 'Kujawsko-pomorskie', 'Lubelskie', 'Lubuskie',
+        'Łódzkie', 'Małopolskie', 'Mazowieckie', 'Opolskie',
+        'Podkarpackie', 'Podlaskie', 'Pomorskie', 'Śląskie',
+        'Świętokrzyskie', 'Warmińsko-mazurskie', 'Wielkopolskie', 'Zachodniopomorskie',
+    ];
+
+    /**
+     * The dialling prefix for a country code, or null when unknown.
+     */
+    public static function phonePrefix(?string $country): ?string
+    {
+        $country = strtoupper((string) $country);
+
+        return self::PHONE_PREFIXES[$country] ?? null;
+    }
+}

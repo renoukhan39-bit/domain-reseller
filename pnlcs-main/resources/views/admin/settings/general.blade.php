@@ -1,0 +1,881 @@
+@extends('admin.layouts.app')
+@section('title', __('admin.settings.title'))
+@section('content')
+
+<div class="page-header">
+    <h1>{{ __('admin.settings.general_settings') }}</h1>
+</div>
+<form method="POST" action="{{ route('admin.settings.general.update') }}">
+    @csrf
+    @if($errors->any())
+        <div class="alert alert-danger"><ul style="margin:0;padding-left:18px;">@foreach($errors->all() as $error)<li>{{ $error }}</li>@endforeach</ul></div>
+    @endif
+
+    <style>
+        .settings-tabs { display:flex; flex-wrap:wrap; gap:2px; border-bottom:2px solid #e5e7eb; margin-bottom:18px; }
+        .settings-tab { padding:9px 16px; font-size:13px; background:none; border:none; border-bottom:3px solid transparent; color:#555; cursor:pointer; margin-bottom:-2px; }
+        .settings-tab:hover { color:#333; }
+        .settings-tab.is-active { border-bottom-color:var(--theme-primary, #1a4d80); color:var(--theme-primary, #1a4d80); font-weight:600; }
+        .card[data-tab][hidden] { display:none !important; }
+    </style>
+    <div class="settings-tabs" role="tablist">
+        <button type="button" class="settings-tab is-active" data-tab="company">{{ __('admin.settings.tab_company') }}</button>
+        <button type="button" class="settings-tab" data-tab="invoicing">{{ __('admin.settings.tab_invoicing') }}</button>
+        <button type="button" class="settings-tab" data-tab="domains">{{ __('admin.settings.tab_domains') }}</button>
+        <button type="button" class="settings-tab" data-tab="notifications">{{ __('admin.settings.tab_notifications') }}</button>
+        <button type="button" class="settings-tab" data-tab="security">{{ __('admin.settings.tab_security') }}</button>
+        <button type="button" class="settings-tab" data-tab="automation">{{ __('admin.settings.tab_automation') }}</button>
+        <button type="button" class="settings-tab" data-tab="seo">{{ __('admin.settings.tab_seo') }}</button>
+    </div>
+
+    <div class="card" data-tab="company" id="settings-company_information" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.company_information') }}</strong></div>
+        <div class="card-body">
+            <div class="form-group" style="max-width:50%;"><label class="form-label">{{ __('common.form.company_name') }}</label><input type="text" name="CompanyName" value="{{ $settings['CompanyName'] ?? '' }}" class="form-control"></div>
+            <div class="form-group" style="max-width:50%;"><label class="form-label">{{ __('admin.settings.company_address') }}</label><textarea name="Address" rows="3" class="form-control">{{ $settings['Address'] ?? '' }}</textarea></div>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.postcode') }}</label><input type="text" name="Postcode" value="{{ $settings['Postcode'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('common.form.city') }}</label><input type="text" name="CompanyCity" value="{{ $settings['CompanyCity'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.state') }}</label><input type="text" name="State" value="{{ $settings['State'] ?? '' }}" class="form-control"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('common.form.phone_number') }}</label><input type="text" name="PhoneNumber" value="{{ $settings['PhoneNumber'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.company_email') }}</label><input type="email" name="Email" value="{{ $settings['Email'] ?? '' }}" class="form-control"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('common.form.tax_id') }}</label><input type="text" name="TaxID" value="{{ $settings['TaxID'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.company_website') }}</label><input type="text" name="CompanyWebsite" value="{{ $settings['CompanyWebsite'] ?? '' }}" class="form-control" placeholder="https://example.com"></div>
+            </div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.domain') }}</label><input type="text" name="Domain" value="{{ $settings['Domain'] ?? '' }}" class="form-control" placeholder="https://panel.example.com"></div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" data-tab="company" id="settings-localization" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.localization') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.default_language') }}</label>
+                    <select name="DefaultLanguage" class="form-control">
+                        @foreach($languages as $lang)
+                            <option value="{{ $lang->code }}" {{ ($settings['DefaultLanguage'] ?? '') === $lang->code ? 'selected' : '' }}>{{ $lang->native_name ?: $lang->name }}</option>
+                        @endforeach
+                    </select></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.default_country') }}</label>
+                    <select name="Country" class="form-control">
+                        <option value="">&mdash;</option>
+                        @foreach($countries as $code => $name)
+                            <option value="{{ $code }}" {{ ($settings['Country'] ?? '') === $code ? 'selected' : '' }}>{{ $name }}</option>
+                        @endforeach
+                    </select></div>
+                <div class="form-group"><label style="font-size:13px;display:flex;gap:6px;align-items:flex-start;">
+                    <input type="hidden" name="TurkishLegalForms" value="0"><input type="checkbox" name="TurkishLegalForms" value="1" {{ !empty($settings['TurkishLegalForms']) ? 'checked' : '' }} style="margin-top:3px;">
+                    <span>{{ __('admin.settings.turkish_legal_forms') }}<br><small style="color:#777;">{{ __('admin.settings.turkish_legal_forms_hint') }}</small></span></label></div>
+                <div class="form-group"><label style="font-size:13px;display:flex;gap:6px;align-items:flex-start;">
+                    <input type="hidden" name="DomainSearchLog" value="0"><input type="checkbox" name="DomainSearchLog" value="1" {{ ($settings['DomainSearchLog'] ?? '1') !== '0' ? 'checked' : '' }} style="margin-top:3px;">
+                    <span>{{ __('admin.settings.domain_search_log') }}<br><small style="color:#777;">{{ __('admin.settings.domain_search_log_hint') }}</small></span></label></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.date_format') }}</label><input type="text" name="DateFormat" value="{{ $settings['DateFormat'] ?? 'd/m/Y' }}" class="form-control" placeholder="d/m/Y"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.timezone') }}</label><input type="text" name="Timezone" value="{{ $settings['Timezone'] ?? 'UTC' }}" class="form-control"></div>
+            </div>
+        </div>
+    </div>
+
+    {{-- Where the terms are. The registration form asks customers to agree to
+         them and links both; with nowhere to enter the addresses the links
+         went to "#". --}}
+    <div class="card" data-tab="company" id="settings-legal" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.legal') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.tos_url') }}</label>
+                    <input type="url" name="TOSUrl" value="{{ $settings['TOSUrl'] ?? '' }}" class="form-control" placeholder="https://example.com/terms">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.privacy_url') }}</label>
+                    <input type="url" name="PrivacyUrl" value="{{ $settings['PrivacyUrl'] ?? '' }}" class="form-control" placeholder="https://example.com/privacy">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.legal_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Automation. Suspension used to run on a grace period hard-coded at 3
+         days; termination did not exist at all. Termination deletes data, so
+         it ships OFF and only ever touches services suspended over an unpaid
+         invoice (see TerminationCommand for the exact rules). --}}
+    <div class="card" data-tab="automation" id="settings-automation" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.automation') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.auto_suspension_days') }}</label>
+                    <input type="number" min="0" name="AutoSuspensionDays" value="{{ $settings['AutoSuspensionDays'] ?? '3' }}" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.auto_termination_days') }}</label>
+                    <input type="number" min="1" name="AutoTerminationDays" value="{{ $settings['AutoTerminationDays'] ?? '30' }}" class="form-control">
+                </div>
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:5px;">
+                <input type="hidden" name="AutoSuspendInvoicedOnly" value="0"><input type="checkbox" name="AutoSuspendInvoicedOnly" value="1" {{ !empty($settings['AutoSuspendInvoicedOnly']) ? 'checked' : '' }}>
+                {{ __('admin.settings.auto_suspend_invoiced_only') }}
+            </label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:5px;">
+                <input type="hidden" name="AutoTerminationEnabled" value="0"><input type="checkbox" name="AutoTerminationEnabled" value="1" {{ !empty($settings['AutoTerminationEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.auto_termination_label') }}
+            </label>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.automation_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Automatic payment. The billing clock already raises the renewal
+         invoices; this is the half that pays one with a card the customer has
+         already stored. It ships OFF, and while it is off the product behaves
+         exactly as it did before it existed.
+
+         The checkbox carries a hidden field of the same name in front of it, so
+         that a cleared box posts a value instead of vanishing from the request.
+         More than one screen posts to admin.settings.general.update, and
+         "absent" cannot be told apart from "cleared" - a form states its own
+         switches rather than leaving them to be inferred from what is missing.
+         There is deliberately no matching block in the controller. --}}
+    <div class="card" data-tab="invoicing" id="auto-charge" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.auto_charge') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="AutoChargeEnabled" value="0">
+                <input type="checkbox" name="AutoChargeEnabled" value="1" {{ !empty($settings['AutoChargeEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.auto_charge_enabled') }}
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.auto_charge_days_before') }}</label>
+                    <input type="number" min="0" name="AutoChargeDaysBefore" value="{{ $settings['AutoChargeDaysBefore'] ?? \App\Support\AutoCharge::DEFAULT_DAYS_BEFORE }}" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.auto_charge_max_attempts') }}</label>
+                    <input type="number" min="1" name="AutoChargeMaxAttempts" value="{{ $settings['AutoChargeMaxAttempts'] ?? \App\Support\AutoCharge::DEFAULT_MAX_ATTEMPTS }}" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.auto_charge_retry_days') }}</label>
+                    <input type="number" min="{{ \App\Support\AutoCharge::MINIMUM_RETRY_DAYS }}" name="AutoChargeRetryDays" value="{{ $settings['AutoChargeRetryDays'] ?? \App\Support\AutoCharge::DEFAULT_RETRY_DAYS }}" class="form-control">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.auto_charge_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- External fraud screening. Advisory like the built-in rules: a missing
+         key or an outage never blocks an order (see FraudDetectionService).
+         The secret fields keep their stored value when left blank, the same
+         contract as the mail password. --}}
+    <div class="card" data-tab="security" id="settings-fraud_screening" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.fraud_screening') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="MaxMindEnabled" value="0"><input type="checkbox" name="MaxMindEnabled" value="1" {{ !empty($settings['MaxMindEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.maxmind_enabled') }}
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.maxmind_account_id') }}</label>
+                    <input type="text" name="MaxMindAccountId" value="{{ $settings['MaxMindAccountId'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.maxmind_license_key') }}</label>
+                    <input type="password" name="MaxMindLicenseKey" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['MaxMindLicenseKey']) ? '••••••••' : '' }}">
+                </div>
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:10px;">
+                <input type="hidden" name="FraudLabsEnabled" value="0"><input type="checkbox" name="FraudLabsEnabled" value="1" {{ !empty($settings['FraudLabsEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.fraudlabs_enabled') }}
+            </label>
+            <div class="form-group" style="margin-top:8px;max-width:calc(50% - 8px);">
+                <label class="form-label">{{ __('admin.settings.fraudlabs_api_key') }}</label>
+                <input type="password" name="FraudLabsApiKey" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['FraudLabsApiKey']) ? '••••••••' : '' }}">
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.fraud_screening_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Twilio Verify. State (codes, attempts, expiry) lives at Twilio; the
+         panel only records the moment a check comes back approved. --}}
+    <div class="card" data-tab="notifications" id="settings-sms_verification" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.sms_verification') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="TwilioVerifyEnabled" value="0"><input type="checkbox" name="TwilioVerifyEnabled" value="1" {{ !empty($settings['TwilioVerifyEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.twilio_enabled') }}
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.twilio_account_sid') }}</label>
+                    <input type="text" name="TwilioAccountSid" value="{{ $settings['TwilioAccountSid'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.twilio_auth_token') }}</label>
+                    <input type="password" name="TwilioAuthToken" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['TwilioAuthToken']) ? '••••••••' : '' }}">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.twilio_verify_service_sid') }}</label>
+                    <input type="text" name="TwilioVerifyServiceSid" value="{{ $settings['TwilioVerifyServiceSid'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.sms_verification_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Proving the address on a new account. On unless an operator turns it
+         off: the safer behaviour is the one you get without reading a
+         settings screen. --}}
+    <div class="card" data-tab="security" id="settings-email_verification" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.email_verification') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="EmailVerificationRequired" value="0"><input type="checkbox" name="EmailVerificationRequired" value="1" {{ ($settings['EmailVerificationRequired'] ?? '1') === '1' ? 'checked' : '' }}>
+                {{ __('admin.settings.email_verification_required') }}
+            </label>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.email_verification_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Signing in with Google. Off until an operator creates their own
+         OAuth client, so nothing is exposed by default and no credential of
+         ours is ever shipped in a release. --}}
+    <div class="card" data-tab="security" id="settings-social_login" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.social_login') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="GoogleLoginEnabled" value="0"><input type="checkbox" name="GoogleLoginEnabled" value="1" {{ !empty($settings['GoogleLoginEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.google_login_enabled') }}
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.google_client_id') }}</label>
+                    <input type="text" name="GoogleClientId" value="{{ $settings['GoogleClientId'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.google_client_secret') }}</label>
+                    <input type="password" name="GoogleClientSecret" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['GoogleClientSecret']) ? '••••••••' : '' }}">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">
+                {{ __('admin.settings.google_login_hint') }}
+                <code>{{ route('client.social.google.callback') }}</code>
+            </div>
+
+            <hr style="margin:14px 0;">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="GithubLoginEnabled" value="0"><input type="checkbox" name="GithubLoginEnabled" value="1" {{ !empty($settings['GithubLoginEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.github_login_enabled') }}
+            </label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.github_client_id') }}</label>
+                    <input type="text" name="GithubClientId" value="{{ $settings['GithubClientId'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.github_client_secret') }}</label>
+                    <input type="password" name="GithubClientSecret" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['GithubClientSecret']) ? '••••••••' : '' }}">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">
+                {{ __('admin.settings.github_login_hint') }}
+                <code>{{ route('client.social.github.callback') }}</code>
+            </div>
+        </div>
+    </div>
+
+    {{-- A second check before a domain can leave: an emailed code in front of
+         its transfer code and its lock. Off by default, so an install that
+         updates changes nothing for its customers until the operator says. --}}
+    <div class="card" data-tab="security" id="settings-account_protection" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.account_protection') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="ConfirmSensitiveActions" value="0"><input type="checkbox" name="ConfirmSensitiveActions" value="1" {{ !empty($settings['ConfirmSensitiveActions']) ? 'checked' : '' }}>
+                {{ __('admin.settings.confirm_sensitive_actions') }}
+            </label>
+            <div style="font-size:12px;color:#777;margin-top:6px;">{{ __('admin.settings.confirm_sensitive_actions_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Google reCAPTCHA in front of the forms that open tickets: the public
+         contact form, the one door anyone can use, and the signed-in ticket
+         form, each with its own switch. Off until an operator registers their
+         own site, so no key of ours ships in a release. --}}
+    <div class="card" data-tab="security" id="settings-recaptcha" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.recaptcha') }}</strong></div>
+        <div class="card-body">
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="RecaptchaEnabled" value="0"><input type="checkbox" name="RecaptchaEnabled" value="1" {{ !empty($settings['RecaptchaEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.recaptcha_enabled') }}
+            </label>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:6px;">
+                <input type="hidden" name="RecaptchaTicketsEnabled" value="0"><input type="checkbox" name="RecaptchaTicketsEnabled" value="1" {{ !empty($settings['RecaptchaTicketsEnabled']) ? 'checked' : '' }}>
+                {{ __('admin.settings.recaptcha_tickets_enabled') }}
+            </label>
+            @foreach(['RecaptchaSignupEnabled' => 'recaptcha_signup_enabled', 'RecaptchaLoginEnabled' => 'recaptcha_login_enabled', 'RecaptchaPasswordEnabled' => 'recaptcha_password_enabled'] as $recaptchaSwitch => $recaptchaLabel)
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:6px;">
+                <input type="hidden" name="{{ $recaptchaSwitch }}" value="0"><input type="checkbox" name="{{ $recaptchaSwitch }}" value="1" {{ !empty($settings[$recaptchaSwitch]) ? 'checked' : '' }}>
+                {{ __('admin.settings.'.$recaptchaLabel) }}
+            </label>
+            @endforeach
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:8px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.recaptcha_site_key') }}</label>
+                    <input type="text" name="RecaptchaSiteKey" value="{{ $settings['RecaptchaSiteKey'] ?? '' }}" class="form-control" autocomplete="off">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.recaptcha_secret_key') }}</label>
+                    <input type="password" name="RecaptchaSecretKey" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['RecaptchaSecretKey']) ? '••••••••' : '' }}">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.recaptcha_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- The seller's registered identity. A contract, an official invoice and
+         the contact page all name it, and they read these same fields so the
+         three can never disagree. --}}
+    <div class="card" data-tab="company" id="settings-legal_identity" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.legal_identity') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.company_legal_name') }}</label><input type="text" name="CompanyLegalName" value="{{ $settings['CompanyLegalName'] ?? '' }}" class="form-control"><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.company_legal_name_hint') }}</div></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.tax_office') }}</label><input type="text" name="TaxOffice" value="{{ $settings['TaxOffice'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.trade_registry_no') }}</label><input type="text" name="TradeRegistryNo" value="{{ $settings['TradeRegistryNo'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.mersis_no') }}</label><input type="text" name="MersisNo" value="{{ $settings['MersisNo'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.abuse_email') }}</label><input type="email" name="AbuseEmail" value="{{ $settings['AbuseEmail'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.dpo_email') }}</label><input type="email" name="DpoEmail" value="{{ $settings['DpoEmail'] ?? '' }}" class="form-control"></div>
+            </div>
+            <div class="form-group"><label class="form-label">{{ __('admin.settings.about_text') }}</label><textarea name="AboutText" rows="5" class="form-control">{{ $settings['AboutText'] ?? '' }}</textarea><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.about_text_hint') }} <a href="{{ route('pages.about') }}" target="_blank" rel="noopener">{{ route('pages.about') }}</a></div></div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                <input type="hidden" name="KnowledgeBaseEnabled" value="0"><input type="checkbox" name="KnowledgeBaseEnabled" value="1" {{ ($settings['KnowledgeBaseEnabled'] ?? '1') !== '0' ? 'checked' : '' }}>
+                {{ __('admin.settings.knowledge_base_enabled') }}
+            </label>
+        </div>
+    </div>
+
+    {{-- Tag Manager, the operator's own code and the cookie consent bar (App\Support\Tracking). --}}
+    <div class="card" data-tab="seo" id="settings-tracking_section" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.tracking_section') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 2fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.tracking_gtm_id') }}</label><input type="text" name="TrackingGtmId" value="{{ $settings['TrackingGtmId'] ?? '' }}" class="form-control"><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.tracking_gtm_hint') }}</div></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.tracking_policy_url') }}</label><input type="text" name="TrackingPolicyUrl" value="{{ $settings['TrackingPolicyUrl'] ?? '' }}" class="form-control"></div>
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-bottom:4px;">
+                <input type="hidden" name="TrackingConsent" value="0"><input type="checkbox" name="TrackingConsent" value="1" {{ ($settings['TrackingConsent'] ?? '1') !== '0' ? 'checked' : '' }}>
+                {{ __('admin.settings.tracking_consent') }}
+            </label>
+            <div style="font-size:12px;color:#777;margin-bottom:12px;">{{ __('admin.settings.tracking_consent_hint') }}</div>
+            <div class="form-group"><label class="form-label">{{ __('admin.settings.tracking_head_code') }}</label><textarea name="TrackingHeadCode" rows="3" class="form-control" style="font-family:monospace;">{{ $settings['TrackingHeadCode'] ?? '' }}</textarea></div>
+            <div class="form-group"><label class="form-label">{{ __('admin.settings.tracking_footer_code') }}</label><textarea name="TrackingFooterCode" rows="3" class="form-control" style="font-family:monospace;">{{ $settings['TrackingFooterCode'] ?? '' }}</textarea><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.tracking_code_hint') }}</div></div>
+        </div>
+    </div>
+
+    {{-- What search engines and shared links show (App\Support\Seo). --}}
+    <div class="card" data-tab="seo" id="settings-seo_section" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.seo_section') }}</strong></div>
+        <div class="card-body">
+            <div class="form-group"><label class="form-label">{{ __('admin.settings.seo_description') }}</label><textarea name="SeoDescription" rows="2" maxlength="300" class="form-control">{{ $settings['SeoDescription'] ?? '' }}</textarea><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.seo_description_hint') }}</div></div>
+            <div style="display:grid;grid-template-columns:2fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.seo_share_image') }}</label><input type="text" name="SeoShareImage" value="{{ $settings['SeoShareImage'] ?? '' }}"  class="form-control"><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.seo_share_image_hint') }}</div></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.seo_twitter') }}</label><input type="text" name="SeoTwitter" value="{{ $settings['SeoTwitter'] ?? '' }}" class="form-control" placeholder="@"></div>
+            </div>
+            {{-- The shop's social media profiles (App\Support\SocialProfiles): themes show them, the home page names them to search engines. --}}
+            <div class="form-group" style="margin-bottom:6px;"><label class="form-label">{{ __('admin.settings.social_profiles') }}</label><div style="font-size:12px;color:#777;">{{ __('admin.settings.social_profiles_hint') }}</div></div>
+            <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 15px;margin-bottom:15px;">
+                @foreach(\App\Support\SocialProfiles::NETWORKS as $network => $key)
+                <div><label class="form-label" style="font-weight:400;">{{ \App\Support\SocialProfiles::NAMES[$network] }}</label><input type="url" name="{{ $key }}" value="{{ $settings[$key] ?? '' }}" class="form-control"></div>
+                @endforeach
+            </div>
+            <div class="form-group"><label class="form-label">robots.txt</label><textarea name="RobotsTxt" rows="3" class="form-control" style="font-family:monospace;">{{ $settings['RobotsTxt'] ?? '' }}</textarea><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.robots_txt_hint', ['sitemap' => route('sitemap')]) }}</div>@if(is_file(public_path('robots.txt')))<div style="font-size:12px;color:#8a6d3b;margin-top:4px;">{{ __('admin.settings.robots_txt_static', ['path' => 'public/robots.txt']) }}</div>@endif</div>
+        </div>
+    </div>
+
+    {{-- Billing in a second currency. The shop keeps pricing in its own
+         currency; each invoice freezes the rate it was struck at, and names
+         the source when there is an official one to name. --}}
+    <div class="card" data-tab="invoicing" id="settings-billing_currency_section" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.billing_currency_section') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.billing_currency') }}</label>
+                    <select name="BillingCurrency" class="form-control">
+                        <option value="">{{ __('admin.settings.billing_currency_none') }}</option>
+                        @foreach(\App\Models\Currency::orderBy('code')->get() as $cur)
+                            <option value="{{ $cur->code }}" {{ ($settings['BillingCurrency'] ?? '') === $cur->code ? 'selected' : '' }}>{{ $cur->code }}</option>
+                        @endforeach
+                    </select>
+                </div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.official_rate_provider') }}</label>
+                    <select name="OfficialRateProvider" class="form-control">
+                        <option value="">{{ __('admin.settings.official_rate_none') }}</option>
+                        <option value="tcmb" {{ ($settings['OfficialRateProvider'] ?? '') === 'tcmb' ? 'selected' : '' }}>{{ __('admin.settings.official_rate_tcmb') }}</option>
+                        <option value="nbp" {{ ($settings['OfficialRateProvider'] ?? '') === 'nbp' ? 'selected' : '' }}>{{ __('admin.settings.official_rate_nbp') }}</option>
+                        @foreach(\App\Services\OfficialRateProviders::all() as $provider)
+                            <option value="{{ $provider['key'] }}" {{ ($settings['OfficialRateProvider'] ?? '') === $provider['key'] ? 'selected' : '' }}>{{ $provider['name'] }} ({{ $provider['base'] }} → {{ $provider['currency'] }})</option>
+                        @endforeach
+                    </select>
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.official_rate_nbp_hint') }}</div>
+                </div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.tcmb_rate_kind') }}</label>
+                    <select name="TcmbRateKind" class="form-control">
+                        <option value="ForexSelling" {{ ($settings['TcmbRateKind'] ?? 'ForexSelling') === 'ForexSelling' ? 'selected' : '' }}>{{ __('pdf.rate_kind_selling') }}</option>
+                        <option value="ForexBuying" {{ ($settings['TcmbRateKind'] ?? '') === 'ForexBuying' ? 'selected' : '' }}>{{ __('pdf.rate_kind_buying') }}</option>
+                    </select>
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.tcmb_rate_kind_hint') }}</div>
+                </div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.payment_reference_prefix') }}</label><input type="text" name="PaymentReferencePrefix" value="{{ $settings['PaymentReferencePrefix'] ?? 'INV' }}" maxlength="8" class="form-control"><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.payment_reference_prefix_hint') }}</div></div>
+                <div class="form-group" style="grid-column:span 2;"><label class="form-label">{{ __('admin.settings.auto_approve_emails') }}</label><input type="text" name="AutoApproveOrderEmails" value="{{ $settings['AutoApproveOrderEmails'] ?? '' }}" class="form-control" placeholder="tester@example.com, qa@example.com"><div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.auto_approve_emails_hint') }}</div></div>
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.billing_currency_hint') }}</div>
+            {{-- Official rate sources beyond TCMB. Empty ships none; an entry
+                 applies only once chosen as the official rate source above. --}}
+            <div style="display:grid;grid-template-columns:3fr 1fr;gap:15px;margin-top:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.official_rate_providers') }}</label>
+                    <textarea name="OfficialRateProviders" rows="8" class="form-control" style="font-family:monospace;font-size:12px;" spellcheck="false" placeholder="[]">{{ $settings['OfficialRateProviders'] ?? '' }}</textarea>
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.official_rate_providers_hint') }}</div>
+                </div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.official_rate_api_key') }}</label>
+                    <input type="password" name="OfficialRateApiKey" value="" class="form-control" autocomplete="new-password" placeholder="{{ !empty($settings['OfficialRateApiKey']) ? '••••••••' : '' }}">
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.official_rate_api_key_hint') }}</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    {{-- What the domain search suggests next to the name searched. Empty
+         keeps the built-in list. --}}
+    <div class="card" data-tab="domains" id="settings-domain_suggestions" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.domain_suggestions') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:3fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.domain_suggestion_tlds') }}</label><input type="text" name="DomainSuggestionTlds" value="{{ $settings['DomainSuggestionTlds'] ?? '' }}" class="form-control" placeholder="{{ \App\Http\Controllers\DomainSearchController::DEFAULT_SUGGESTIONS }}"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.domain_suggestion_count') }}</label><input type="number" min="1" max="12" name="DomainSuggestionCount" value="{{ $settings['DomainSuggestionCount'] ?? '' }}" class="form-control" placeholder="6"></div>
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.domain_suggestions_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- The registrar float. --}}
+    <div class="card" data-tab="domains" id="settings-registrar_balance" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.registrar_balance') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:15px;">
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.registrar_watch_module') }}</label>@php
+                    $watchNow = collect($settings)->has('BalanceWatchRegistrar') ? (string) ($settings['BalanceWatchRegistrar'] ?? '') : 'domainnameapi';
+                    $watchList = $balanceRegistrars ?? [];
+                    if ($watchNow !== '' && ! in_array($watchNow, $watchList, true)) {
+                        $watchList[] = $watchNow;
+                    }
+                @endphp
+                <select name="BalanceWatchRegistrar" class="form-control">
+                    <option value="">{{ __('admin.settings.registrar_watch_off') }}</option>
+                    @foreach($watchList as $watchName)
+                        <option value="{{ $watchName }}" @selected($watchNow === $watchName)>{{ $watchName }}</option>
+                    @endforeach
+                </select></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.registrar_floor') }}</label><input type="number" step="0.01" min="0" name="RegistrarBalanceThreshold" value="{{ $settings['RegistrarBalanceThreshold'] ?? '' }}" class="form-control"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.registrar_currency') }}</label><input type="text" name="RegistrarBalanceCurrency" value="{{ $settings['RegistrarBalanceCurrency'] ?? '' }}" maxlength="3" class="form-control" placeholder="USD"></div>
+                <div class="form-group"><label class="form-label">{{ __('admin.settings.registrar_alert_email') }}</label><input type="email" name="RegistrarBalanceAlertEmail" value="{{ $settings['RegistrarBalanceAlertEmail'] ?? '' }}" class="form-control"></div>
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.registrar_balance_hint') }}</div>
+        </div>
+    </div>
+
+    {{-- Late fees. The command that charges them has always read these three
+         settings; there was nowhere to enter them, so it read "none" every
+         morning and stopped. --}}
+    <div class="card" data-tab="invoicing" id="settings-late_fees" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.late_fees') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:15px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.late_fee_type') }}</label>
+                    <select name="LateFeeType" class="form-control">
+                        <option value="none" {{ ($settings['LateFeeType'] ?? 'none') === 'none' ? 'selected' : '' }}>{{ __('admin.settings.late_fee_none') }}</option>
+                        <option value="flat" {{ ($settings['LateFeeType'] ?? '') === 'flat' ? 'selected' : '' }}>{{ __('admin.settings.late_fee_flat') }}</option>
+                        <option value="percent" {{ ($settings['LateFeeType'] ?? '') === 'percent' ? 'selected' : '' }}>{{ __('admin.settings.late_fee_percent') }}</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.late_fee_amount') }}</label>
+                    <input type="number" step="0.01" min="0" name="LateFeeAmount" value="{{ $settings['LateFeeAmount'] ?? '0' }}" class="form-control">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.late_fee_min_days') }}</label>
+                    <input type="number" min="0" name="LateFeeMinDays" value="{{ $settings['LateFeeMinDays'] ?? '3' }}" class="form-control">
+                </div>
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.late_fee_hint') }}</div>
+        </div>
+    </div>
+
+    <div class="card" data-tab="automation" id="settings-system_settings" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.system_settings') }}</strong></div>
+        <div class="card-body">
+            <div style="display:flex;flex-direction:column;gap:8px;">
+                <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;"><input type="hidden" name="MaintenanceMode" value="0"><input type="checkbox" name="MaintenanceMode" value="1" {{ !empty($settings['MaintenanceMode']) ? 'checked' : '' }}> {{ __('admin.settings.maintenance_mode_label') }}</label>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" data-tab="invoicing" id="settings-invoices_section" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.invoices_section') }}</strong></div>
+        <div class="card-body">
+            <div class="form-group" style="max-width:50%;">
+                <label class="form-label">{{ __('admin.settings.default_payment_method') }}</label>
+                <select name="DefaultPaymentMethod" class="form-control">
+                    @foreach($paymentMethods as $pm)
+                    <option value="{{ $pm }}" {{ ($settings['DefaultPaymentMethod'] ?? '') === $pm ? 'selected' : '' }}>{{ \payment_method_label($pm) }}</option>
+                    @endforeach
+                </select>
+            </div>
+            <div class="form-group" style="margin-top:10px;max-width:50%;">
+                <label class="form-label">{{ __('admin.settings.invoice_due_days') }}</label>
+                <input type="number" name="InvoiceDueDays" value="{{ $settings['InvoiceDueDays'] ?? '14' }}" class="form-control" min="0">
+            </div>
+            <div class="form-group" style="margin-top:10px;max-width:50%;">
+                <label class="form-label" for="invoice-days-before-due">{{ __('admin.settings.invoice_days_before_due') }}</label>
+                <input type="number" id="invoice-days-before-due" name="InvoiceDaysBeforeDue" value="{{ $settings['InvoiceDaysBeforeDue'] ?? '14' }}" class="form-control" min="0" max="365">
+            </div>
+            <div class="form-group" style="margin-top:10px;max-width:50%;">
+                <label class="form-label" for="consolidated-billing-day">{{ __('admin.settings.consolidated_billing_day') }}</label>
+                <select id="consolidated-billing-day" name="ConsolidatedBillingDay" class="form-control">
+                    <option value="0">{{ __('admin.settings.consolidated_billing_off') }}</option>
+                    @for($d = 1; $d <= 28; $d++)
+                    <option value="{{ $d }}" @selected((int) ($settings['ConsolidatedBillingDay'] ?? 0) === $d)>{{ $d }}</option>
+                    @endfor
+                </select>
+                <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.consolidated_billing_hint') }}</div>
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:6px;">
+                <input type="hidden" name="InvoiceRenewalsSeparately" value="0"><input type="checkbox" name="InvoiceRenewalsSeparately" value="1" {{ !empty($settings['InvoiceRenewalsSeparately']) ? 'checked' : '' }}>
+                {{ __('admin.settings.invoice_renewals_separately') }}
+            </label>
+            <div class="form-group" style="margin-top:10px;max-width:50%;">
+                <label class="form-label" for="invoice-number-format">{{ __('admin.settings.invoice_number_format') }}</label>
+                <input type="text" id="invoice-number-format" name="InvoiceNumberFormat" value="{{ $settings['InvoiceNumberFormat'] ?? 'INV-{year}{month}-{num}' }}" class="form-control" placeholder="INV-{year}{month}-{num}">
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:6px;">
+                <input type="hidden" name="InvoiceNumberYearlyReset" value="0"><input type="checkbox" name="InvoiceNumberYearlyReset" value="1" {{ !empty($settings['InvoiceNumberYearlyReset']) && $settings['InvoiceNumberYearlyReset'] == '1' ? 'checked' : '' }}>
+                {{ __('admin.settings.invoice_number_reset_year') }}
+            </label>
+            <div style="font-size:12px;color:#777;margin-top:6px;">
+                {{ __('admin.settings.invoice_number_tokens') }}
+            </div>
+            <div style="font-size:13px;color:#555;margin-top:6px;">
+                <span>{{ __('admin.settings.invoice_number_last') }}:</span>
+                <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">{{ $invoiceLast ?? '—' }}</code>
+                <span style="margin-left:14px;">{{ __('admin.settings.invoice_number_preview') }}:</span>
+                <code id="invoice-number-preview" style="background:#f5f5f5;padding:1px 5px;border-radius:3px;font-weight:600;">{{ $invoicePreview }}</code>
+            </div>
+            <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:14px;font-weight:600;">
+                <input type="hidden" name="ProformaEnabled" value="0"><input type="checkbox" id="proforma-enabled" name="ProformaEnabled" value="1" onchange="document.getElementById('proforma-scheme').style.display = this.checked ? '' : 'none';" {{ $proformaEnabled ? 'checked' : '' }}>
+                {{ __('admin.settings.proforma_enabled') }}
+            </label>
+            <div id="proforma-scheme" style="{{ $proformaEnabled ? '' : 'display:none;' }}">
+                <div class="form-group" style="margin-top:10px;max-width:50%;">
+                    <label class="form-label" for="proforma-number-format">{{ __('admin.settings.proforma_number_format') }}</label>
+                    <input type="text" id="proforma-number-format" name="ProformaNumberFormat" value="{{ $proformaFormat }}" class="form-control" placeholder="PRO-{year}/{month}-{num}">
+                    <div style="font-size:13px;color:#555;margin-top:6px;">
+                        <span>{{ __('admin.settings.invoice_number_last') }}:</span>
+                        <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;">{{ $proformaLast ?? '—' }}</code>
+                        <span style="margin-left:14px;">{{ __('admin.settings.invoice_number_preview') }}:</span>
+                        <code style="background:#f5f5f5;padding:1px 5px;border-radius:3px;font-weight:600;">{{ $proformaPreview }}</code>
+                    </div>
+                </div>
+                <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;margin-top:10px;">
+                    <input type="hidden" name="HidePaidProformas" value="0"><input type="checkbox" name="HidePaidProformas" value="1" {{ ($settings['HidePaidProformas'] ?? '1') == '1' ? 'checked' : '' }}>
+                    {{ __('admin.settings.hide_paid_proformas') }}
+                </label>
+            </div>
+
+            <div style="margin-top:16px;padding-top:16px;border-top:1px solid #eee;">
+                <div style="font-size:13px;font-weight:600;margin-bottom:10px;">{{ __('admin.settings.invoice_template_languages') }}</div>
+
+                <div style="display:grid;grid-template-columns:1fr 2fr;gap:15px;align-items:end;">
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.invoice_template_file') }}</label>
+                        <input type="file" name="template" accept=".html,.htm,.txt" class="form-control" form="invoice-template-upload">
+                    </div>
+                    <div class="form-group">
+                        <button type="submit" form="invoice-template-upload" class="btn btn-primary btn-sm">{{ __('admin.settings.invoice_template_upload') }}</button>
+                    </div>
+                </div>
+                <div style="font-size:12px;color:#777;margin-top:8px;">{{ __('admin.settings.invoice_template_languages_hint') }}</div>
+
+                <div style="font-size:12px;color:#777;margin-top:12px;">{{ __('admin.settings.invoice_template_hint') }}</div>
+                <div style="font-size:12px;color:#777;font-family:monospace;margin-top:4px;line-height:1.8;">{{ collect($invoiceTemplateVocabulary)->map(fn ($p) => '{'.$p.'}')->join(' ') }}</div>
+
+                <div style="margin-top:16px;">
+                    @forelse($invoiceTemplateLanguages as $languageTemplate)
+                    <div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:6px 0;border-top:1px solid #f0f0f0;">
+                        <span style="font-family:monospace;font-size:13px;">{{ $languageTemplate['filename'] }}</span>
+                        <div style="display:flex;gap:8px;">
+                            <a href="{{ route('admin.settings.invoice-template.download', ['file' => $languageTemplate['filename']]) }}" class="btn btn-default btn-xs">{{ __('common.actions.download') }}</a>
+                            <button type="submit" form="invoice-template-remove" formaction="{{ route('admin.settings.invoice-template.remove', ['file' => $languageTemplate['filename']]) }}" class="btn btn-danger btn-xs" onclick="return pnConfirm(event, @js(__('admin.settings.invoice_template_remove_confirm')))">{{ __('admin.settings.invoice_template_remove') }}</button>
+                        </div>
+                    </div>
+                    @empty
+                    <div style="font-size:12px;color:#999;padding:10px 0;">{{ __('admin.settings.invoice_template_languages_none') }}</div>
+                    @endforelse
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" data-tab="notifications" id="settings-mail_configuration" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.mail_configuration') }}</strong></div>
+        <div class="card-body">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-bottom:10px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.mail_type') }}</label>
+                    <select name="MailType" id="mail-type" class="form-control">
+                        {{-- No choice stored means the mailer in .env (App\Support\MailTransport). The
+                             form used to show PHP Mail for that, and the first save stored it. --}}
+                        <option value="" {{ blank($settings['MailType'] ?? null) ? 'selected' : '' }}>{{ __('admin.settings.mail_type_environment') }}</option>
+                        <option value="php_mail" {{ ($settings['MailType'] ?? '') === 'php_mail' ? 'selected' : '' }}>{{ __('admin.settings.php_mail') }}</option>
+                        <option value="smtp" {{ ($settings['MailType'] ?? '') === 'smtp' ? 'selected' : '' }}>{{ __('admin.settings.smtp') }}</option>
+                    </select>
+                    <div style="color:#777;font-size:12px;margin-top:6px;">
+                        {{ __('admin.settings.sending_via', ['transport' => $mailTransport ?? config('mail.default')]) }}
+                        @if(($mailTransport ?? config('mail.default')) === 'log')
+                            <strong style="color:#c00;">{{ __('admin.settings.mail_goes_to_log') }}</strong>
+                        @endif
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.enable_email_sending') }}</label>
+                    <div style="padding-top:8px;">
+                        <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                            <input type="hidden" name="MailEnabled" value="0"><input type="checkbox" name="MailEnabled" value="1" @checked(\App\Listeners\SuppressMailWhenDisabled::isOn($settings['MailEnabled'] ?? null))>
+                            {{ __('admin.settings.enable_outgoing_emails') }}
+                        </label>
+                    </div>
+                </div>
+            </div>
+
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-bottom:10px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.system_email_address') }}</label>
+                    <input type="email" name="SystemEmailAddress" value="{{ $settings['SystemEmailAddress'] ?? '' }}" class="form-control" placeholder="noreply@yourdomain.com">
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.email_from_name') }}</label>
+                    {{-- Not "Your Company Name": that placeholder made this look like a
+                         fourth place to type the company name. It is the sender line
+                         on outgoing mail, nothing more. --}}
+                    <input type="text" name="EmailFromName" value="{{ $settings['EmailFromName'] ?? '' }}" class="form-control" placeholder="{{ __('admin.settings.from_name_placeholder') }}">
+                </div>
+            </div>
+
+            <div class="form-group" style="margin-bottom:10px;">
+                <label class="form-label" for="mail-copy-to">{{ __('admin.settings.mail_copy_to') }}</label>
+                <input type="text" id="mail-copy-to" name="MailCopyTo" value="{{ $settings['MailCopyTo'] ?? '' }}" class="form-control">
+                <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.mail_copy_to_hint') }}</div>
+            </div>
+
+            <div id="smtp-fields" style="display:{{ ($settings['MailType'] ?? '') === 'smtp' ? 'block' : 'none' }};">
+                <hr style="margin:10px 0;">
+                <div style="font-size:12px;font-weight:600;color:#888;text-transform:uppercase;letter-spacing:.5px;margin-bottom:10px;">{{ __('admin.settings.smtp_configuration') }}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;">
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.smtp_host') }}</label>
+                        <input type="text" name="SMTPHost" value="{{ $settings['SMTPHost'] ?? '' }}" class="form-control" placeholder="smtp.yourdomain.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.smtp_port') }}</label>
+                        <input type="number" name="SMTPPort" value="{{ $settings['SMTPPort'] ?? '587' }}" class="form-control" placeholder="587">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.smtp_username') }}</label>
+                        <input type="text" name="SMTPUsername" value="{{ $settings['SMTPUsername'] ?? '' }}" class="form-control" placeholder="user@yourdomain.com">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.smtp_password') }}</label>
+                        {{-- Never sent back: the stored password used to sit in the page source of
+                             every settings page load. Left empty, it stays as it is. --}}
+                        <input type="password" name="SMTPPassword" value="" autocomplete="new-password" class="form-control" placeholder="{{ ($settings['SMTPPassword'] ?? '') !== '' ? __('admin.settings.smtp_password_keep') : '' }}">
+                    </div>
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.settings.smtp_encryption') }}</label>
+                        <select name="SMTPSecurity" class="form-control">
+                            <option value="tls" {{ ($settings['SMTPSecurity'] ?? 'tls') === 'tls' ? 'selected' : '' }}>TLS (STARTTLS)</option>
+                            <option value="ssl" {{ ($settings['SMTPSecurity'] ?? '') === 'ssl' ? 'selected' : '' }}>SSL</option>
+                            <option value="none" {{ ($settings['SMTPSecurity'] ?? '') === 'none' ? 'selected' : '' }}>{{ __('admin.settings.smtp_security_none') }}</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+
+            <hr style="margin:14px 0;">
+            <div style="display:flex;gap:10px;align-items:center;">
+                <button type="button" id="test-email-btn" class="btn btn-default">{{ __('admin.settings.send_test_email') }}</button>
+                <span id="test-email-result" style="font-size:13px;"></span>
+            </div>
+        </div>
+    </div>
+
+    <div class="card" data-tab="domains" id="settings-domains_section" style="margin-bottom:15px;">
+        <div class="card-header"><strong>{{ __('admin.settings.domains_section') }}</strong></div>
+        <div class="card-body">
+            <label class="form-label">{{ __('admin.settings.default_nameservers') }}</label>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-bottom:8px;">
+                @for($i = 1; $i <= 5; $i++)
+                <div class="form-group">
+                    <label class="form-label" style="font-size:12px;">NS{{ $i }}</label>
+                    <input type="text" name="DefaultNameserver{{ $i }}" value="{{ $settings['DefaultNameserver'.$i] ?? '' }}" class="form-control" placeholder="ns{{ $i }}.yourdomain.com">
+                </div>
+                @endfor
+            </div>
+            <div style="font-size:12px;color:#777;">{{ __('admin.settings.default_nameservers_hint') }}</div>
+            {{-- Free subdomains (App\Support\FreeSubdomains): names under the shop's own domains a hosting order can take. --}}
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:15px;margin-top:18px;">
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.free_subdomains') }}</label>
+                    <textarea name="FreeSubdomains" rows="3" class="form-control" style="font-family:monospace;font-size:12px;">{{ $settings['FreeSubdomains'] ?? '' }}</textarea>
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.free_subdomains_hint') }}</div>
+                </div>
+                <div class="form-group">
+                    <label class="form-label">{{ __('admin.settings.disallowed_subdomains') }}</label>
+                    <textarea name="DisallowedSubdomainPrefixes" rows="3" class="form-control" style="font-family:monospace;font-size:12px;">{{ $settings['DisallowedSubdomainPrefixes'] ?? '' }}</textarea>
+                    <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.disallowed_subdomains_hint', ['names' => implode(', ', \App\Support\FreeSubdomains::DEFAULT_DISALLOWED)]) }}</div>
+                </div>
+            </div>
+            <div class="form-group" style="margin-top:18px;">
+                <label class="form-label" for="domain-sync-rdap-max">{{ __('admin.settings.domain_sync_rdap_max') }}</label>
+                <input type="number" id="domain-sync-rdap-max" name="DomainSyncRdapMaxPerRun" value="{{ $settings['DomainSyncRdapMaxPerRun'] ?? '100' }}" class="form-control" min="0" max="10000" style="max-width:180px;">
+                <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.settings.domain_sync_rdap_max_hint') }}</div>
+            </div>
+        </div>
+    </div>
+
+    <div style="display:flex;gap:10px;align-items:center;">
+        <button type="submit" class="btn btn-primary">{{ __('admin.settings.save_settings') }}</button>
+    </div>
+</form>
+
+{{-- The invoice-template upload/remove run as their own requests, but their
+     controls sit inside the settings form above, which must not be nested.
+     These empty forms are targeted through the controls' `form` attribute;
+     each remove button points its `formaction` at its own file. --}}
+<form id="invoice-template-upload" method="POST" action="{{ route('admin.settings.invoice-template.upload') }}" enctype="multipart/form-data">@csrf</form>
+<form id="invoice-template-remove" method="POST" action="{{ route('admin.settings.invoice-template.remove') }}">@csrf @method('DELETE')</form>
+
+<script>
+(function () {
+    var tabs = document.querySelectorAll('.settings-tab');
+    var panes = document.querySelectorAll('.card[data-tab]');
+
+    function activate(name) {
+        tabs.forEach(function (t) {
+            t.classList.toggle('is-active', t.getAttribute('data-tab') === name);
+        });
+        panes.forEach(function (p) {
+            p.hidden = p.getAttribute('data-tab') !== name;
+        });
+    }
+
+    tabs.forEach(function (t) {
+        t.addEventListener('click', function () {
+            activate(t.getAttribute('data-tab'));
+            history.replaceState(null, '', '#' + t.getAttribute('data-tab'));
+        });
+    });
+
+    // A link to one section - the admin search returns those
+    // (AdminSettingsIndex), and so do the anchors on this page - must open the
+    // tab holding it, or it lands on a hidden card and the page looks empty.
+    function tabOf(hash) {
+        if (!hash) return null;
+        var name = hash.replace('#', '');
+        var byTab = document.querySelector('.settings-tab[data-tab="' + CSS.escape(name) + '"]');
+        if (byTab) return name;
+        var section = document.getElementById(name) || document.querySelector('[id="' + CSS.escape(name) + '"]');
+        var card = section ? section.closest('.card[data-tab]') : null;
+
+        return card ? card.getAttribute('data-tab') : null;
+    }
+
+    function openFromHash() {
+        var name = tabOf(window.location.hash) || 'company';
+        activate(name);
+        var target = document.getElementById(window.location.hash.replace('#', ''));
+        if (target && target.closest('.card[data-tab]')) {
+            target.scrollIntoView();
+        }
+    }
+
+    window.addEventListener('hashchange', openFromHash);
+    openFromHash();
+})();
+
+document.getElementById('invoice-number-format').addEventListener('input', renderInvoicePreview);
+document.addEventListener('DOMContentLoaded', renderInvoicePreview);
+
+function renderInvoicePreview() {
+    var fmt = document.getElementById('invoice-number-format').value || '';
+    var now = new Date();
+    var y = String(now.getFullYear());
+    var yy = y.slice(-2);
+    var m = ('0' + (now.getMonth() + 1)).slice(-2);
+    var d = ('0' + now.getDate()).slice(-2);
+    var seq = String({{ $invoiceNextSeq }});
+    var out = fmt
+        .replace(/\{year\}/g, y)
+        .replace(/\{yy\}/g, yy)
+        .replace(/\{month\}/g, m)
+        .replace(/\{day\}/g, d)
+        .replace(/\{num(?::([1-9]))?\}/g, function (all, digits) {
+            return seq.padStart(digits ? Number(digits) : {{ \App\Services\InvoiceService::NUM_DIGITS }}, '0');
+        });
+    document.getElementById('invoice-number-preview').textContent = out;
+}
+
+document.getElementById('mail-type').addEventListener('change', function() {
+    document.getElementById('smtp-fields').style.display = this.value === 'smtp' ? 'block' : 'none';
+});
+
+document.getElementById('test-email-btn').addEventListener('click', function() {
+    var btn = this;
+    var result = document.getElementById('test-email-result');
+    btn.disabled = true;
+    btn.textContent = '{{ __("admin.settings.sending") }}';
+    result.textContent = '';
+    result.style.color = '';
+
+    fetch('{{ route('admin.settings.test-email') }}', {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json',
+            'X-CSRF-TOKEN': document.querySelector('meta[name="csrf-token"]').getAttribute('content')
+        },
+        body: JSON.stringify({})
+    })
+    .then(function(r) { return r.json(); })
+    .then(function(data) {
+        btn.disabled = false;
+        btn.textContent = '{{ __("admin.settings.send_test_email") }}';
+        if (data.success) {
+            result.textContent = '✓ ' + data.message;
+            result.style.color = '#3c763d';
+        } else {
+            result.textContent = '✗ ' + data.message;
+            result.style.color = '#a94442';
+        }
+    })
+    .catch(function() {
+        btn.disabled = false;
+        btn.textContent = '{{ __("admin.settings.send_test_email") }}';
+        result.textContent = '✗ {{ __("admin.settings.request_failed") }}';
+        result.style.color = '#a94442';
+    });
+});
+</script>
+@endsection

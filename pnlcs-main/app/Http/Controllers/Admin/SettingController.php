@@ -1,0 +1,851 @@
+<?php
+namespace App\Http\Controllers\Admin;
+
+use App\Http\Controllers\Controller;
+use App\Models\HomepageContent;
+use App\Models\HomepageSection;
+use App\Models\Language;
+use App\Models\Setting;
+use App\Services\ThemeManager;
+use App\Services\ThemeService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Mail;
+use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+
+class SettingController extends Controller
+{
+    public function general()
+    {
+        $settings = Setting::where('group', 'general')->pluck('value', 'setting');
+        // The default language is kept by the languages screen, under its own
+        // group. Read by group, this form found nothing, selected no option, and
+        // the browser posted the first language in the list.
+        $settings['DefaultLanguage'] = Setting::get('DefaultLanguage') ?? Language::where('is_default', true)->value('code');
+
+        $invoiceService = app(\App\Services\InvoiceService::class);
+        $proformaFormat = trim((string) ($settings['ProformaNumberFormat'] ?? 'PRO-{year}/{month}-{num}'));
+        $proformaFormat = $proformaFormat !== '' ? $proformaFormat : 'PRO-{year}/{month}-{num}';
+        $proformaLast = \App\Models\Invoice::where('invoice_num', 'like', 'PRO-%')->orderBy('id', 'desc')->value('invoice_num');
+        $proformaSeq = 1 + (int) \App\Models\Invoice::where('invoice_num', 'like', 'PRO-%')
+            ->selectRaw('MAX(CAST(REGEXP_REPLACE(invoice_num, "^.*[^0-9]", "") AS UNSIGNED)) as seq')
+            ->value('seq');
+
+        return view('admin.settings.general', [
+            'settings' => $settings,
+            'mailTransport' => (string) config('mail.default'),
+            'balanceRegistrars' => \App\Console\Commands\RegistrarBalanceCheckCommand::watchable(),
+            'languages' => Language::active()->orderBy('sort_order')->get(),
+            'countries' => \App\Support\Countries::all(),
+            'paymentMethods' => $this->paymentMethods(),
+            'invoicePreview' => $invoiceService->generateInvoiceNumber(),
+            'invoiceNextSeq' => $invoiceService->nextInvoiceSequence(),
+            'invoiceLast' => \App\Models\Invoice::where('invoice_num', '!=', '')->orderBy('id', 'desc')->value('invoice_num'),
+            'proformaEnabled' => ($settings['ProformaEnabled'] ?? '0') === '1',
+            'proformaFormat' => $proformaFormat,
+            'proformaPreview' => $invoiceService->renderInvoiceNumber($proformaFormat, $proformaSeq),
+            'proformaLast' => $proformaLast,
+            'invoiceTemplateVocabulary' => \App\Services\InvoicePdfService::customTemplateVocabulary(),
+            'invoiceTemplateLanguages' => \App\Services\InvoicePdfService::languageTemplates(),
+        ]);
+    }
+
+    /**
+     * Payment methods the default can be picked from: every usable gateway
+     * plus the offline options offered on the invoice form.
+     *
+     * @return array<int, string>
+     */
+    protected function paymentMethods(): array
+    {
+        $gateways = app(\App\Services\Module\ModuleRegistry::class)->usableGateways();
+
+        if (! in_array('banktransfer', $gateways, true)) {
+            $gateways[] = 'banktransfer';
+        }
+
+        $gateways[] = 'manual';
+
+        return $gateways;
+    }
+
+    /**
+     * The settings this form owns.
+     *
+     * Anything else in the request is ignored. It used to be stored, so a
+     * stray field became a setting of its own, and a field named after a
+     * setting belonging to another screen was overwritten and moved into
+     * "general" - Setting::set() writes the group as well as the value, and
+     * the screen that owns it looks it up by group.
+     */
+    private const GENERAL_KEYS = [
+        'Address', 'CompanyCity', 'CompanyName',
+        'Country', 'DateFormat', 'DefaultLanguage', 'DefaultPaymentMethod', 'Domain', 'CompanyWebsite',
+        'DefaultNameserver1', 'DefaultNameserver2', 'DefaultNameserver3', 'DefaultNameserver4', 'DefaultNameserver5',
+        'Email', 'EmailFromName', 'MailCopyTo',
+        'InvoiceNumberFormat', 'InvoiceNumberYearlyReset', 'InvoiceDueDays', 'InvoiceDaysBeforeDue', 'ConsolidatedBillingDay', 'InvoiceRenewalsSeparately',
+        // The invoice document template: the built-in view or an uploaded one.
+        // The tax page's two switches (#305).
+        'TaxEnabled', 'TaxInclusivePrices',
+        'AutoSuspensionDays', 'AutoSuspendInvoicedOnly', 'AutoTerminationDays', 'AutoTerminationEnabled',
+        'FraudLabsApiKey', 'FraudLabsEnabled',
+        'MaxMindAccountId', 'MaxMindEnabled', 'MaxMindLicenseKey',
+        'TwilioAccountSid', 'TwilioAuthToken', 'TwilioVerifyEnabled', 'TwilioVerifyServiceSid',
+        'ProformaEnabled', 'ProformaNumberFormat', 'HidePaidProformas',
+        'LateFeeAmount', 'LateFeeMinDays', 'LateFeeType',
+        'MailEnabled', 'MailType', 'MaintenanceMode', 'PhoneNumber',
+        'SMTPHost', 'SMTPPassword', 'SMTPPort', 'SMTPSecurity', 'SMTPUsername',
+        'PrivacyUrl', 'SystemEmailAddress', 'TaxID', 'Timezone', 'TOSUrl',
+        // Saved from the languages screen, which posts to this same endpoint.
+        // Its form used to name these settings[OpenAIApiKey] - a shape this
+        // handler never reads - so pressing save wrote nothing and said nothing.
+        'OpenAIApiKey', 'OpenAIModel',
+        'GoogleLoginEnabled', 'GoogleClientId', 'GoogleClientSecret',
+        'GithubLoginEnabled', 'GithubClientId', 'GithubClientSecret',
+        // Google reCAPTCHA, read through App\Services\RecaptchaService: one
+        // switch per guarded form (contact, signed-in ticket form, account
+        // opening, sign-in, password reset) and one pair of keys they share.
+        // An emailed code before a domain's transfer code or lock (off by default).
+        'ConfirmSensitiveActions',
+        // The Turkish statutory forms (distance sales, preliminary information,
+        // KVKK) for a seller outside Turkey selling to Turkish consumers.
+        'TurkishLegalForms',
+        // Record storefront domain searches (admin.domains.searches); on by default.
+        'DomainSearchLog',
+        'RecaptchaEnabled', 'RecaptchaTicketsEnabled', 'RecaptchaSignupEnabled', 'RecaptchaLoginEnabled', 'RecaptchaPasswordEnabled', 'RecaptchaSiteKey', 'RecaptchaSecretKey',
+        'EmailVerificationRequired',
+        // Seller identity beyond the basics: what a contract, an official
+        // invoice and the contact page name. Optional everywhere, required by
+        // law in some places.
+        'CompanyLegalName', 'TaxOffice', 'MersisNo', 'TradeRegistryNo', 'Postcode', 'State', 'AbuseEmail', 'DpoEmail',
+        'AboutText', 'KnowledgeBaseEnabled',
+        // Tag Manager, the operator's own code and the consent bar (App\Support\Tracking).
+        'TrackingGtmId', 'TrackingConsent', 'TrackingPolicyUrl', 'TrackingHeadCode', 'TrackingFooterCode',
+        // What search engines and link previews read (App\Support\Seo).
+        'SeoDescription', 'SeoShareImage', 'SeoTwitter', 'RobotsTxt',
+        // The shop's social media profiles (App\Support\SocialProfiles).
+        'SocialX', 'SocialFacebook', 'SocialInstagram', 'SocialLinkedin', 'SocialYoutube', 'SocialTiktok', 'SocialThreads', 'SocialMedium',
+        // Billing in a second currency, with an official rate source.
+        'BillingCurrency', 'OfficialRateProvider', 'TcmbRateKind', 'PaymentReferencePrefix',
+        // Official rate sources the operator adds (App\Services\OfficialRateProviders),
+        // and the key sent to those that ask for one.
+        'OfficialRateProviders', 'OfficialRateApiKey',
+        // Orders from these addresses are accepted without payment (testing).
+        'AutoApproveOrderEmails',
+        // The registrar float watch.
+        'BalanceWatchRegistrar', 'RegistrarBalanceThreshold', 'RegistrarBalanceCurrency', 'RegistrarBalanceAlertEmail',
+        // Which endings the domain search suggests next to the one searched,
+        // in order, and how many (DomainSearchController).
+        'DomainSuggestionTlds', 'DomainSuggestionCount',
+        // Names under the shop's own domains a hosting order can take, and the
+        // first labels nobody may take (App\Support\FreeSubdomains).
+        'FreeSubdomains', 'DisallowedSubdomainPrefixes',
+        // How many RDAP lookups one domain sync run makes to fill a missing
+        // registration date (0 disables; default 100).
+        'DomainSyncRdapMaxPerRun',
+        // Paying renewal invoices with a card the customer has already stored.
+        // Off by default; read through App\Support\AutoCharge so the screen
+        // and the code cannot disagree about what a blank setting means.
+        'AutoChargeEnabled', 'AutoChargeDaysBefore', 'AutoChargeMaxAttempts', 'AutoChargeRetryDays',
+    ];
+
+    public function updateGeneral(Request $request)
+    {
+        // Two forms post here, so every rule is "sometimes": a field a form
+        // does not carry is not checked. These values used to be stored as
+        // typed - a word in the SMTP port, a negative grace period, a time zone
+        // PHP does not know - and failed later, somewhere else.
+        $request->validate([
+            'Email' => 'sometimes|nullable|email|max:255',
+            'SystemEmailAddress' => 'sometimes|nullable|email|max:255',
+            'MailCopyTo' => ['sometimes', 'nullable', 'string', 'max:255', new \App\Rules\EmailList],
+            'AbuseEmail' => 'sometimes|nullable|email|max:255',
+            'DpoEmail' => 'sometimes|nullable|email|max:255',
+            'Timezone' => 'sometimes|nullable|timezone:all',
+            'MailType' => 'sometimes|nullable|in:php_mail,smtp',
+            'SMTPPort' => 'sometimes|nullable|integer|between:1,65535',
+            'SMTPSecurity' => 'sometimes|nullable|in:tls,ssl,none',
+            'InvoiceDueDays' => 'sometimes|nullable|integer|min:0',
+            'ConsolidatedBillingDay' => 'sometimes|nullable|integer|between:0,28',
+            'AutoSuspensionDays' => 'sometimes|nullable|integer|min:0',
+            'AutoTerminationDays' => 'sometimes|nullable|integer|min:1',
+            'LateFeeType' => 'sometimes|nullable|in:none,flat,percent',
+            'LateFeeAmount' => 'sometimes|nullable|numeric|min:0',
+            'LateFeeMinDays' => 'sometimes|nullable|integer|min:0',
+            'AutoChargeDaysBefore' => 'sometimes|nullable|integer|min:0',
+            'AutoChargeMaxAttempts' => 'sometimes|nullable|integer|min:1',
+            'AutoChargeRetryDays' => 'sometimes|nullable|integer|min:'.\App\Support\AutoCharge::MINIMUM_RETRY_DAYS,
+            'DomainSuggestionCount' => 'sometimes|nullable|integer|between:1,12',
+            'DomainSyncRdapMaxPerRun' => 'sometimes|nullable|integer|min:0|max:10000',
+            'RegistrarBalanceThreshold' => 'sometimes|nullable|numeric|min:0',
+        ]);
+
+        $data = $request->only(self::GENERAL_KEYS);
+
+        // An unticked checkbox is absent from the request, not false - so each
+        // one is preceded in the form by a hidden field of the same name
+        // carrying '0', and the later checkbox overrides it when ticked.
+        //
+        // This used to be eleven "if it is missing, write '0'" blocks here
+        // instead. Two screens post to this endpoint: the general settings form
+        // and the AI section of admin/config/languages/index.blade.php, which
+        // carries an OpenAI key and a model and nothing else. Saving that one
+        // therefore switched off outgoing mail, fraud screening, Google login,
+        // email verification, the knowledge base, two-factor verification,
+        // proforma invoicing and automatic termination, silently. A form now
+        // states its own switches, so a form that does not contain one has no
+        // opinion about it.
+        //
+        // MaintenanceMode gained a hidden field for the opposite reason: it was
+        // never in that list, so unticking it said nothing and the stored '1'
+        // survived every save. It is read by MaintenanceMode middleware, so the
+        // portal could be shut and not reopened.
+
+        // The form never carries the stored mail password back, so an empty
+        // field means the operator did not touch it - not that they want the
+        // mail account to stop working.
+        if (trim((string) ($data['SMTPPassword'] ?? '')) === '') {
+            unset($data['SMTPPassword']);
+        }
+
+        // Same contract as the mail password: a secret field left blank means
+        // "keep what I have", not "delete my key".
+        if (trim((string) ($data['OpenAIApiKey'] ?? '')) === '') {
+            unset($data['OpenAIApiKey']);
+        }
+        if (trim((string) ($data['MaxMindLicenseKey'] ?? '')) === '') {
+            unset($data['MaxMindLicenseKey']);
+        }
+        if (trim((string) ($data['FraudLabsApiKey'] ?? '')) === '') {
+            unset($data['FraudLabsApiKey']);
+        }
+        if (trim((string) ($data['TwilioAuthToken'] ?? '')) === '') {
+            unset($data['TwilioAuthToken']);
+        }
+        if (trim((string) ($data['OfficialRateApiKey'] ?? '')) === '') {
+            unset($data['OfficialRateApiKey']);
+        }
+
+        // The provider list is stored normalised, or not at all: an entry that
+        // does not say how to read its answer must not reach an invoice.
+        if (array_key_exists('OfficialRateProviders', $data)) {
+            $raw = trim((string) $data['OfficialRateProviders']);
+            $providers = [];
+            if ($raw !== '') {
+                [$providers, $errors] = \App\Services\OfficialRateProviders::normalise(json_decode($raw, true));
+                if ($errors !== []) {
+                    throw \Illuminate\Validation\ValidationException::withMessages(['OfficialRateProviders' => $errors]);
+                }
+            }
+            $data['OfficialRateProviders'] = $providers === [] ? '' : json_encode($providers, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        }
+
+        // The official source is TCMB, NBP, nothing, or a provider in the list.
+        if (array_key_exists('OfficialRateProvider', $data) && ! in_array((string) $data['OfficialRateProvider'], ['', 'tcmb', 'nbp'], true)) {
+            $listed = array_key_exists('OfficialRateProviders', $data)
+                ? array_column((array) json_decode((string) $data['OfficialRateProviders'], true), 'key')
+                : array_column(\App\Services\OfficialRateProviders::all(), 'key');
+            if (! in_array((string) $data['OfficialRateProvider'], $listed, true)) {
+                throw \Illuminate\Validation\ValidationException::withMessages(['OfficialRateProvider' => __('admin.settings.official_rate_unknown')]);
+            }
+        }
+        if (trim((string) ($data['GoogleClientSecret'] ?? '')) === '') {
+            unset($data['GoogleClientSecret']);
+        }
+        if (trim((string) ($data['GithubClientSecret'] ?? '')) === '') {
+            unset($data['GithubClientSecret']);
+        }
+        if (trim((string) ($data['RecaptchaSecretKey'] ?? '')) === '') {
+            unset($data['RecaptchaSecretKey']);
+        }
+
+        // The default language is changed the way the languages screen changes
+        // it: the language row is marked as well, and the setting keeps its group.
+        if (array_key_exists('DefaultLanguage', $data)) {
+            $code = (string) $data['DefaultLanguage'];
+            unset($data['DefaultLanguage']);
+            if ($code !== '' && $code !== Setting::get('DefaultLanguage')) {
+                $request->validate(['DefaultLanguage' => [\Illuminate\Validation\Rule::in(Language::eligibleAsDefault()->pluck('code')->all())]]);
+                Language::where('is_default', true)->update(['is_default' => false]);
+                Language::where('code', $code)->update(['is_default' => true, 'is_active' => true]);
+                Setting::set('DefaultLanguage', $code, 'language');
+                \App\Translation\TranslationCacheManager::flush();
+            }
+        }
+
+        // No mail type means the mailer configured in .env; choosing that
+        // option removes a stored choice rather than storing an empty one.
+        if (array_key_exists('MailType', $data) && blank($data['MailType'])) {
+            Setting::where('setting', 'MailType')->delete();
+            unset($data['MailType']);
+        }
+
+        foreach ($data as $key => $value) {
+            Setting::set($key, $value, 'general');
+        }
+
+        return back()->with('success', __('messages.success.settings_updated'));
+    }
+
+    public function testEmail(Request $request)
+    {
+        $settings = Setting::where('group', 'general')->pluck('value', 'setting')->toArray();
+
+        $toAddress = $settings['SystemEmailAddress'] ?? null;
+        if (empty($toAddress)) {
+            $toAddress = $settings['Email'] ?? null;
+        }
+        if (empty($toAddress)) {
+            return response()->json([
+                'success' => false,
+                'message' => __('messages.error.no_recipient_address_configured'),
+            ]);
+        }
+
+        // The same resolver the application boots with. This used to be a
+        // second copy that handled PHP mail when the real one did not, so the
+        // button could succeed down a road no real email ever travelled.
+        $transport = \App\Support\MailTransport::configure();
+
+        $fromAddress = $settings['SystemEmailAddress'] ?? 'noreply@example.com';
+        $fromName = $settings['EmailFromName'] ?? 'PNLCS';
+
+        try {
+            $sent = Mail::raw(__('messages.email.test_body'), function ($message) use ($toAddress, $fromAddress, $fromName) {
+                $message->to($toAddress)
+                         ->subject(__('messages.email.test_subject'))
+                         ->from($fromAddress, $fromName);
+            });
+
+            // A MessageSending listener may cancel the send (mail switched off
+            // on this page, a mail hook); the mailer then returns null. The
+            // button used to report it as sent.
+            if ($sent === null) {
+                return response()->json([
+                    'success' => false,
+                    'message' => \App\Listeners\SuppressMailWhenDisabled::isOn($settings['MailEnabled'] ?? null)
+                        ? __('admin.settings.test_email_cancelled')
+                        : __('admin.settings.test_email_mail_off'),
+                ]);
+            }
+
+            return response()->json([
+                'success' => true,
+                // Which road it went down. "log" means it went into a file and
+                // nobody received it, which is worth saying out loud.
+                'transport' => $transport,
+                'message' => __('messages.email.test_sent', ['address' => $toAddress])
+                    .' ('.__('admin.settings.sending_via', ['transport' => $transport]).')',
+            ]);
+        } catch (\Throwable $e) {
+            return response()->json([
+                'success' => false,
+                'message' => $e->getMessage(),
+            ]);
+        }
+    }
+
+    public function myAccount()
+    {
+        $admin = auth("admin")->user();
+        $languages = Language::active()->orderBy('sort_order')->get();
+
+        return view("admin.settings.my-account", compact("admin", "languages"));
+    }
+
+    public function updateMyAccount(Request $request)
+    {
+        $admin = auth("admin")->user();
+
+        $request->validate([
+            "first_name"   => "required|string|max:100",
+            "last_name"    => "required|string|max:100",
+            "email"        => "required|email|unique:admins,email," . $admin->id,
+            "signature"    => "nullable|string|max:1000",
+            'language' => 'required|string|exists:languages,code',
+            "new_password" => "nullable|min:8|confirmed",
+        ]);
+
+        if (! Language::where('code', $request->language)->where('is_active', true)->exists()) {
+            return back()->withErrors(['language' => __('admin.settings.language_unavailable')])->withInput();
+        }
+
+        $data = $request->only(["first_name", "last_name", "email", "signature", "language"]);
+
+        if ($request->filled("new_password")) {
+            $data["password"] = bcrypt($request->new_password);
+        }
+
+        $admin->update($data);
+        $request->session()->put('locale', $data['language']);
+        cookie()->queue('pnlcs_locale', $data['language'], 43200);
+
+        return back()->with("success", __("admin.messages.account_updated"));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // APPEARANCE / THEME
+    // ═══════════════════════════════════════════════════════
+
+    public function appearance(ThemeManager $themeManager)
+    {
+        $presets     = ThemeService::getPresets();
+        $theme       = ThemeService::getActiveTheme();
+        $logoPath    = Setting::get('custom_logo_path', '');
+        $faviconPath = Setting::get('custom_favicon_path', '');
+
+        // Homepage sections for builder tab
+        $sections = HomepageSection::orderBy('sort_order')->get();
+
+        // White-label settings
+        $whitelabel = [
+            'company_name'  => Setting::get('whitelabel_company_name', ''),
+            'company_url'   => Setting::get('whitelabel_company_url', ''),
+            'support_email' => Setting::get('whitelabel_support_email', ''),
+            'copyright'     => Setting::get('whitelabel_copyright', ''),
+            'remove_branding' => Setting::get('whitelabel_remove_branding', '0'),
+        ];
+
+        // Dark mode
+        $darkModeEnabled = Setting::get('dark_mode_enabled', '0');
+
+        // Installed themes (WordPress-style)
+        $installedThemes = $themeManager->getInstalled();
+
+        return view('admin.settings.appearance', [
+            'presets'           => $presets,
+            'activePreset'      => $theme['preset'],
+            'activeColors'      => $theme['colors'],
+            'logoPath'          => $logoPath,
+            'faviconPath'       => $faviconPath,
+            'sections'          => $sections,
+            'whitelabel'        => $whitelabel,
+            'darkModeEnabled'   => $darkModeEnabled,
+            'tokenGroups'       => ThemeService::getTokenGroups(),
+            'tokenLabels'       => ThemeService::getTokenLabels(),
+            'colorKeys'         => ThemeService::getColorKeys(),
+            'installedThemes'   => $installedThemes,
+        ]);
+    }
+
+    public function updateAppearance(Request $request)
+    {
+        $presetNames = array_keys(ThemeService::getPresets());
+        $presetNames[] = 'custom';
+
+        $request->validate([
+            'preset' => 'required|string|in:' . implode(',', $presetNames),
+        ]);
+
+        $preset = $request->input('preset');
+        $presets = ThemeService::getPresets();
+
+        if ($preset === 'custom') {
+            $allKeys = [];
+            foreach (ThemeService::getTokenGroups() as $keys) {
+                $allKeys = array_merge($allKeys, $keys);
+            }
+            $colorKeys = ThemeService::getColorKeys();
+            $colors = [];
+            $invalid = [];
+            foreach ($allKeys as $key) {
+                $val = $request->input("colors.{$key}");
+                if ($val) {
+                    $val = trim((string) $val);
+                    // Each token becomes one CSS value; anything else is refused
+                    // rather than saved and printed on every page.
+                    if (! ThemeService::isValidTokenValue($key, $val)) {
+                        $invalid["colors.{$key}"] = __('admin.appearance.invalid_token', ['token' => ThemeService::getTokenLabels()[$key] ?? $key]);
+
+                        continue;
+                    }
+                    $colors[$key] = in_array($key, $colorKeys) && preg_match('/^#[0-9a-fA-F]{6}$/', $val) ? strtolower($val) : $val;
+                } else {
+                    $colors[$key] = $presets['starter']['colors'][$key] ?? '';
+                }
+            }
+            if ($invalid) {
+                return back()->withErrors($invalid)->withInput();
+            }
+            Setting::set('active_theme_preset', 'custom', 'appearance');
+            Setting::set('active_theme', json_encode($colors), 'appearance');
+        } else {
+            $colors = $presets[$preset]['colors'];
+            Setting::set('active_theme_preset', $preset, 'appearance');
+            Setting::set('active_theme', json_encode($colors), 'appearance');
+        }
+
+        ThemeService::clearCache();
+
+        return back()->with('success', __('messages.success.appearance_updated_successfully'));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // THEME CRUD (WordPress-style)
+    // ═══════════════════════════════════════════════════════
+
+    public function activateTheme(Request $request, ThemeManager $themeManager)
+    {
+        $request->validate(['slug' => 'required|string|max:50']);
+        $slug = $request->input('slug');
+
+        if ($themeManager->activate($slug)) {
+            return back()->with('success', __('admin.messages.theme_activated', ['name' => $slug]));
+        }
+
+        return back()->with('error', __('messages.error.theme_not_found_or_invalid'));
+    }
+
+    /**
+     * Install a theme from a zip.
+     *
+     * A theme is Blade: its views are prepended to the view path and compiled,
+     * so whatever is in them runs as the web user. Uploading one is therefore
+     * the same privilege as deploying code - not what "manage settings" reads
+     * like in the permission list, which is how a settings role could reach it
+     * (reported privately in October 2026). Only a full administrator may
+     * bring theme files in; the rest of the appearance screen is unchanged.
+     */
+    public function installTheme(Request $request, ThemeManager $themeManager)
+    {
+        if (! auth('admin')->user()?->role?->is_full_admin) {
+            abort(403, 'Installing a theme requires a full administrator account.');
+        }
+
+        $request->validate([
+            'theme_zip' => 'required|file|mimes:zip|max:20480',
+        ]);
+
+        $result = $themeManager->install($request->file('theme_zip'));
+
+        if ($result['success']) {
+            return back()->with('success', __('admin.messages.theme_installed', ['name' => $result['name']]));
+        }
+
+        return back()->with('error', $result['message']);
+    }
+
+    public function deleteTheme(string $slug, ThemeManager $themeManager)
+    {
+        $result = $themeManager->delete($slug);
+
+        if ($result['success']) {
+            return back()->with('success', __('messages.success.theme_deleted'));
+        }
+
+        return back()->with('error', $result['message']);
+    }
+
+
+    public function downloadTheme(string $slug, ThemeManager $themeManager)
+    {
+        $themes = $themeManager->getInstalled();
+        if (!isset($themes[$slug])) {
+            return back()->with('error', __('messages.error.theme_not_found'));
+        }
+
+        $themePath = base_path('themes/' . $slug);
+        $zipName = $slug . '-v' . ($themes[$slug]->version ?? '1.0.0') . '.zip';
+        $tmpZip = storage_path('app/tmp/' . $zipName);
+
+        if (!is_dir(dirname($tmpZip))) {
+            mkdir(dirname($tmpZip), 0755, true);
+        }
+
+        $zip = new \ZipArchive();
+        if ($zip->open($tmpZip, \ZipArchive::CREATE | \ZipArchive::OVERWRITE) !== true) {
+            return back()->with('error', __('messages.error.could_not_create_zip_archive'));
+        }
+
+        $files = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($themePath, \RecursiveDirectoryIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::LEAVES_ONLY
+        );
+
+        foreach ($files as $file) {
+            if (!$file->isDir()) {
+                $filePath = $file->getRealPath();
+                $relativePath = $slug . '/' . substr($filePath, strlen($themePath) + 1);
+                $zip->addFile($filePath, $relativePath);
+            }
+        }
+
+        $zip->close();
+
+        return response()->download($tmpZip, $zipName)->deleteFileAfterSend(true);
+    }
+    // ═══════════════════════════════════════════════════════
+    // LOGO & FAVICON
+    // ═══════════════════════════════════════════════════════
+
+    public function uploadLogo(Request $request)
+    {
+        $request->validate([
+            'logo' => 'required|image|mimes:png,jpg,jpeg,svg,webp|max:2048',
+        ]);
+
+        $file = $request->file('logo');
+        $filename = 'logo_' . time() . '.' . $file->getClientOriginalExtension();
+        $file->move(public_path('branding'), $filename);
+
+        Setting::set('custom_logo_path', '/branding/' . $filename, 'appearance');
+        ThemeService::clearCache();
+
+        return back()->with('success', __('messages.success.logo_uploaded'));
+    }
+
+    public function uploadFavicon(Request $request)
+    {
+        $request->validate([
+            'favicon' => 'required|image|mimes:png,ico,svg|max:512',
+        ]);
+
+        $file = $request->file('favicon');
+        $filename = 'favicon_' . time() . '.' . $file->getClientOriginalExtension();
+        $file->move(public_path('branding'), $filename);
+
+        Setting::set('custom_favicon_path', '/branding/' . $filename, 'appearance');
+        ThemeService::clearCache();
+
+        return back()->with('success', __('messages.success.favicon_uploaded'));
+    }
+
+    public function removeLogo()
+    {
+        $path = Setting::get('custom_logo_path', '');
+        if ($path && file_exists(public_path($path))) {
+            unlink(public_path($path));
+        }
+        Setting::set('custom_logo_path', '', 'appearance');
+        ThemeService::clearCache();
+
+        return back()->with('success', __('messages.success.logo_removed'));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // HOMEPAGE BUILDER
+    // ═══════════════════════════════════════════════════════
+
+    public function removeFavicon()
+    {
+        $path = Setting::get("custom_favicon_path", "");
+        if ($path && file_exists(public_path($path))) {
+            unlink(public_path($path));
+        }
+        Setting::set("custom_favicon_path", "", "appearance");
+        ThemeService::clearCache();
+
+        return back()->with("success", __("admin.messages.favicon_removed"));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // INVOICE TEMPLATE
+    // ═══════════════════════════════════════════════════════
+
+    /**
+     * Store an uploaded language invoice template (a plain HTML document with
+     * {placeholders}) on the private disk. Language and version are read from
+     * the file name "<LANG>_invoice_template_v<VER>.html"; any other name is
+     * rejected. Only HTML/text is accepted: the template is data, never code.
+     */
+    public function uploadInvoiceTemplate(Request $request)
+    {
+        $request->validate([
+            'template' => 'required|file|max:2048|mimes:html,htm,txt',
+        ]);
+
+        $file = $request->file('template');
+        $name = basename((string) $file->getClientOriginalName());
+        $parsed = \App\Services\InvoicePdfService::parseTemplateFilename($name);
+
+        if ($parsed === null) {
+            return redirect()->to(route('admin.settings.general').'#invoicing')
+                ->with('error', __('admin.settings.invoice_template_name_invalid'));
+        }
+
+        $dir = dirname(\App\Services\InvoicePdfService::customTemplatePath());
+        if (! is_dir($dir)) {
+            mkdir($dir, 0755, true);
+        }
+
+        $filename = $parsed['language'].'_invoice_template_v'.$parsed['version'].'.html';
+        file_put_contents($dir.'/'.$filename, (string) file_get_contents($file->getRealPath()));
+
+        return redirect()->to(route('admin.settings.general').'#invoicing')
+            ->with('success', __('admin.settings.invoice_template_uploaded'));
+    }
+
+    public function removeInvoiceTemplate(Request $request)
+    {
+        $file = basename((string) $request->input('file'));
+
+        // Only a language template may be removed by name; never a path.
+        $parsed = \App\Services\InvoicePdfService::parseTemplateFilename($file);
+        if ($parsed === null) {
+            abort(400);
+        }
+
+        $path = dirname(\App\Services\InvoicePdfService::customTemplatePath()).'/'.$file;
+        if (is_file($path)) {
+            unlink($path);
+        }
+
+        return redirect()->to(route('admin.settings.general').'#invoicing')
+            ->with('success', __('admin.settings.invoice_template_removed'));
+    }
+
+    public function downloadInvoiceTemplate(Request $request)
+    {
+        $file = basename((string) $request->input('file'));
+
+        $parsed = \App\Services\InvoicePdfService::parseTemplateFilename($file);
+        if ($parsed === null) {
+            abort(404);
+        }
+
+        $path = dirname(\App\Services\InvoicePdfService::customTemplatePath()).'/'.$file;
+        if (! is_file($path)) {
+            abort(404);
+        }
+
+        return response()->download($path);
+    }
+
+    public function sectionsList()
+    {
+        $sections = HomepageSection::orderBy('sort_order')->get();
+        return response()->json(['sections' => $sections]);
+    }
+
+    public function sectionsReorder(Request $request)
+    {
+        $request->validate([
+            'order' => 'required|array',
+            'order.*' => 'integer|exists:homepage_sections,id',
+        ]);
+
+        foreach ($request->input('order') as $index => $id) {
+            HomepageSection::where('id', $id)->update(['sort_order' => $index + 1]);
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    public function sectionUpdate(Request $request, HomepageSection $section)
+    {
+        $request->validate([
+            'is_enabled' => 'sometimes|boolean',
+            'config' => 'sometimes|nullable|array',
+        ]);
+
+        if ($request->has('is_enabled')) {
+            $section->is_enabled = (bool) $request->input('is_enabled');
+        }
+        if ($request->has('config')) {
+            $section->config = $request->input('config');
+        }
+
+        $section->save();
+
+        return response()->json(['success' => true, 'section' => $section]);
+    }
+
+    public function sectionContent(string $slug)
+    {
+        $section = HomepageSection::where('slug', $slug)->firstOrFail();
+        $content = HomepageContent::where('section_slug', $slug)->get();
+
+        return response()->json([
+            'section' => $section,
+            'content' => $content,
+        ]);
+    }
+
+    public function sectionContentSave(Request $request, string $slug)
+    {
+        $section = HomepageSection::where('slug', $slug)->firstOrFail();
+
+        $request->validate([
+            'content' => 'required|array',
+            'content.*.key' => 'required|string',
+            'content.*.value' => 'nullable|string',
+            'content.*.type' => 'sometimes|string|in:text,html,json',
+        ]);
+
+        foreach ($request->input('content') as $item) {
+            HomepageContent::updateOrCreate(
+                [
+                    'section_slug' => $slug,
+                    'content_key' => $item['key'],
+                ],
+                [
+                    'content_value' => $item['value'] ?? '',
+                    'content_type' => $item['type'] ?? 'text',
+                ]
+            );
+        }
+
+        return response()->json(['success' => true]);
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // WHITE-LABEL
+    // ═══════════════════════════════════════════════════════
+
+    public function whitelabelSave(Request $request)
+    {
+        $request->validate([
+            'company_name'  => 'nullable|string|max:100',
+            'company_url'   => 'nullable|url|max:255',
+            'support_email' => 'nullable|email|max:255',
+            'copyright'     => 'nullable|string|max:200',
+            'remove_branding' => 'sometimes|boolean',
+        ]);
+
+        // Only what was submitted. Reading every field with a default of '' meant
+        // a form carrying one input silently blanked the other four, so the
+        // company name could not be offered anywhere except inside this one
+        // form - and it is the field people look for first.
+        $fields = [
+            'company_name'    => 'whitelabel_company_name',
+            'company_url'     => 'whitelabel_company_url',
+            'support_email'   => 'whitelabel_support_email',
+            'copyright'       => 'whitelabel_copyright',
+        ];
+
+        foreach ($fields as $input => $setting) {
+            if ($request->has($input)) {
+                Setting::set($setting, (string) $request->input($input, ''), 'whitelabel');
+            }
+        }
+
+        // An unticked checkbox sends nothing, so this one is decided by whether
+        // its own form was the one submitted rather than by presence.
+        if ($request->has('whitelabel_full_form')) {
+            Setting::set('whitelabel_remove_branding', $request->input('remove_branding', '0'), 'whitelabel');
+        }
+
+        ThemeService::clearCache();
+
+        // Back to the tab the form lives on, not to whichever one the page opens
+        // with: saving and being returned to a different screen reads as nothing
+        // having happened.
+        return back()->with('success', __('messages.success.whitelabel_saved'))
+            ->with('appearance_tab', $request->input('return_tab', 'whitelabel'));
+    }
+
+    // ═══════════════════════════════════════════════════════
+    // DARK MODE
+    // ═══════════════════════════════════════════════════════
+
+    public function darkModeSave(Request $request)
+    {
+        $request->validate([
+            'dark_mode_enabled' => 'sometimes|boolean',
+        ]);
+
+        Setting::set('dark_mode_enabled', $request->input('dark_mode_enabled', '0'), 'appearance');
+        ThemeService::clearCache();
+
+        return back()->with('success', __('messages.success.darkmode_saved'));
+    }
+}

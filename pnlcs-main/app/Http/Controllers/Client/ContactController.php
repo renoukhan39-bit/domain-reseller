@@ -1,0 +1,95 @@
+<?php
+
+namespace App\Http\Controllers\Client;
+
+use App\Events\TicketOpened;
+use App\Http\Controllers\Concerns\ResolvesClient;
+use App\Http\Controllers\Controller;
+use App\Models\Ticket;
+use App\Models\TicketDepartment;
+use App\Services\RecaptchaService;
+use App\Services\TicketService;
+use App\Services\TicketSpamService;
+use Illuminate\Http\Request;
+use Illuminate\Support\Str;
+use Illuminate\Validation\Rule;
+
+class ContactController extends Controller
+{
+    use ResolvesClient;
+
+    public function show()
+    {
+        $departments = TicketDepartment::where('hidden', false)
+            ->orderBy('sort_order')
+            ->get();
+
+        return view('client.contact', compact('departments'));
+    }
+
+    public function submit(Request $request)
+    {
+        // Honeypot spam protection
+        if ($request->filled('website_url')) {
+            return back()->with('success', __('messages.success.thank_you'));
+        }
+        $validated = $request->validate([
+            'name' => 'required|string|max:100',
+            'email' => 'required|email|max:200',
+            // The page lists departments that are not hidden and then took any
+            // id that existed, and anyone at all can post this form: a queue an
+            // operator had taken out of the customer-facing list still received
+            // tickets, and the sender was told the message was received. The
+            // logged-in ticket form has always asked this.
+            'department_id' => ['required', Rule::exists('ticket_departments', 'id')->where('hidden', false)],
+            'subject' => 'required|string|max:200',
+            'message' => 'required|string|max:5000',
+        ]);
+
+        // The honeypot and the spam screen only catch the crude kind; a bot
+        // that leaves the trap empty and writes plausible text walks past
+        // both. When the operator has switched reCAPTCHA on, an unanswered or
+        // refused challenge is sent back with what was typed, and no ticket
+        // is opened.
+        $recaptcha = app(RecaptchaService::class);
+        if ($recaptcha->enabled('contact')
+            && ! $recaptcha->verify($request->input(RecaptchaService::FIELD), $request->ip())) {
+            return back()
+                ->withErrors([RecaptchaService::FIELD => __('client.contact.recaptcha_failed')])
+                ->withInput();
+        }
+
+        // Anyone can post this form, so it is the obvious way in for the
+        // rubbish the spam screen is configured to keep out.
+        if (app(TicketSpamService::class)->isSpam($validated['email'], $validated['subject'], $validated['message'])) {
+            return back()->with('success', __('messages.success.your_message_has_been_sent_we_will_get_back_to_you'));
+        }
+
+        $clientId = auth()->check() ? $this->currentClient()?->id : null;
+
+        // Through the one creator, which gives the ticket a six-digit reference
+        // and checks it is free. A reference made here out of
+        // strtoupper(Str::random(6)) is not one the mail import can match - it
+        // reads six digits from the subject - and this is the door where that
+        // matters most: whoever writes in gets the reference in their
+        // ticket-opened email, replies to it, and the reply opened a second
+        // ticket instead of joining the first.
+        $ticket = app(TicketService::class)->createTicket([
+            'department_id' => $validated['department_id'],
+            'client_id' => $clientId,
+            'name' => $validated['name'],
+            'email' => $validated['email'],
+            'title' => $validated['subject'],
+            'message' => $validated['message'],
+            'priority' => 'Medium',
+        ]);
+
+        // The same event the client area raises when a customer opens a ticket:
+        // it acknowledges the message to whoever wrote in and alerts the support
+        // address. This door raised nothing, so an enquiry from somebody who is
+        // not a customer yet landed in the panel with nobody told about it.
+        event(new TicketOpened($ticket, false));
+
+        return back()->with('success', __('messages.success.your_message_has_been_sent_we_will_get_back_to_you'));
+    }
+}

@@ -1,0 +1,1269 @@
+<?php
+
+namespace App\Services;
+
+use App\Enums\DomainStatus;
+use App\Enums\InvoiceStatus;
+use App\Enums\OrderStatus;
+use App\Enums\ServiceStatus;
+use App\Events\DomainRegistered;
+use App\Events\DomainTransferStarted;
+use App\Events\OrderPlaced;
+use App\Events\ServiceActivated;
+use App\Http\Controllers\LegalController;
+use App\Jobs\ProvisionOrderedService;
+use App\Models\Client;
+use App\Models\Credit;
+use App\Models\CustomField;
+use App\Models\Domain;
+use App\Models\DomainPricing;
+use App\Models\Invoice;
+use App\Models\Order;
+use App\Models\Product;
+use App\Models\Promotion;
+use App\Models\Server;
+use App\Models\Service;
+use App\Models\ServiceAddon;
+use App\Models\Setting;
+use App\Models\SslOrder;
+use App\Services\Module\ModuleRegistry;
+use Carbon\Carbon;
+use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Mail;
+use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
+
+class OrderService
+{
+    public function __construct(
+        protected InvoiceService $invoiceService,
+        protected InvoiceGenerationService $invoiceGenerationService,
+        protected ProvisioningService $provisioning
+    ) {}
+
+    /**
+     * Process a new order:
+     * 1. Create the Order record
+     * 2. Create Service / Domain records for each item
+     * 3. Generate an invoice
+     * 4. Optionally apply a promotion code
+     *
+     * @param  array  $items  Each item: ['type' => 'service'|'domain', 'product_id' => ..., 'domain' => ..., 'billing_cycle' => ..., 'amount' => ...]
+     * @return Order The created order with invoice attached.
+     */
+    /**
+     * What the customer accepted, captured at the moment they accepted it.
+     *
+     * Only recorded for an order placed through a request that actually
+     * carried the tick-box; an order an administrator raises by hand has
+     * nothing to record, and inventing a consent for it would be worse than
+     * leaving the columns empty.
+     */
+    private function termsAcceptance(): array
+    {
+        $request = request();
+
+        if (! $request || ! $request->boolean('terms')) {
+            return [];
+        }
+
+        return [
+            'terms_accepted_at' => now(),
+            'terms_version' => LegalController::REVISED,
+            'terms_ip' => $request->ip(),
+            // Named rather than linked: the customer is entitled to the text
+            // they agreed to, and these documents get revised.
+            'terms_documents' => array_keys(LegalController::DOCUMENTS),
+        ];
+    }
+
+    public function processOrder(Client $client, array $items, string $paymentMethod, ?string $promoCode = null): Order
+    {
+        $order = DB::transaction(function () use ($client, $items, $paymentMethod, $promoCode) {
+            $orderNum = $this->generateOrderNumber();
+            $totalAmount = array_sum(array_column($items, 'amount')) + array_sum(array_column($items, 'setup_fee'));
+
+            $order = Order::create([
+                'order_num' => $orderNum,
+                'client_id' => $client->id,
+                'date' => now()->toDateString(),
+                'amount' => $totalAmount,
+                'payment_method' => $paymentMethod,
+                'status' => OrderStatus::Pending->value,
+                'ip_address' => request()->ip() ?? '0.0.0.0',
+                'promo_code' => $promoCode,
+            ] + $this->termsAcceptance());
+
+            $invoiceItems = [];
+
+            foreach ($items as $item) {
+                $type = strtolower($item['type'] ?? 'service');
+
+                if ($type === 'domain') {
+                    $domain = $this->createDomainForOrder($order, $client, $item);
+                    $years = max(1, (int) ($item['registration_period'] ?? 1));
+                    $action = strtolower((string) ($item['domain_type'] ?? 'register')) === 'transfer'
+                        ? 'Transfer'
+                        : 'Registration';
+
+                    $invoiceItems[] = [
+                        'type' => 'Domain',
+                        // Points at the domain: paying this line is what renews
+                        // it, and the renewal generator dedupes on it.
+                        'rel_id' => $domain->id,
+                        'description' => "Domain {$action}: ".($item['domain'] ?? '')." — {$years} Year(s)".(! empty($item['id_protection']) ? ' + WHOIS privacy' : ''),
+                        'amount' => (float) ($item['amount'] ?? 0),
+                        'taxed' => true,
+                    ];
+                } else {
+                    $product = Product::find($item['product_id'] ?? null);
+
+                    // A hidden plan is a draft nobody meant to sell and a
+                    // retired one is a plan the operator has stopped selling.
+                    // The cart refuses both; this is the other door, and the
+                    // order endpoint hands it product ids straight from the
+                    // request.
+                    if ($product && ($product->hidden || $product->retired)) {
+                        throw ValidationException::withMessages([
+                            'product_id' => __('client.cart.product_unavailable'),
+                        ]);
+                    }
+
+                    // Guarded at the database, not in PHP: two customers can be
+                    // buying the last one at the same moment.
+                    if ($product && $product->stock_control) {
+                        $taken = Product::whereKey($product->id)
+                            ->where('stock_qty', '>', 0)
+                            ->decrement('stock_qty');
+
+                        if ($taken === 0) {
+                            throw ValidationException::withMessages([
+                                'product_id' => __('client.cart.out_of_stock'),
+                            ]);
+                        }
+                    }
+
+                    $service = $this->createServiceForOrder($order, $client, $item);
+
+                    // The app the customer chose while ordering. Recorded on the
+                    // service because that is what provisioning reads - the cart
+                    // is gone by the time the account is built.
+                    if (! empty($item['app_slug'])) {
+                        $data = is_string($service->module_data)
+                            ? (json_decode($service->module_data, true) ?: [])
+                            : ((array) $service->module_data);
+                        $data['panelica_app_template'] = (string) $item['app_slug'];
+                        $service->update(['module_data' => $data]);
+                    }
+
+                    // SSH keys for a virtual server: the Proxmox module puts
+                    // them on the machine when it builds it.
+                    if (! empty($item['ssh_keys'])) {
+                        $service->update(['module_data' => array_merge((array) $service->module_data, ['pve_sshkeys' => (string) $item['ssh_keys']])]);
+                    }
+
+                    // The answers to the product's own questions, kept against
+                    // the service so staff and the customer can read them.
+                    // An order is the customer's word: staff-only fields are
+                    // never filled from it.
+                    if (! empty($item['custom_fields']) && $service->product_id) {
+                        CustomField::storeValues($service->id,
+                            CustomField::productFields((int) $service->product_id)->where('admin_only', false)->get(),
+                            (array) $item['custom_fields']);
+                    }
+
+                    // Configurable options are already inside the service price;
+                    // recording them is what lets the panel and the server
+                    // module see what was ordered.
+                    if (! empty($item['config_options'])) {
+                        app(ConfigOptionService::class)->attachToService($service, $item['config_options']);
+                    }
+
+                    // Addons are billed separately and renew on their own dates.
+                    if (! empty($item['addons'])) {
+                        $addonService = app(AddonService::class);
+                        foreach ($addonService->attachToService($service, $item['addons'], $order) as $serviceAddon) {
+                            $line = $addonService->lineItem($serviceAddon);
+                            $invoiceItems[] = [
+                                'type' => $line['type'],
+                                'rel_id' => $line['rel_id'],
+                                'description' => $line['description'],
+                                'amount' => $line['amount'],
+                                'taxed' => $line['taxed'],
+                            ];
+                        }
+                    }
+
+                    $invoiceItems[] = [
+                        'type' => 'Hosting',
+                        'rel_id' => $service->id,
+                        'description' => $this->buildServiceDescription($service, $item),
+                        'amount' => (float) ($item['amount'] ?? $service->amount),
+                        // r146-taxflag: ask the product, as everything else
+                        // does. This said true whatever the product carried, so
+                        // one marked not taxable was taxed on the invoice the
+                        // customer pays at sign-up and never again on a
+                        // renewal - the generator, the upgrade charge and the
+                        // addon line have always read the product's own flag.
+                        'taxed' => (bool) ($product->tax ?? true),
+                    ];
+
+                    // The one-time setup fee: a line of its own on the first
+                    // invoice, taxed as the product is. It is not a Hosting
+                    // line, so paying it renews nothing and renewals never
+                    // repeat it.
+                    $setupFee = round((float) ($item['setup_fee'] ?? 0), 2);
+                    if ($setupFee > 0) {
+                        $invoiceItems[] = [
+                            'type' => 'Setup',
+                            'rel_id' => $service->id,
+                            'description' => 'Setup fee: '.($product?->name ?? $service->domain ?? ''),
+                            'amount' => $setupFee,
+                            'taxed' => (bool) ($product->tax ?? true),
+                        ];
+                    }
+                }
+            }
+
+            // Generate invoice for the order
+            $invoice = $this->invoiceService->createInvoice($client, $invoiceItems, [
+                'payment_method' => $paymentMethod,
+                'notes' => "Order #{$orderNum}",
+            ]);
+
+            // Apply promotion if provided
+            if ($promoCode) {
+                $applied = $this->invoiceGenerationService->applyPromotion($invoice, $promoCode, placingOrder: $order);
+                $invoice = $invoice->fresh();
+
+                // A code that was refused is not on the order: it would count
+                // as used for a once-per-customer code, and renewals read the
+                // order's code for recurring promotions.
+                if (! $applied) {
+                    $order->update(['promo_code' => null]);
+                }
+            }
+
+            // Link invoice to order
+            $order->update(['invoice_id' => $invoice->id]);
+
+            return $order->fresh();
+        });
+
+        event(new OrderPlaced($order));
+
+        // Screen the order the customer just placed. This only ever ran from
+        // an API endpoint before, so a banned email or IP ordering through the
+        // shop was never looked at.
+        try {
+            $fraud = app(FraudDetectionService::class)->evaluate($order);
+
+            if (($fraud['score'] ?? 0) >= 60) {
+                Log::warning('Order #'.$order->order_num.' held as fraud', ['reasons' => $fraud['reasons'] ?? []]);
+                $order = $this->markFraud(
+                    $order,
+                    $fraud['module'] ?? 'internal',
+                    'Held by fraud screening (score '.$fraud['score'].'): '.implode('; ', $fraud['reasons'] ?? [])
+                );
+
+                return $order->fresh();
+            }
+        } catch (\Throwable $e) {
+            // Screening must never stop a legitimate customer from ordering.
+            Log::error('Fraud screening failed for order #'.$order->id.': '.$e->getMessage());
+        }
+
+        // Products configured with auto_setup = 'order' are provisioned the
+        // moment the order is placed, without waiting for payment.
+        $this->provisionOnOrderPlacement($order);
+
+        // Invoices that owe nothing (free products, 100% promotions, or fully
+        // covered by account credit) settle immediately, which drives the
+        // normal payment→provisioning chain.
+        $invoice = $order->invoice()->first();
+        if ($invoice && $invoice->amountDue() <= 0.009) {
+            $this->invoiceService->markPaid($invoice, null, 'system');
+        }
+
+        // Test accounts: an order from an address on the AutoApproveOrderEmails
+        // list is settled here without waiting for money. markPaid triggers
+        // the ordinary payment -> acceptance -> provisioning chain, so a test
+        // exercises the real path rather than a side door. With the setting
+        // empty (the default) this block does nothing.
+        if ($invoice && (float) $invoice->total > 0.009 && $this->isAutoApproveClient($client)) {
+            Log::warning('Order #'.$order->order_num.' auto-approved without payment (test account)', [
+                'client_id' => $client->id,
+                'email' => $client->email,
+                'invoice_id' => $invoice->id,
+                'amount' => $invoice->total,
+            ]);
+            $this->invoiceService->markPaid($invoice, null, 'system');
+        }
+
+        return $order->fresh();
+    }
+
+    /**
+     * Test accounts whose orders are accepted without payment.
+     *
+     * AutoApproveOrderEmails holds a comma-separated list of addresses. With
+     * it empty nobody matches; clearing it when the test is over switches the
+     * behaviour off entirely, no code change needed.
+     */
+    private function isAutoApproveClient(Client $client): bool
+    {
+        $raw = trim((string) Setting::get('AutoApproveOrderEmails', ''));
+        if ($raw === '') {
+            return false;
+        }
+
+        $allowed = array_filter(array_map(
+            static fn ($e) => mb_strtolower(trim($e)),
+            explode(',', $raw)
+        ));
+
+        return in_array(mb_strtolower(trim((string) $client->email)), $allowed, true);
+    }
+
+    /**
+     * Tell the operator that a paid service could not be set up.
+     *
+     * The customer paid and nothing was provisioned. That used to reach the
+     * log file only, where nobody was looking, while the customer kept
+     * waiting for the service they had paid for - and with card payment the
+     * money is gone the moment the order is placed, so provisioning is the
+     * only step left that can go wrong.
+     *
+     * Announced through the notification rules first (Telegram, Slack, email,
+     * whatever the operator subscribed), with a plain email to the system
+     * address as the fallback when no rule is listening. Never allowed to
+     * break the order flow: we are already handling a failure.
+     */
+    private function notifyProvisioningFailed(Service $svc, string $reason, bool $paid = true): void
+    {
+        $lines = [
+            $paid
+                ? 'Payment received but the service could not be provisioned. It is waiting in "pending".'
+                : 'The order was placed but the service could not be provisioned. It is waiting in "pending".',
+            '',
+            'Service : #'.$svc->id,
+            'Product : '.($svc->product?->name ?? '-'),
+            'Domain  : '.($svc->domain ?: '-'),
+            'Client  : '.($svc->client_id ?? '-'),
+            'Reason  : '.$reason,
+            'When    : '.now()->format('Y-m-d H:i'),
+        ];
+
+        $subject = 'PROVISIONING FAILED - service #'.$svc->id.' ('.($svc->domain ?: 'no domain').')';
+
+        try {
+            app(NotificationService::class)->dispatch('service.provision_failed', [
+                'event_type' => 'service.provision_failed',
+                'subject' => $subject,
+                'message' => implode("\n", $lines),
+                'service_id' => $svc->id,
+                'client_id' => $svc->client_id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Provisioning failure could not be announced', ['service_id' => $svc->id, 'error' => $e->getMessage()]);
+        }
+
+        try {
+            $adminEmail = Setting::get('Email', null);
+
+            if ($adminEmail) {
+                Mail::raw(implode("\n", $lines), function ($m) use ($adminEmail, $subject) {
+                    $m->to($adminEmail)->subject($subject);
+                });
+            }
+        } catch (\Throwable $e) {
+            Log::error('Provisioning failure email could not be sent', ['service_id' => $svc->id, 'error' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Provision services whose product opts into setup-on-order-placement.
+     * Runs outside the order transaction — module calls hit external APIs.
+     */
+    private function provisionOnOrderPlacement(Order $order): void
+    {
+        $services = Service::where('order_id', $order->id)
+            ->where('status', ServiceStatus::Pending->value)
+            ->with('product')
+            ->get();
+
+        foreach ($services as $svc) {
+            $autoSetup = strtolower((string) ($svc->product?->auto_setup ?? ''));
+            if ($autoSetup === 'order' && $svc->product?->server_type) {
+                $result = $this->provisioning->createAccount($svc);
+                Log::info('Setup-on-order provisioning for service #'.$svc->id, [
+                    'success' => $result['success'] ?? false,
+                ]);
+
+                // Staff hear about it as they do when a paid order fails: this
+                // path only logged, and the service sat in Pending with nobody
+                // told why (#212).
+                if (! ($result['success'] ?? false)) {
+                    $this->notifyProvisioningFailed($svc, (string) ($result['message'] ?? 'unknown'), paid: false);
+                }
+            }
+        }
+    }
+
+    /**
+     * Create one ordered service on its server. createAccount activates it and
+     * fires ServiceActivated on success; on failure it queues a retry and the
+     * service stays pending (no "active but never provisioned" state), and
+     * staff are told.
+     */
+    public function provisionOrderedService(Service $svc): void
+    {
+        $result = $this->provisioning->createAccount($svc);
+        if ($result['success'] ?? false) {
+            Log::info('Auto-provisioned service #'.$svc->id.' on order accept');
+        } else {
+            Log::error('Auto-provision failed for service #'.$svc->id.': '.($result['message'] ?? 'unknown'));
+
+            $this->notifyProvisioningFailed($svc, (string) ($result['message'] ?? 'unknown'));
+        }
+    }
+
+    /**
+     * Accept a pending order and provision its services.
+     *
+     * $manual = true  → admin explicitly accepted: everything is provisioned,
+     *                   including products with auto_setup = 'manual'.
+     * $manual = false → automatic acceptance (payment received / order placed):
+     *                   auto_setup = 'manual' services stay pending and the
+     *                   order remains pending for admin review.
+     *
+     * Services are activated only AFTER their module create succeeds; failures
+     * stay pending and land in the module queue for automatic retry.
+     */
+    public function acceptOrder(Order $order, bool $manual = false): Order
+    {
+        if ($order->status === OrderStatus::Active->value) {
+            return $order;
+        }
+
+        // A held order stays held. Paying for it is not a reason to provision
+        // it; an operator has to look at it first.
+        if (in_array($order->status, [OrderStatus::Fraud->value, OrderStatus::Cancelled->value], true)) {
+            Log::info('Order #'.$order->order_num.' not accepted: status is '.$order->status);
+
+            return $order;
+        }
+
+        $pendingServices = Service::where('order_id', $order->id)
+            ->where('status', ServiceStatus::Pending->value)
+            ->with('product')
+            ->get();
+
+        $awaitingManual = false;
+
+        foreach ($pendingServices as $svc) {
+            $autoSetup = strtolower((string) ($svc->product?->auto_setup ?? 'payment'));
+
+            if (! $manual && $autoSetup === 'manual') {
+                $awaitingManual = true;
+
+                continue;
+            }
+
+            if ($svc->product && $svc->product->server_type) {
+                // Accepted automatically (the invoice was paid): the setup runs
+                // as a job, so the checkout or the payment return answers at
+                // once instead of waiting for every server to be built. Staff
+                // accepting by hand (admin, API) still wait and see the result.
+                if ($manual) {
+                    $this->provisionOrderedService($svc);
+                } else {
+                    ProvisionOrderedService::dispatch($svc->id);
+                }
+            } else {
+                // No server module involved — plain activation. Legitimate for
+                // a product that is not hosted anywhere; for one that is, this
+                // is the whole order quietly doing nothing, so say so.
+                if (in_array((string) $svc->product?->type, ['hosting', 'reseller', 'vps'], true)) {
+                    Log::warning('Service activated with no server module: nothing was created on any server', [
+                        'service_id' => $svc->id,
+                        'product_id' => $svc->product?->id,
+                        'product' => $svc->product?->name,
+                        'product_type' => $svc->product?->type,
+                        'hint' => 'Set the product\'s server module.',
+                    ]);
+                }
+
+                $svc->update([
+                    'status' => ServiceStatus::Active->value,
+                    'registration_date' => $svc->registration_date ?? now()->toDateString(),
+                ]);
+
+                // The same event a module's create raises: the welcome mail,
+                // the ServiceActivated hook and the activity log hang on it,
+                // and a product sold without a server (a licence, a download)
+                // had none of them. A certificate is the exception: it waits
+                // for the customer's CSR and has its own mail for that below.
+                if (strtolower((string) $svc->product?->type) !== 'ssl') {
+                    event(new ServiceActivated($svc));
+                }
+            }
+        }
+
+        // r133-register: a domain is not active because we said so.
+        //
+        // This used to flip every pending domain to active in one update and
+        // tell no registrar, while register() sat implemented in all four
+        // registrar modules. A customer bought a domain, paid for it, and the
+        // panel showed it live while no registry had heard of it.
+        foreach (Domain::where('order_id', $order->id)->where('status', DomainStatus::Pending->value)->get() as $domain) {
+            $this->registerOrderedDomain($order, $domain);
+        }
+
+        // A certificate cannot be issued until the customer supplies a CSR, so
+        // paying for one has to open the order and ask them for it.
+        foreach ($pendingServices as $svc) {
+            if (strtolower((string) ($svc->product?->type ?? '')) !== 'ssl') {
+                continue;
+            }
+
+            $sslOrder = SslOrder::firstOrCreate(
+                ['service_id' => $svc->id],
+                [
+                    'client_id' => $svc->client_id,
+                    'module' => $svc->product?->ssl_module,
+                    'domain' => $svc->domain,
+                    'status' => 'Awaiting Configuration',
+                ]
+            );
+
+            if ($sslOrder->wasRecentlyCreated) {
+                app(SslProvisioningService::class)->sendConfigurationRequiredEmail($sslOrder);
+            }
+        }
+
+        // Addons ordered alongside a service start billing from the service's
+        // own renewal date, which is what the customer was quoted.
+        foreach (ServiceAddon::where('order_id', $order->id)->where('status', 'pending')->get() as $serviceAddon) {
+            $serviceAddon->update([
+                'status' => 'active',
+                'next_due_date' => $serviceAddon->next_due_date
+                    ?? $serviceAddon->service?->next_due_date
+                    ?? BillingCycleHelper::advance(now(), $serviceAddon->billing_cycle ?: 'Monthly')->toDateString(),
+            ]);
+        }
+
+        if ($awaitingManual) {
+            // Keep the order pending so it shows up for admin review.
+            run_hook('PendingOrder', ['order' => $order]);
+            app(NotificationService::class)->dispatch('order.awaiting_acceptance', [
+                'event_type' => 'order.awaiting_acceptance',
+                'subject' => 'Order awaiting manual acceptance',
+                'message' => "Order #{$order->order_num} is paid but contains products that require manual acceptance.",
+                'order_id' => $order->id,
+                'order_num' => $order->order_num,
+            ]);
+        } else {
+            $order->update(['status' => OrderStatus::Active->value]);
+            run_hook('AcceptOrder', ['order' => $order->fresh(), 'manual' => $manual]);
+        }
+
+        return $order->fresh();
+    }
+
+    /**
+     * Cancel an order and terminate all related services.
+     */
+    public function cancelOrder(Order $order): Order
+    {
+        if (in_array($order->status, [OrderStatus::Cancelled->value, OrderStatus::Fraud->value])) {
+            return $order;
+        }
+
+        run_hook('CancelOrder', ['order' => $order]);
+
+        // Accounts that exist on a server are terminated there, below and
+        // outside the transaction, and ProvisioningService writes the status
+        // once the panel has said yes. Flipping them to cancelled here used to
+        // leave the hosting running with nothing left to say it existed.
+        $live = Service::where('order_id', $order->id)
+            ->whereIn('status', [ServiceStatus::Active->value, ServiceStatus::Suspended->value])
+            ->get()
+            ->filter(fn (Service $service) => $this->provisioning->resolveModule($service) !== null);
+
+        $order = DB::transaction(function () use ($order, $live) {
+            $order->update(['status' => OrderStatus::Cancelled->value]);
+
+            // Before the services flip: stock was taken when this order was
+            // placed and a sale that is not happening hands the unit back.
+            $this->restockOrder($order);
+
+            Service::where('order_id', $order->id)
+                ->whereNotIn('status', [ServiceStatus::Terminated->value, ServiceStatus::Cancelled->value])
+                ->whereNotIn('id', $live->pluck('id')->all())
+                ->update([
+                    'status' => ServiceStatus::Cancelled->value,
+                    'termination_date' => now()->toDateString(),
+                ]);
+
+            Domain::where('order_id', $order->id)
+                ->whereNotIn('status', [DomainStatus::Expired->value, DomainStatus::Cancelled->value])
+                ->update(['status' => DomainStatus::Cancelled->value]);
+
+            // Close the linked invoice unless it was paid in full. Anything
+            // short of that - unpaid, overdue, part paid, a transfer awaiting
+            // approval - is an invoice for an order that no longer exists;
+            // cancelling it hands whatever was paid back as balance. Only
+            // unpaid and overdue were closed before, so a customer who had
+            // paid part of a cancelled order kept being chased for the rest.
+            $this->closeOrderInvoice($order);
+
+            return $order->fresh();
+        });
+
+        // A refusal is queued for retry by ProvisioningService; the service
+        // keeps its status until the panel has actually let go of the account.
+        foreach ($live as $service) {
+            $result = $this->provisioning->terminateAccount($service);
+
+            // The panel has let go: the record reads as cancelled, the way
+            // every other service on a cancelled order does.
+            if ($result['success'] ?? false) {
+                $service->fresh()->update([
+                    'status' => ServiceStatus::Cancelled->value,
+                    'termination_date' => now()->toDateString(),
+                ]);
+            }
+        }
+
+        return $order->fresh();
+    }
+
+    /**
+     * Cancel the order's invoice unless it has been paid in full. A paid
+     * invoice is refunded, not cancelled; cancelInvoice() itself ignores one
+     * already cancelled.
+     */
+    private function closeOrderInvoice(Order $order): void
+    {
+        $invoice = $order->invoice_id ? $order->invoice : null;
+
+        if ($invoice && strtolower((string) $invoice->status) !== InvoiceStatus::Paid->value) {
+            $this->invoiceService->cancelInvoice($invoice);
+        }
+    }
+
+    /** Written onto every service an order's fraud verdict suspends. */
+    private const FRAUD_SUSPENSION_REASON = 'Order marked as fraud';
+
+    /**
+     * Mark an order as fraud and suspend all related services.
+     */
+    public function markFraud(Order $order, string $module = 'manual', ?string $output = null): Order
+    {
+        // Once. Running the verdict again used to re-suspend and would now
+        // hand stock back a second time.
+        if ($order->status === OrderStatus::Fraud->value) {
+            return $order;
+        }
+
+        run_hook('FraudOrder', ['order' => $order]);
+
+        $services = DB::transaction(function () use ($order, $module, $output) {
+            $order->update([
+                'status' => OrderStatus::Fraud->value,
+                // The screen that shows this used to claim every held order was
+                // "manually marked by admin", including the ones the automatic
+                // screening held.
+                'fraud_module' => $module,
+                'fraud_output' => $output ?? 'Manually marked as fraud by admin on '.now()->toDateTimeString(),
+            ]);
+
+            // A held order is not a sale; the unit goes back on the shelf. A
+            // junk-order run used to empty a limited product for good without
+            // paying for anything.
+            $this->restockOrder($order);
+
+            $services = Service::where('order_id', $order->id)
+                ->where('status', ServiceStatus::Active->value)
+                ->get();
+
+            foreach ($services as $service) {
+                // A service on a server is suspended below, on the server, and
+                // ProvisioningService writes the status once that succeeds.
+                if ($service->server_id) {
+                    continue;
+                }
+
+                $service->update([
+                    'status' => ServiceStatus::Suspended->value,
+                    'suspension_date' => now()->toDateString(),
+                    'suspension_reason' => self::FRAUD_SUSPENSION_REASON,
+                ]);
+            }
+
+            $this->closeOrderInvoice($order);
+
+            return $services;
+        });
+
+        // The whole point of calling an order fraudulent is that the account
+        // stops serving. This used to be a query-builder update: no server was
+        // ever told, so the site the fraudster ordered carried on running.
+        // Kept outside the transaction so an unreachable panel cannot hold it
+        // open; a refusal is queued for retry by ProvisioningService.
+        foreach ($services as $service) {
+            if ($service->server_id) {
+                $this->provisioning->suspendAccount($service, self::FRAUD_SUSPENSION_REASON);
+            }
+        }
+
+        return $order->fresh();
+    }
+
+    /**
+     * Soft-delete (cancel) the order and all related items.
+     */
+    /**
+     * Put a cancelled or fraud-held order back to pending - the false-alarm
+     * path. The unit the verdict handed back is taken again, so clearing an
+     * alarm does not mint stock; an emptied shelf does not block the reopen,
+     * it just cannot go below zero.
+     */
+    public function reopenOrder(Order $order): Order
+    {
+        if (! in_array($order->status, [OrderStatus::Cancelled->value, OrderStatus::Fraud->value], true)) {
+            return $order;
+        }
+
+        $wasFraud = $order->status === OrderStatus::Fraud->value;
+
+        $suspended = DB::transaction(function () use ($order, $wasFraud) {
+            foreach ($this->stockControlledProductIds($order) as $productId) {
+                Product::whereKey($productId)->where('stock_qty', '>', 0)->decrement('stock_qty');
+            }
+
+            $order->update(['status' => OrderStatus::Pending->value]);
+
+            // The verdict cancelled the order's invoice (closeOrderInvoice), and
+            // a pending order with a cancelled invoice can be neither paid nor
+            // accepted: releasing a false alarm used to change the order's
+            // status and nothing else. What was paid on it went back as credit
+            // when it was cancelled, so it is simply owed again, with a due
+            // date the customer can still meet.
+            $invoice = $order->invoice_id ? $order->invoice : null;
+            if ($invoice && strtolower((string) $invoice->status) === InvoiceStatus::Cancelled->value) {
+                $this->reopenCancelledInvoice($invoice);
+            }
+
+            // The services the verdict suspended, and only those: one suspended
+            // since for another reason stays as it is.
+            return $wasFraud
+                ? Service::where('order_id', $order->id)->where('status', ServiceStatus::Suspended->value)
+                    ->where('suspension_reason', self::FRAUD_SUSPENSION_REASON)->get()
+                : collect();
+        });
+
+        // As markFraud suspended them: on the server through the provisioning
+        // service (a refusal is queued for retry), locally otherwise.
+        foreach ($suspended as $service) {
+            if ($service->server_id) {
+                $this->provisioning->unsuspendAccount($service);
+
+                continue;
+            }
+
+            $service->update(['status' => ServiceStatus::Active->value, 'suspension_date' => null, 'suspension_reason' => null]);
+        }
+
+        return $order->fresh();
+    }
+
+    /**
+     * Make the order's cancelled invoice payable again.
+     *
+     * Cancelling it handed whatever had been paid on it back as credit, while
+     * the payments stayed linked to the invoice. Reopening it as it was would
+     * count that money twice - once as the customer's credit, once against the
+     * invoice - and every further verdict and release would hand it out again.
+     * So the credit given back is taken back first, and the invoice reopens
+     * part paid. If the customer has spent it since, the invoice stays
+     * cancelled: staff settle that by hand rather than the system inventing
+     * money.
+     */
+    private function reopenCancelledInvoice(Invoice $invoice): void
+    {
+        $paid = app(PaymentService::class)->amountPaid($invoice);
+        // Locked, as every other change to a balance is (ClientCreditController,
+        // InvoiceService): spending the credit at the same moment cannot slip
+        // between the check and the decrement. reopenOrder() holds the transaction.
+        $client = $invoice->client_id ? Client::whereKey($invoice->client_id)->lockForUpdate()->first() : null;
+
+        if ($paid > 0.009) {
+            if (! $client || (float) $client->credit + 0.009 < $paid) {
+                Log::warning('Reopening order: invoice #'.$invoice->invoice_num.' left cancelled; the '.$paid.' paid on it was returned as credit and has been spent.');
+
+                return;
+            }
+
+            $client->decrement('credit', $paid);
+            Credit::create([
+                'client_id' => $client->id,
+                'admin_id' => null,
+                'date' => now()->toDateString(),
+                'description' => "Invoice #{$invoice->invoice_num} reopened — returned payment taken back",
+                'amount' => -$paid,
+            ]);
+        }
+
+        $due = now()->addDays((int) Setting::get('InvoiceDueDays', 14))->startOfDay();
+        $invoice->update([
+            'status' => $paid > 0.009 ? InvoiceStatus::PartiallyPaid->value : InvoiceStatus::Unpaid->value,
+            'due_date' => $invoice->due_date && $invoice->due_date->gt($due) ? $invoice->due_date : $due->toDateString(),
+        ]);
+    }
+
+    /** Hand back one unit per stock-controlled service on this order. */
+    private function restockOrder(Order $order): void
+    {
+        foreach ($this->stockControlledProductIds($order) as $productId) {
+            Product::whereKey($productId)->increment('stock_qty');
+        }
+    }
+
+    /**
+     * One entry per service on the order whose product counts stock. Services
+     * already cancelled or terminated gave their unit back when they were, so
+     * they do not count again.
+     *
+     * @return array<int, int>
+     */
+    private function stockControlledProductIds(Order $order): array
+    {
+        return Service::where('order_id', $order->id)
+            ->whereNotIn('status', [ServiceStatus::Terminated->value, ServiceStatus::Cancelled->value])
+            ->whereHas('product', fn ($q) => $q->where('stock_control', true))
+            ->pluck('product_id')
+            ->map(fn ($id) => (int) $id)
+            ->all();
+    }
+
+    public function deleteOrder(Order $order): void
+    {
+        DB::transaction(function () use ($order) {
+            $this->cancelOrder($order);
+            $order->delete();
+        });
+    }
+
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
+    private function createServiceForOrder(Order $order, Client $client, array $item): Service
+    {
+        $billingCycle = $item['billing_cycle'] ?? 'Monthly';
+
+        return Service::create([
+            'client_id' => $client->id,
+            'order_id' => $order->id,
+            'product_id' => $item['product_id'] ?? null,
+            'server_id' => $item['server_id'] ?? null,
+            // The same reading the shop gives it: the cart normalises what
+            // was typed, orders are built here, and the order endpoint hands
+            // this method the request verbatim - so a pasted URL used to be
+            // written onto the service and passed to the panel as the name.
+            'domain' => Domain::normalise($item['domain'] ?? null) ?: null,
+            'payment_method' => $order->payment_method,
+            'qty' => $item['qty'] ?? 1,
+            'first_payment_amount' => $item['first_payment_amount'] ?? (($item['amount'] ?? 0) + ($item['setup_fee'] ?? 0)),
+            'amount' => $item['amount'] ?? 0,
+            'billing_cycle' => $billingCycle,
+            'next_due_date' => $this->calculateNextDueDate($billingCycle),
+            'registration_date' => now()->toDateString(),
+            'status' => ServiceStatus::Pending->value,
+            'username' => $item['username'] ?? null,
+            'notes' => $item['notes'] ?? null,
+        ]);
+    }
+
+    /**
+     * Which nameservers a newly registered domain gets, first match wins:
+     *
+     *  1. those already on the domain record;
+     *  2. a hosting service ordered with it (same order, same domain name):
+     *     its server's nameservers, or - when the server is chosen only when
+     *     the service is set up, which runs after this - the nameservers that
+     *     every active server of the product's group (or, without a group, of
+     *     its server type) has in common;
+     *  3. the default nameservers of General Settings (DefaultNameserver1-5),
+     *     which until now only the HRD module read;
+     *  4. none: the registrar module uses its own settings, as before.
+     *
+     * @return list<string>
+     */
+    private function registrationNameservers(?Order $order, Domain $domain): array
+    {
+        $list = fn (iterable $names) => array_values(array_unique(array_filter(array_map(
+            fn ($n) => strtolower(trim((string) $n)), is_array($names) ? $names : iterator_to_array($names)
+        ))));
+
+        $own = $list($domain->nameserverList());
+        if (count($own) >= 2) {
+            return $own;
+        }
+
+        $ofServer = fn ($server) => $list(DomainHosting::serverNameservers($server));
+
+        $service = $order
+            ? Service::with('product.serverGroup.servers', 'server')
+                ->where('order_id', $order->id)
+                ->whereRaw('LOWER(domain) = ?', [strtolower((string) $domain->domain)])
+                ->get()
+                ->first(fn ($s) => trim((string) $s->product?->server_type) !== '')
+            : null;
+
+        if ($service) {
+            $fromServer = $ofServer($service->server);
+            if (count($fromServer) >= 2) {
+                return $fromServer;
+            }
+
+            $candidates = $service->product->serverGroup
+                ? $service->product->serverGroup->servers->where('active', true)
+                : Server::where('active', true)->whereRaw('LOWER(type) = ?', [strtolower((string) $service->product->server_type)])->get();
+            // Only when they all agree: which of them will be picked is not known yet.
+            $sets = $candidates->map($ofServer)->values();
+            if ($sets->isNotEmpty() && $sets->every(fn ($s) => count($s) >= 2) && $sets->map(fn ($s) => implode(' ', $s))->unique()->count() === 1) {
+                return $sets->first();
+            }
+        }
+
+        $defaults = $list(DomainHosting::defaultNameservers());
+
+        return count($defaults) >= 2 ? $defaults : [];
+    }
+
+    /**
+     * Put a paid domain in front of its registrar.
+     *
+     * The module writes the registration date, expiry and status itself when
+     * it succeeds. A refusal leaves the domain pending and raises it, because
+     * only a person can sort out a registry that said no.
+     *
+     * A transfer cannot be started from here - it needs an EPP code, which the
+     * order does not collect - so those are recorded as before and flagged for
+     * somebody to start by hand.
+     *
+     * Returns why the registration did not happen, or null when it did (or
+     * when there was nothing to send).
+     */
+    private function registerOrderedDomain(?Order $order, Domain $domain): ?string
+    {
+        $registrar = app(ModuleRegistry::class)
+            ->getRegistrarModule((string) $domain->registrar);
+
+        $isTransfer = strtolower((string) $domain->type) === 'transfer';
+
+        if ($isTransfer) {
+            $this->transferOrderedDomain($domain, $registrar);
+
+            return null;
+        }
+
+        if (! $registrar) {
+            // A domain with no registrar at all was bought elsewhere and is
+            // only billed here: active, as before. One that names a registrar
+            // this installation cannot load - not registered, switched off,
+            // misspelt - is a paid domain nobody will ever register. It was
+            // marked active all the same and nobody was told; a customer's
+            // paid domain (registrar domainnameapi, whose module was never
+            // registered) stayed unregistered that way. It waits now, and the
+            // operator hears about it. Reported by ENA Hosting.
+            $named = trim((string) $domain->registrar);
+
+            if ($named === '') {
+                $domain->update(['status' => DomainStatus::Active->value]);
+
+                return null;
+            }
+
+            $domain->update(['status' => DomainStatus::Pending->value]);
+
+            Log::error("Domain registration skipped for {$domain->domain}: registrar module '{$named}' is not available, so nothing was sent to the registry.");
+
+            try {
+                app(NotificationService::class)->dispatch('domain.registration_failed', [
+                    'event_type' => 'domain.registration_failed',
+                    'subject' => 'Domain registration skipped - registrar module not available',
+                    'message' => "{$domain->domain} was ordered and paid for, but the registrar module '{$named}' is not available in this installation, so no registration request was sent. "
+                        .'The domain is not registered and needs attention.',
+                    'domain_id' => $domain->id,
+                ]);
+            } catch (\Throwable $e) {
+                Log::error('Domain registration alert failed: '.$e->getMessage());
+            }
+
+            $reason = "registrar module '{$named}' is not available";
+            $this->registrationFailedHook($domain, $reason);
+
+            return $reason;
+        }
+
+        // A retry from the admin screen may be for a domain added without an
+        // order; its own account is the registrant then.
+        $client = $order?->client ?? $domain->client;
+
+        $params = array_filter([
+            'firstname' => $client?->first_name,
+            'lastname' => $client?->last_name,
+            'email' => $client?->email,
+            'phone' => $client?->phone_number,
+            'address' => $client?->address1,
+            'city' => $client?->city,
+            'state' => $client?->state,
+            'postcode' => $client?->postcode,
+            'country' => $client?->country,
+            'privacy' => (bool) $domain->id_protection,
+        ]);
+
+        // The nameservers the domain should point at. Nothing was passed
+        // before, so every module fell back to its own settings - for
+        // DomainNameAPI the registrar's own parking servers - and a domain
+        // bought with hosting did not reach the hosting server.
+        $nameservers = $this->registrationNameservers($order, $domain);
+        if ($nameservers !== []) {
+            foreach ($nameservers as $i => $ns) {
+                $params['ns'.($i + 1)] = $ns;
+            }
+            $params['nameservers'] = $nameservers;
+            // Recorded on the domain, so its page shows what it was registered with.
+            if ($domain->nameserverList() === []) {
+                $domain->forceFill(['nameservers' => json_encode($nameservers)])->save();
+            }
+        }
+
+        try {
+            $result = $registrar->register($domain, max(1, (int) $domain->registration_period), $params);
+        } catch (\Throwable $e) {
+            Log::error("Domain registration threw for {$domain->domain}: ".$e->getMessage());
+            $result = ['success' => false, 'message' => $e->getMessage()];
+        }
+
+        if ($result['success'] ?? false) {
+            $domain->refresh();
+
+            // The module writes the status it knows. An asynchronous registrar
+            // (e.g. OVH) returns "pending" because the order is placed but the
+            // domain is not registered yet; a synchronous one returns nothing
+            // and keeps the old default of "active".
+            $status = $result['status'] ?? DomainStatus::Active->value;
+            if (strtolower((string) $domain->status) !== strtolower($status)) {
+                $domain->update(['status' => $status]);
+            }
+            event(new DomainRegistered($domain));
+
+            return null;
+        }
+
+        $reason = (string) ($result['message'] ?? 'no reason given');
+
+        Log::error("Domain registration failed for {$domain->domain}: {$reason}");
+        $this->registrationFailedHook($domain, $reason);
+
+        try {
+            app(NotificationService::class)->dispatch('domain.registration_failed', [
+                'event_type' => 'domain.registration_failed',
+                'subject' => 'Domain registration failed',
+                'message' => "The registrar would not register {$domain->domain}: {$reason}. "
+                    .'The customer has paid for it; the domain is not registered and needs attention.',
+                'domain_id' => $domain->id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Domain registration alert failed: '.$e->getMessage());
+        }
+
+        return $reason;
+    }
+
+    /**
+     * Send a paid domain to its registrar again, from the admin domain page.
+     *
+     * A refused registration left the domain pending with no way to try again
+     * once the cause was put right (a missing phone number, a registrar
+     * balance, a module switched off): the payment was taken and only the
+     * database could move it on.
+     *
+     * Returns why it was not registered, or null when it now is.
+     */
+    public function retryDomainRegistration(Domain $domain): ?string
+    {
+        $order = $domain->order_id ? Order::find($domain->order_id) : null;
+
+        return $this->registerOrderedDomain($order, $domain);
+    }
+
+    /**
+     * AfterRegistrarRegistrationFailed, as WHMCS names it: an addon can raise
+     * the alarm in its own way (a staff notification, a ticket).
+     */
+    private function registrationFailedHook(Domain $domain, string $reason): void
+    {
+        run_hook('AfterRegistrarRegistrationFailed', [
+            'domain' => $domain,
+            'domainid' => $domain->id,
+            'error' => $reason,
+        ]);
+    }
+
+    /**
+     * Start a transfer the customer ordered, using the EPP/auth code they
+     * supplied. Without a registrar or a code there is nothing to hand to the
+     * registry, so the domain is left for a person to start by hand.
+     */
+    private function transferOrderedDomain(Domain $domain, $registrar): void
+    {
+        if (! $registrar) {
+            Log::info("Domain #{$domain->id} ({$domain->domain}) is a transfer but no registrar is configured: it has to be started by hand.");
+            $domain->update(['status' => DomainStatus::Active->value]);
+
+            return;
+        }
+
+        $eppCode = trim((string) ($domain->epp_code ?? ''));
+
+        if ($eppCode === '') {
+            Log::info("Domain #{$domain->id} ({$domain->domain}) is a transfer without an EPP code: it has to be started by hand.");
+            $domain->update(['status' => DomainStatus::Active->value]);
+
+            return;
+        }
+
+        try {
+            $result = $registrar->transfer($domain, $eppCode);
+        } catch (\Throwable $e) {
+            Log::error("Domain transfer threw for {$domain->domain}: ".$e->getMessage());
+            $result = ['success' => false, 'message' => $e->getMessage()];
+        }
+
+        if ($result['success'] ?? false) {
+            $domain->update([
+                'status' => $result['status'] ?? DomainStatus::Active->value,
+                // The code has been consumed; do not keep it lying around.
+                'epp_code' => null,
+            ]);
+            // Started, not finished: the losing registrar still has days to
+            // release it.
+            event(new DomainTransferStarted($domain));
+
+            return;
+        }
+
+        $reason = (string) ($result['message'] ?? 'no reason given');
+
+        Log::error("Domain transfer failed for {$domain->domain}: {$reason}");
+
+        try {
+            app(NotificationService::class)->dispatch('domain.transfer_failed', [
+                'event_type' => 'domain.transfer_failed',
+                'subject' => 'Domain transfer failed',
+                'message' => "The registrar would not transfer {$domain->domain}: {$reason}. "
+                    .'The customer has paid for it; the transfer needs attention.',
+                'domain_id' => $domain->id,
+            ]);
+        } catch (\Throwable $e) {
+            Log::error('Domain transfer alert failed: '.$e->getMessage());
+        }
+    }
+
+    /**
+     * The registrar the operator set up for this domain's extension.
+     *
+     * Read from the TLD pricing table, where the field lives.
+     */
+    private function registrarForTld(string $domain): ?string
+    {
+        $domain = Domain::normalise($domain);
+
+        if ($domain === '' || ! str_contains($domain, '.')) {
+            return null;
+        }
+
+        $tld = '.'.substr($domain, strpos($domain, '.') + 1);
+
+        $registrar = DomainPricing::whereRaw('LOWER(extension) = ?', [strtolower($tld)])
+            ->value('auto_registrar');
+
+        if (filled($registrar)) {
+            return (string) $registrar;
+        }
+
+        // A TLD added without a registrar would otherwise fall through to the
+        // Manual module, which marks the domain active without registering it.
+        $default = (string) Setting::get('default_registrar', '');
+
+        return $default !== '' && strtolower($default) !== 'manual' ? $default : null;
+    }
+
+    private function createDomainForOrder(Order $order, Client $client, array $item): Domain
+    {
+        return Domain::create([
+            'client_id' => $client->id,
+            'order_id' => $order->id,
+            'domain' => Domain::normalise($item['domain'] ?? ''),
+            'epp_code' => $item['epp_code'] ?? null,
+            'type' => $item['domain_type'] ?? 'register',
+            // r148-autoregistrar: the TLD pricing screen has a registrar field
+            // for exactly this, and nothing read it - every domain ordered
+            // through the shop was created as Manual, so a TLD set up to
+            // register through eNom was marked active without any registry
+            // hearing about it. An order that names its own registrar still
+            // wins; a TLD with none set is still done by hand.
+            'registrar' => $item['registrar'] ?? $this->registrarForTld($item['domain'] ?? '') ?? 'Manual',
+            'registration_date' => now()->toDateString(),
+            'expiry_date' => now()->addYears(max(1, (int) ($item['registration_period'] ?? 1)))->toDateString(),
+            'next_due_date' => now()->addYears(max(1, (int) ($item['registration_period'] ?? 1)))->toDateString(),
+            'status' => DomainStatus::Pending->value,
+            'registration_period' => (int) ($item['registration_period'] ?? 1),
+            // What the renewal costs, which is not what was paid to register.
+            'recurring_amount' => $item['renewal_amount'] ?? $item['amount'] ?? 0,
+            'first_payment_amount' => $item['amount'] ?? 0,
+            'payment_method' => $order->payment_method,
+            // Chosen in the cart; sent to the registrar at registration.
+            'id_protection' => ! empty($item['id_protection']),
+        ]);
+    }
+
+    private function calculateNextDueDate(string $billingCycle): string
+    {
+        return BillingCycleHelper::advance(now(), $billingCycle)->toDateString();
+    }
+
+    private function buildServiceDescription(Service $service, array $item): string
+    {
+        $product = $service->product;
+        $name = $product?->name ?? ($item['description'] ?? 'Hosting Service');
+        $cycle = $service->billing_cycle ?? 'Monthly';
+        $domain = $service->domain ? " — {$service->domain}" : '';
+
+        $configured = ! empty($item['config_options'])
+            ? app(ConfigOptionService::class)->summarise($item['config_options'])
+            : '';
+
+        // The parenthesis shows the paid billing period, not the raw cycle
+        // name, matching the renewal invoices (2026/08/15 - 2026/09/15).
+        $dueDate = $service->next_due_date
+            ? Carbon::parse($service->next_due_date)
+            : Carbon::now()->addMonths(Service::monthsInCycle($cycle));
+        $periodStart = $dueDate->copy()->subMonths(Service::monthsInCycle($cycle));
+        $period = $periodStart->format('Y/m/d').' - '.$dueDate->format('Y/m/d');
+
+        return "{$name} ({$period}){$domain}".($configured ? " ({$configured})" : '');
+    }
+
+    private function generateOrderNumber(): string
+    {
+        return strtoupper(Str::random(8));
+    }
+}

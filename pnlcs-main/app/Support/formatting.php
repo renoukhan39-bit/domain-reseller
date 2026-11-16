@@ -1,0 +1,768 @@
+<?php
+
+use App\Models\Currency;
+use App\Models\Setting;
+use App\Support\InlineMarkup;
+use Illuminate\Support\HtmlString;
+
+if (! function_exists('money_fmt')) {
+    /**
+     * An amount in the currency the shop sells in.
+     *
+     * Emails printed a dollar sign whatever the operator had configured, so a
+     * customer buying in euros was billed in euros and told about dollars.
+     */
+    function money_fmt(float|int|string|null $amount): string
+    {
+        // Wrapped in an array: the container cannot resolve a bare null.
+        if (! app()->bound('pnlcs.currency')) {
+            try {
+                app()->instance('pnlcs.currency', ['currency' => Currency::getDefault()]);
+            } catch (Throwable) {
+                app()->instance('pnlcs.currency', ['currency' => null]);
+            }
+        }
+
+        $currency = app('pnlcs.currency')['currency'] ?? null;
+
+        return $currency
+            ? $currency->prefix.$currency->number($amount).$currency->suffix
+            : '$'.number_format((float) $amount, 2);
+    }
+}
+if (! function_exists('initial')) {
+    /**
+     * The first character of a name, for an avatar or a mark.
+     *
+     * Byte functions cut a UTF-8 name in the middle: "张伟" or "Şule" gave a
+     * broken byte, and strtoupper() is ASCII-only. One user-perceived
+     * character is taken (a whole emoji when intl is there, a code point
+     * otherwise) and upper-cased for the script it is in. Empty input gives
+     * the fallback.
+     */
+    function initial(?string $text, string $fallback = ''): string
+    {
+        $text = trim((string) $text);
+        if ($text === '') {
+            return $fallback;
+        }
+        $first = function_exists('grapheme_substr') ? grapheme_substr($text, 0, 1) : false;
+        if ($first === false || $first === '') {
+            $first = mb_substr($text, 0, 1);
+        }
+
+        return mb_strtoupper($first);
+    }
+}
+if (! function_exists('payment_method_label')) {
+    /**
+     * A payment method key as the customer-facing label.
+     *
+     * The panel stores keys like 'banktransfer' or 'stripe' and a couple of
+     * views printed ucfirst($method), which showed "Banktransfer" whatever
+     * language the customer was in. The label comes from the translations now.
+     */
+    function payment_method_label(string $method): string
+    {
+        if ($method === '' || $method === 'none') {
+            return $method;
+        }
+
+        $key = 'messages.payment_method.'.$method;
+
+        if (Lang::has($key)) {
+            return Lang::get($key);
+        }
+
+        return ucwords(str_replace('_', ' ', $method));
+    }
+}
+if (! function_exists('status_label')) {
+    /**
+     * A stored status as the label the reader sees, in their language.
+     *
+     * Services, domains, orders, tickets, quotes, certificates and to-dos keep
+     * their status as an English word ('terminated', 'Customer-Reply',
+     * 'Awaiting Configuration'), and the admin screens printed it with
+     * ucfirst(): a Turkish admin read "Terminated" next to every cancelled
+     * VPS. The label comes from common.status.*; the stored word is matched
+     * in any case and with spaces, hyphens or underscores, and a status with
+     * no translation yet is shown as before.
+     */
+    function status_label(\BackedEnum|string|null $status): string
+    {
+        $status = $status instanceof \BackedEnum ? (string) $status->value : (string) $status;
+        $word = strtolower(trim($status));
+
+        if ($word === '') {
+            return '';
+        }
+
+        foreach (array_unique([$word, str_replace(' ', '_', $word), str_replace([' ', '_'], '-', $word), str_replace([' ', '-'], '_', $word)]) as $candidate) {
+            if (Lang::has('common.status.'.$candidate)) {
+                return Lang::get('common.status.'.$candidate);
+            }
+        }
+
+        return ucfirst(str_replace(['_', '-'], ' ', $status));
+    }
+}
+if (! function_exists('cycle_label')) {
+    /**
+     * A billing cycle in the reader's language: "Monthly", "3 months".
+     *
+     * Services store the cycle as an English word, and the screens printed it
+     * with ucfirst() - so a Turkish customer read "Monthly" beside their
+     * invoice. A term of months has no English name to print at all: it is
+     * stored as its length ("7months") and was shown exactly like that. The
+     * named cycles come from common.billing.*, a term of months from
+     * common.billing.months, which is a plural.
+     */
+    function cycle_label(?string $cycle): string
+    {
+        $word = strtolower(trim(str_replace([' ', '-', '_'], '', (string) $cycle)));
+
+        if ($word === '') {
+            return '';
+        }
+
+        $named = ['monthly' => 'monthly', 'quarterly' => 'quarterly', 'semiannually' => 'semi_annually',
+            'annually' => 'annually', 'biennially' => 'biennially', 'triennially' => 'triennially',
+            'onetime' => 'one_time', 'free' => 'free'];
+
+        if (isset($named[$word]) && Lang::has('common.billing.'.$named[$word])) {
+            return Lang::get('common.billing.'.$named[$word]);
+        }
+
+        $months = \App\Services\BillingCycleHelper::months($word);
+
+        if ($months !== null && Lang::has('common.billing.months')) {
+            return trans_choice('common.billing.months', $months, ['count' => $months]);
+        }
+
+        return ucfirst(str_replace(['_', '-'], ' ', (string) $cycle));
+    }
+}
+if (! function_exists('report_text')) {
+    /**
+     * A report's title, description, category or column name in the admin's
+     * language.
+     *
+     * Report classes return English words, and a report's URL is made from its
+     * title, so they stay as they are; the word is looked up in reports.* at
+     * the point it is shown. A word with no translation (a third-party report)
+     * is shown as written.
+     */
+    function report_text(mixed $text): string
+    {
+        $text = (string) $text;
+        $key = trim((string) preg_replace('/[^a-z0-9]+/', '_', strtolower($text)), '_');
+
+        return $key !== '' && Lang::has('reports.'.$key) ? Lang::get('reports.'.$key) : $text;
+    }
+}
+if (! function_exists('invoice_status_label')) {
+    /**
+     * An invoice status key as the customer-facing label.
+     *
+     * The panel stores keys like 'unpaid' or 'overdue' and several views
+     * printed ucfirst($status), which showed English whatever the language the
+     * customer was in. The label comes from the common.status.* translations
+     * now, so every screen agrees on the same word.
+     */
+    function invoice_status_label(?string $status): string
+    {
+        return status_label($status);
+    }
+}
+if (! function_exists('currency_symbol')) {
+    /**
+     * The sign in front of an amount in the currency the shop sells in.
+     *
+     * For the few places that print a rate rather than an amount - a price per
+     * megabyte, say - where rounding to two decimals would misstate it.
+     */
+    function currency_symbol(): string
+    {
+        if (! app()->bound('pnlcs.currency')) {
+            try {
+                app()->instance('pnlcs.currency', ['currency' => Currency::getDefault()]);
+            } catch (Throwable) {
+                app()->instance('pnlcs.currency', ['currency' => null]);
+            }
+        }
+
+        return (string) (app('pnlcs.currency')['currency']->prefix ?? '$');
+    }
+}if (! function_exists('shop_currency_code')) {
+    /**
+     * The three-letter code of the currency the shop sells in.
+     *
+     * Everything is priced, invoiced and charged in this one currency; the
+     * gateways used to be told nothing and each fell back to a different
+     * default of its own.
+     */
+    function shop_currency_code(): string
+    {
+        if (! app()->bound('pnlcs.currency')) {
+            try {
+                app()->instance('pnlcs.currency', ['currency' => Currency::getDefault()]);
+            } catch (Throwable) {
+                app()->instance('pnlcs.currency', ['currency' => null]);
+            }
+        }
+
+        return strtoupper((string) (app('pnlcs.currency')['currency']->code ?? 'USD'));
+    }
+}if (! function_exists('company_name')) {
+    /**
+     * What the business calls itself.
+     *
+     * The white-label name wins when the operator has set one — that is what
+     * white-labelling means — then the company name from Settings, then the
+     * application name. Subjects and bodies used to resolve this differently
+     * and an email could carry both names at once.
+     */
+    function company_name(): string
+    {
+        if (app()->bound('pnlcs.company_name')) {
+            return app('pnlcs.company_name');
+        }
+
+        try {
+            $name = trim((string) Setting::get('whitelabel_company_name', ''))
+                ?: trim((string) Setting::get('CompanyName', ''));
+        } catch (Throwable) {
+            $name = '';
+        }
+
+        $name = $name !== '' ? $name : (string) config('app.name', 'PNLCS');
+
+        app()->instance('pnlcs.company_name', $name);
+
+        return $name;
+    }
+}
+if (! function_exists('date_fmt')) {
+    /**
+     * The date format the operator picked in Settings → General.
+     *
+     * Views pass this to Carbon's format() instead of hard-coding a pattern,
+     * so changing the setting actually changes what customers see. The value
+     * is resolved once per request: Setting::get() is a query every time.
+     */
+    function date_fmt(): string
+    {
+        if (app()->bound('pnlcs.date_format')) {
+            return app('pnlcs.date_format');
+        }
+
+        $format = trim((string) Setting::get('DateFormat', ''));
+
+        if ($format === '') {
+            $format = 'd/m/Y';
+        }
+
+        app()->instance('pnlcs.date_format', $format);
+
+        return $format;
+    }
+}
+
+if (! function_exists('datetime_fmt')) {
+    /**
+     * The same date format with a 24-hour clock appended, for the places that
+     * were showing a time as well.
+     */
+    function datetime_fmt(): string
+    {
+        return date_fmt().' H:i';
+    }
+}
+
+if (! function_exists('display_tz')) {
+    /**
+     * The timezone the operator picked in Settings → General.
+     *
+     * Timestamps are stored in UTC and stay that way; this is only the clock
+     * the panel shows them on. Resolved once per request, since Setting::get()
+     * is a query every time.
+     */
+    function display_tz(): string
+    {
+        if (app()->bound('pnlcs.display_tz')) {
+            return app('pnlcs.display_tz');
+        }
+
+        $fallback = (string) config('app.timezone', 'UTC');
+        $tz = trim((string) Setting::get('Timezone', ''));
+
+        if ($tz === '' || ! in_array($tz, timezone_identifiers_list(), true)) {
+            $tz = $fallback;
+        }
+
+        app()->instance('pnlcs.display_tz', $tz);
+
+        return $tz;
+    }
+}
+
+if (! function_exists('branding_removed')) {
+    /**
+     * Whether the operator asked for the product's own name to be taken off
+     * the pages their customers see.
+     *
+     * Settings -> Appearance has offered this switch all along; nothing read
+     * it, so a reseller who turned it on still handed their customers pages
+     * headed PNLCS.
+     */
+    function branding_removed(): bool
+    {
+        try {
+            return (string) Setting::get('whitelabel_remove_branding', '0') === '1';
+        } catch (Throwable) {
+            return false;
+        }
+    }
+}
+
+if (! function_exists('csv_cell')) {
+    /**
+     * A value as text, not as something a spreadsheet will run.
+     *
+     * A cell beginning with =, +, - or @ is a formula to Excel, Numbers and
+     * LibreOffice, and it runs when the file is opened. The fields in these
+     * exports are the ones customers fill in themselves, and the person who
+     * opens the file is the operator, so the leading character is quoted and
+     * the value stays readable.
+     */
+    function csv_cell(mixed $value): string
+    {
+        $value = (string) $value;
+
+        if ($value === '') {
+            return $value;
+        }
+
+        return str_starts_with($value, '=')
+            || str_starts_with($value, '+')
+            || str_starts_with($value, '-')
+            || str_starts_with($value, '@')
+            || str_starts_with($value, "\t")
+            || str_starts_with($value, "\r")
+                ? "'".$value
+                : $value;
+    }
+}
+
+if (! function_exists('domain_money_fmt')) {
+    /**
+     * A domain price in the currency this page shows prices in.
+     *
+     * Domains used to be printed in US dollars whatever the shop billed in,
+     * so the search page could show a different figure (and a different
+     * currency) from the one actually charged. They now follow the same rule
+     * as every other price: the shop currency, or the customer's chosen one
+     * (CustomerCurrency) when that is switched on.
+     */
+    function domain_money_fmt(float|int|string|null $amount): string
+    {
+        return display_money_fmt($amount);
+    }
+}
+
+if (! function_exists('display_price')) {
+    /**
+     * A shop-currency price in the currency this page shows prices in.
+     *
+     * The same figure the invoice will carry in that currency: the invoice
+     * converts its shop-currency amount at the rate of the day it is raised
+     * (Invoice::booted()), and so does this.
+     */
+    function display_price(float|int|string|null $amount): float
+    {
+        return \App\Support\CustomerCurrency::convert($amount);
+    }
+}
+
+if (! function_exists('display_money_fmt')) {
+    /**
+     * A shop-currency price, shown in the currency this page shows prices in.
+     *
+     * Exactly money_fmt() while the page is in the shop currency, which is
+     * every page unless the operator lets customers choose (Setup >
+     * Currencies) and this customer chose another.
+     */
+    function display_money_fmt(float|int|string|null $amount): string
+    {
+        if (! \App\Support\CustomerCurrency::converting()) {
+            return money_fmt($amount);
+        }
+
+        $currency = \App\Support\CustomerCurrency::current();
+        $prefix = (string) ($currency->prefix ?? '');
+        $suffix = (string) ($currency->suffix ?? '');
+
+        if ($prefix === '' && $suffix === '') {
+            $suffix = ' '.strtoupper((string) $currency->code);
+        }
+
+        return $prefix.$currency->number(display_price($amount)).$suffix;
+    }
+}
+
+if (! function_exists('display_currency_affixes')) {
+    /**
+     * The sign around an amount for the currency this page shows prices in,
+     * for scripts that format totals themselves - the same figures
+     * display_money_fmt() prints.
+     *
+     * @return array{prefix: string, suffix: string}
+     */
+    function display_currency_affixes(): array
+    {
+        $currency = \App\Support\CustomerCurrency::current();
+        $prefix = (string) ($currency->prefix ?? '');
+        $suffix = (string) ($currency->suffix ?? '');
+
+        if (\App\Support\CustomerCurrency::converting() && $prefix === '' && $suffix === '') {
+            $suffix = ' '.strtoupper((string) $currency->code);
+        }
+
+        // The page's own script writes running totals; it needs the same
+        // decimal mark and thousands separator the server writes with.
+        [$decimal, $thousands] = \App\Models\Currency::FORMATS[(int) ($currency->format ?? 1)] ?? \App\Models\Currency::FORMATS[1];
+
+        return ['prefix' => $prefix, 'suffix' => $suffix, 'decimal' => $decimal, 'thousands' => $thousands];
+    }
+}
+
+if (! function_exists('currency_code_default')) {
+    /** The code of the currency the shop prices in. */
+    function currency_code_default(): string
+    {
+        try {
+            return strtoupper(Currency::getDefault()->code ?? 'USD');
+        } catch (Throwable) {
+            return 'USD';
+        }
+    }
+}
+
+if (! function_exists('kb_enabled')) {
+    /**
+     * Whether the knowledge base is shown to customers.
+     *
+     * The menu entry appears in nine places - top menu, footer, client panel,
+     * mobile menu, contact page. Commenting nine out and later finding nine
+     * to put back is how one of them gets missed; they all read this switch.
+     *
+     * On by default: an installation that never wrote the setting keeps
+     * showing its knowledge base.
+     */
+    function kb_enabled(): bool
+    {
+        try {
+            return (string) Setting::get('KnowledgeBaseEnabled', '1') !== '0';
+        } catch (\Throwable) {
+            return true;
+        }
+    }
+}
+
+if (! function_exists('invoice_money_fmt')) {
+    /**
+     * An amount in the currency the invoice itself was written in.
+     *
+     * Never the shop's current currency: an invoice raised in dollars stays a
+     * dollar invoice after the shop moves to lira, and the reverse. Only
+     * documents that predate the stamp fall back to the shop currency.
+     */
+    function invoice_money_fmt(float|int|string|null $amount, $invoice = null): string
+    {
+        static $cache = [];
+
+        $code = $invoice->source_currency ?? null;
+
+        if (! $code) {
+            return money_fmt($amount);
+        }
+
+        $code = strtoupper($code);
+
+        // Only a currency that exists is remembered. A miss used to be cached
+        // too, and then nothing in the process could see that currency again:
+        // a queue worker that formatted an invoice before the operator added
+        // its currency went on printing "480.00 TRY" for the rest of its life,
+        // and in the test suite one test's lookup decided what a later one was
+        // shown. A miss costs one query; being wrong costs a document.
+        $currency = $cache[$code] ?? null;
+
+        if ($currency === null) {
+            try {
+                $currency = Currency::where('code', $code)->first();
+            } catch (Throwable) {
+                $currency = null;
+            }
+
+            if ($currency !== null) {
+                $cache[$code] = $currency;
+            }
+        }
+
+        if (! $currency) {
+            return number_format((float) $amount, 2).' '.$code;
+        }
+
+        $value = $currency->number($amount);
+
+        $prefix = $currency->prefix ?? '';
+        $suffix = $currency->suffix ?? '';
+
+        if ($prefix === '' && $suffix === '') {
+            $suffix = ' '.$code;
+        }
+
+        return $prefix.$value.$suffix;
+    }
+}
+
+if (! function_exists('billing_money_fmt')) {
+    /**
+     * An amount as the customer is actually billed for it.
+     *
+     * The shop prices in one currency and bills in another; the invoice froze
+     * the rate when it was raised, so the figure printed on a document does
+     * not drift as the rate moves.
+     */
+    function billing_money_fmt(float|int|string|null $amount, $invoice = null): string
+    {
+        if (! $invoice || empty($invoice->billing_currency) || ! (float) $invoice->exchange_rate) {
+            return money_fmt($amount);
+        }
+
+        $converted = round((float) $amount * (float) $invoice->exchange_rate, 2);
+
+        $currency = Currency::where('code', $invoice->billing_currency)->first();
+        $prefix = $currency->prefix ?? '';
+        $suffix = $currency->suffix ?? '';
+
+        if ($prefix === '' && $suffix === '') {
+            $suffix = ' '.$invoice->billing_currency;
+        }
+
+        return $prefix.($currency ? $currency->number($converted) : number_format($converted, 2)).$suffix;
+    }
+}
+
+if (! function_exists('payment_ref')) {
+    /**
+     * The short reference a customer writes in a bank transfer description.
+     *
+     * The invoice number (INV-202608-000002) is the document's official
+     * number and stays so, but the customer types it into a bank's
+     * description box by hand: nineteen characters, two dashes, six digits of
+     * zeroes. One wrong digit and the payment cannot be matched. The reference
+     * is the invoice id behind a short prefix instead - short, readable over
+     * the phone, hard to mistype. The prefix is a setting so that a host can
+     * keep the code its customers already know.
+     */
+    function payment_ref($invoice = null): string
+    {
+        if (! $invoice) {
+            return '';
+        }
+
+        try {
+            $prefix = strtoupper(trim((string) Setting::get('PaymentReferencePrefix', 'INV')));
+        } catch (Throwable) {
+            $prefix = 'INV';
+        }
+
+        return ($prefix !== '' ? $prefix : 'INV').((int) ($invoice->id ?? 0));
+    }
+}
+
+if (! function_exists('has_billing_conversion')) {
+    /** Whether the invoice carries a separate billing-currency stamp. */
+    function has_billing_conversion($invoice = null): bool
+    {
+        if (! $invoice || empty($invoice->billing_currency) || ! (float) $invoice->exchange_rate) {
+            return false;
+        }
+
+        return strtoupper((string) $invoice->billing_currency)
+            !== strtoupper((string) ($invoice->source_currency ?? currency_code_default()));
+    }
+}
+
+if (! function_exists('billing_amount')) {
+    /** The raw amount in the billing currency - for writing into input fields. */
+    function billing_amount(float|int|string|null $amount, $invoice = null): float
+    {
+        if (! has_billing_conversion($invoice)) {
+            return round((float) $amount, 2);
+        }
+
+        return round((float) $amount * (float) $invoice->exchange_rate, 2);
+    }
+}
+
+if (! function_exists('dual_money_fmt')) {
+    /**
+     * The amount due in both currencies: billing currency first, then the
+     * shop currency in brackets.
+     *
+     * The shop prices in one currency and the customer pays in another.
+     * Telling them to transfer "6.60 USD" is an instruction with no
+     * counterpart at their bank; the figure they will actually pay in is the
+     * one that leads. The shop figure stays because the invoice lines and any
+     * refund are worked out in it.
+     */
+    function dual_money_fmt(float|int|string|null $amount, $invoice = null): string
+    {
+        if (! has_billing_conversion($invoice)) {
+            return invoice_money_fmt($amount, $invoice);
+        }
+
+        return billing_money_fmt($amount, $invoice).' ('.invoice_money_fmt($amount, $invoice).')';
+    }
+}
+
+if (! function_exists('billing_rate_note')) {
+    /**
+     * The sentence that tells the customer which rate their bill was struck at.
+     */
+    function billing_rate_note($invoice): ?string
+    {
+        if (! $invoice || empty($invoice->billing_currency) || ! (float) $invoice->exchange_rate) {
+            return null;
+        }
+
+        $shop = Currency::getDefault();
+        $from = strtoupper($invoice->source_currency ?: ($shop->code ?? 'USD'));
+        $to = strtoupper($invoice->billing_currency);
+        $rate = number_format((float) $invoice->exchange_rate, 4);
+
+        // Without a named source the sentence is just an assertion; with one
+        // the customer can open the bulletin and check the number.
+        if (! empty($invoice->exchange_rate_source)) {
+            $kinds = [
+                'ForexSelling' => __('pdf.rate_kind_selling'),
+                'ForexBuying' => __('pdf.rate_kind_buying'),
+                'reference' => __('pdf.rate_kind_reference'),
+            ];
+
+            return __('pdf.rate_note_official', [
+                'source' => $invoice->exchange_rate_source,
+                'date' => $invoice->exchange_rate_date ?: '',
+                'kind' => $kinds[$invoice->exchange_rate_kind] ?? __('pdf.rate_kind_selling'),
+                'from' => $from,
+                'to' => $to,
+                'rate' => $rate,
+                'ref' => $invoice->exchange_rate_ref ? ' ('.__('pdf.rate_bulletin').' '.$invoice->exchange_rate_ref.')' : '',
+            ]);
+        }
+
+        return __('pdf.rate_note', ['from' => $from, 'to' => $to, 'rate' => $rate]);
+    }
+}
+
+if (! function_exists('funds_round_preset')) {
+    /**
+     * A top-up preset converted at the day's rate, rounded to a figure a
+     * person would actually type: 5 x 40.13 is offered as 200, not 200.65.
+     */
+    function funds_round_preset(float $amount): float
+    {
+        if ($amount < 10) {
+            return max(1.0, round($amount));
+        }
+
+        $magnitude = 10 ** (floor(log10($amount)) - 1);
+
+        return (float) (round($amount / $magnitude) * $magnitude);
+    }
+}
+
+if (! function_exists('trans_markup')) {
+    /**
+     * A translated sentence that is allowed to carry a little markup.
+     *
+     * For the prose whose <strong> or <code> belongs inside the key rather
+     * than in the blade around it - see App\Support\InlineMarkup for why
+     * splitting those sentences is not an option and why the guard sits on
+     * the render side.
+     *
+     * Returns an HtmlString, so the call site is {{ trans_markup('...') }}
+     * and not {!! __('...') !!}: the value reaches the page through the
+     * allow-list or it does not reach it at all, and a reviewer grepping the
+     * view for raw echoes finds nothing to check by hand.
+     *
+     * Replacements are made before the guard runs, so :host, :domain and a
+     * :link built in the view are escaped and judged by exactly the same
+     * rules as the stored text they land in.
+     */
+    function trans_markup(string $key, array $replace = [], ?string $locale = null): HtmlString
+    {
+        $line = __($key, $replace, $locale);
+
+        // __() hands back an array when the key names a whole group. Printing
+        // the key is what the reader would have seen anyway, and it says
+        // which key was asked for wrongly.
+        return InlineMarkup::render(is_string($line) ? $line : $key);
+    }
+}
+
+if (! function_exists('inline_markup')) {
+    /**
+     * The same guard for a sentence that has already been resolved - one that
+     * may have come from the site content editor instead of a translation, as
+     * the homepage headline does.
+     */
+    function inline_markup(?string $value): HtmlString
+    {
+        return InlineMarkup::render($value);
+    }
+}
+
+if (! function_exists('mb_fmt')) {
+    /**
+     * A size in megabytes, written with the largest unit that reads sensibly:
+     * 512 MB stays "512 MB", 1536 MB becomes "1.5 GB", 2 097 152 MB "2 TB".
+     */
+    function mb_fmt(float|int|string|null $mb): string
+    {
+        $mb = (int) $mb;
+
+        if ($mb < 0) {
+            return '0 MB';
+        }
+
+        $trim = fn (string $n) => rtrim(rtrim($n, '0'), '.');
+
+        if ($mb >= 1048576) {
+            return $trim(number_format($mb / 1048576, 1, '.', '')).' TB';
+        }
+
+        if ($mb >= 1024) {
+            return $trim(number_format($mb / 1024, 1, '.', '')).' GB';
+        }
+
+        return $mb.' MB';
+    }
+}
+
+if (! function_exists('social_profiles')) {
+    /**
+     * The shop's social media profiles for a theme to show: network => address
+     * (x, facebook, instagram, linkedin, youtube, tiktok, threads, medium), only
+     * the ones set. Setup > General > Search engines and sharing.
+     *
+     * @return array<string, string>
+     */
+    function social_profiles(): array
+    {
+        return \App\Support\SocialProfiles::all();
+    }
+}

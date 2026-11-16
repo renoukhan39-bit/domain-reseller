@@ -1,0 +1,130 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Enums\ServiceStatus;
+use App\Events\ServiceTerminated;
+use App\Models\Product;
+use App\Models\Service;
+use App\Models\Setting;
+use App\Services\ProvisioningService;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * Termination deletes a customer's account and everything in it, so the rules
+ * here are deliberately narrower than auto-suspend's:
+ *
+ *  - It is OFF until an admin turns it on (Settings -> Automation).
+ *  - It only ever looks at services that are suspended AND whose client still
+ *    owes an overdue invoice. Paying the debt takes a service off the list at
+ *    once, even before unsuspend-on-payment has switched it back on.
+ *  - Only a suspension billing put in place counts: one staff made by hand
+ *    (abuse, a security problem, a customer's request) is not "suspended over
+ *    an unpaid invoice", even while the client owes one, and stays.
+ *  - A pending cancellation request belongs to pnlcs:process-cancellations,
+ *    which honours the customer's chosen end-of-billing date; this command
+ *    stays away from those services entirely.
+ */
+class TerminationCommand extends Command
+{
+    protected $signature = 'pnlcs:auto-terminate {--dry-run : List what would be terminated without touching anything}';
+
+    protected $description = 'Terminate services that have stayed suspended over an unpaid invoice';
+
+    public function handle(ProvisioningService $provisioning): int
+    {
+        // The general switch and days, and the products that keep their own
+        // (terminate_after_days). A product's own days apply even while the
+        // switch is off: setting them on the product is the opt-in.
+        $general = (int) Setting::get('AutoTerminationEnabled', 0) ? max(1, (int) Setting::get('AutoTerminationDays', 30)) : null;
+        $own = Product::whereNotNull('terminate_after_days')->min('terminate_after_days');
+
+        if ($general === null && $own === null) {
+            $this->info('Automatic termination is disabled.');
+
+            return Command::SUCCESS;
+        }
+
+        // The shortest, to find the candidates; each is held to its own below.
+        $days = min(array_values(array_filter([$general, $own === null ? null : max(1, (int) $own)], fn ($d) => $d !== null)));
+
+        $services = Service::with(['client.group', 'server', 'product'])
+            ->where('status', ServiceStatus::Suspended->value)
+            // A manually suspended service without a date on record is not
+            // "suspended for N days" by any measure; whereDate also excludes
+            // NULL by itself, this whereNotNull just says so out loud.
+            ->whereNotNull('suspension_date')
+            ->whereDate('suspension_date', '<=', today()->subDays($days))
+            // The reason auto-suspend writes ("Overdue Invoice - Automatic
+            // Suspension"), read the way unsuspend-on-payment reads it - except
+            // that a blank reason is not taken as ours here: staff may suspend
+            // without typing one, and this deletes the account.
+            ->where(fn ($q) => $q->where('suspension_reason', 'like', '%overdue%')
+                ->orWhere('suspension_reason', 'like', '%unpaid%'))
+            ->whereHas('client', function ($q) {
+                $q->whereHas('invoices', fn ($iq) => $iq->overduePastGrace(0));
+            })
+            ->whereDoesntHave('cancellationRequest', fn ($c) => $c->whereNull('processed_at'))
+            ->get();
+
+        $terminated = 0;
+        $exempt = 0;
+        $failed = 0;
+
+        foreach ($services as $service) {
+            if ($provisioning->hasGivenUp($service, 'terminate')) {
+                $failed++;
+
+                continue;
+            }
+
+            if ((bool) ($service->client?->group?->terminate_exempt ?? false)) {
+                $exempt++;
+
+                continue;
+            }
+
+            // Its own product's days, or the general ones; none means never.
+            $due = $service->product?->terminate_after_days !== null
+                ? max(1, (int) $service->product->terminate_after_days)
+                : $general;
+            if ($due === null || $service->suspension_date->gt(today()->subDays($due))) {
+                continue;
+            }
+
+            if ($this->option('dry-run')) {
+                $this->line("would terminate service #{$service->id} ({$service->domain})");
+
+                continue;
+            }
+
+            // Same server-vs-local split as auto-suspend: an account that lives
+            // on a server must be removed there, not merely restatused here.
+            if ($service->server_id && $provisioning->resolveModule($service)) {
+                $result = $provisioning->terminateAccount($service);
+                if ($result['success'] ?? false) {
+                    $terminated++;
+                } else {
+                    // terminateAccount already queued a retry and logged details.
+                    $failed++;
+                    Log::warning("Auto-terminate failed for service #{$service->id}: ".($result['message'] ?? 'unknown'));
+                }
+
+                continue;
+            }
+
+            $service->update([
+                'status' => ServiceStatus::Terminated->value,
+                'termination_date' => now(),
+            ]);
+            // As terminateAccount does for a server.
+            event(new ServiceTerminated($service));
+            $terminated++;
+        }
+
+        $this->info("Terminated {$terminated} services ({$exempt} exempt, {$failed} failed and queued for retry).");
+
+        return Command::SUCCESS;
+    }
+}

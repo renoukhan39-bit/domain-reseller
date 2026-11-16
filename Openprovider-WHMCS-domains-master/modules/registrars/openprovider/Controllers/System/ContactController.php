@@ -1,0 +1,312 @@
+<?php
+
+namespace OpenProvider\WhmcsRegistrar\Controllers\System;
+
+use OpenProvider\API\APIConfig;
+use OpenProvider\API\ApiHelper;
+use OpenProvider\API\Domain;
+use OpenProvider\WhmcsRegistrar\enums\DatabaseTable;
+use OpenProvider\WhmcsRegistrar\helpers\DB as DBHelper;
+use OpenProvider\WhmcsRegistrar\Models\Tld;
+use OpenProvider\WhmcsRegistrar\src\Handle;
+use WeDevelopCoffee\wPower\Controllers\BaseController;
+use WeDevelopCoffee\wPower\Core\Core;
+use WHMCS\Database\Capsule;
+
+use OpenProvider\WhmcsRegistrar\helpers\Dictionary;
+
+/**
+ * Class ContactControllerView
+ * @package OpenProvider\WhmcsRegistrar\Controllers\System
+ */
+class ContactController extends BaseController
+{
+    /**
+     * @var Domain
+     */
+    private $domain;
+    /**
+     * @var Handle
+     */
+    private $handle;
+    /**
+     * @var ApiHelper
+     */
+    private $apiHelper;
+
+    /**
+     * ConfigController constructor.
+     */
+    public function __construct(Core $core, Domain $domain, Handle $handle, ApiHelper $apiHelper)
+    {
+        parent::__construct($core);
+
+        $this->domain = $domain;
+        $this->handle = $handle;
+        $this->apiHelper = $apiHelper;
+    }
+
+    /**
+     * Get the contact details.
+     * @param $params
+     *
+     * @return array
+     */
+    public function getDetails($params)
+    {
+        $params['sld'] = $params['original']['domainObj']->getSecondLevel();
+        $params['tld'] = $params['original']['domainObj']->getTopLevel();
+
+        $this->domain->load(array(
+            'name'          =>  $params['sld'],
+            'extension'     =>  $params['tld']
+        ));
+
+        try {
+            $values = $this->getContactDetails($params);
+        } catch (\Exception $e) {
+            return [
+                'error' => $e->getMessage()
+            ];
+        }
+
+        // when no contacts are returned
+        if (empty($values)) {
+            return [
+                'error' => 'No contact details were found for this domain at Openprovider.'
+            ];
+        }
+
+        $domainTld = new Tld($params['tld']);
+        array_walk($values, function (&$contact) use ($domainTld) {
+            if (!$domainTld->isNeededShortState())
+                return;
+
+            switch ($contact['Country']) {
+                case 'US':
+                    $USStates = array_flip(Dictionary::get(Dictionary::USStates));
+                    $USStateExist = !empty($contact['State'])
+                        && in_array($contact['State'], array_keys($USStates));
+                    if ($USStateExist)
+                        $contact['State'] = $USStates[$contact['State']];
+
+                    break;
+                default:
+                    break;
+            }
+        });
+
+        return $values;
+    }
+
+    /**
+     * Save the contact details.
+     * @param $params
+     * @return array
+     */
+    public function saveDetails($params)
+    {
+        $params['sld'] = $params['original']['domainObj']->getSecondLevel();
+        $params['tld'] = $params['original']['domainObj']->getTopLevel();
+
+        // WHMCS submits no contact roles when the contact form rendered empty
+        $contactRoles = ['Owner', 'Admin', 'Tech', 'Billing'];
+        if (
+            empty($params['contactdetails'])
+            || !is_array($params['contactdetails'])
+            || empty(array_intersect_key($params['contactdetails'], array_flip($contactRoles)))
+        ) {
+            return [
+                'error' => 'No contact details were received. Please reload the page and try again.'
+            ];
+        }
+
+        $userTag = '';
+        try {
+            if (DBHelper::checkTableExist(DatabaseTable::ClientTags)) {
+                $customerTag = Capsule::table(DatabaseTable::ClientTags)
+                    ->where('clientid', $params['userid'])
+                    ->first();
+                if ($customerTag && $customerTag->tag)
+                    $userTag = [$customerTag->tag];
+            }
+        } catch (\Exception $e) {}
+
+        if (isset($params['contactdetails'])) {
+            $contactDetails = &$params['contactdetails'];
+            array_walk($contactDetails, function (&$contact) use ($userTag) {
+                $contact['tags'] = $userTag;
+            });
+        }
+
+        try
+        {
+            $this->domain->load(array(
+                'name'          =>  $params['sld'],
+                'extension'     =>  $params['tld']
+            ));
+
+            $handle = $this->handle;
+            $handle->setApiHelper($this->apiHelper);
+
+            $params = $this->addLanguageToContactDetails($params);
+
+            $customers = [];
+            if (isset($params['contactdetails']['Owner']))
+                $customers['ownerHandle']   = $handle->updateOrCreate($params, 'registrant');
+            if (isset($params['contactdetails']['Admin']))
+                $customers['adminHandle']   = $handle->updateOrCreate($params, 'admin');
+            if (isset($params['contactdetails']['Tech']))
+                $customers['techHandle']    = $handle->updateOrCreate($params, 'tech');
+
+            if(isset($params['contactdetails']['Billing']))
+                $customers['billingHandle'] = $handle->updateOrCreate($params, 'billing');
+
+            // Sleep for 10 seconds. Some registrars accept a new contact but do not process this immediately.
+            sleep(2);
+
+            $finalCustomers = [];
+            // clean out the empty results
+            array_walk($customers, function($handle, $key) use (&$customers, &$finalCustomers){
+                if($handle != '')
+                    $finalCustomers[$key] = $handle;
+            });
+
+            if(!empty($finalCustomers)) {
+                $domainOp = $this->apiHelper->getDomain($this->domain);
+                $this->apiHelper->updateDomain($domainOp['id'], $finalCustomers);
+            }
+
+            return ['success' => true];
+        }
+        catch (\Throwable $e)
+        {
+            logModuleCall(
+                'openprovider nl',
+                'Save contact details',
+                $params['domainname'] ?? '',
+                $e->getMessage(),
+                null,
+                null
+            );
+            $values["error"] = $e->getMessage();
+        }
+        return $values;
+    }
+
+    /**
+     * Add language to contactdetails for roles using existing contacts (uXX format).
+     *
+     * @param array $params
+     * @return array
+     */
+    private function addLanguageToContactDetails(array $params): array
+    {
+        // Safely fetch expected POST arrays.
+        $wc  = filter_input(INPUT_POST, 'wc', FILTER_DEFAULT, FILTER_REQUIRE_ARRAY);
+        $sel = filter_input(INPUT_POST, 'sel', FILTER_DEFAULT, FILTER_REQUIRE_ARRAY);
+
+        if (
+            empty($params['language']) ||
+            empty($params['contactdetails']) ||
+            !is_array($params['contactdetails']) ||
+            empty($wc) ||
+            empty($sel) ||
+            !is_array($wc) ||
+            !is_array($sel)
+        ) {
+            return $params;
+        }
+        foreach ($wc as $role => $mode) {
+            // Validate role name format to avoid unexpected keys from user input.
+            if (!is_string($role) || !preg_match('/^[a-zA-Z0-9_]+$/', $role)) {
+                continue;
+            }
+            // Normalize mode to string and only allow expected value.
+            if (!is_string($mode)) {
+                $mode = (string) $mode;
+            }
+            // Only roles using existing contact
+            if ($mode !== 'contact') {
+                continue;
+            }
+            $selected = $sel[$role] ?? '';
+
+            // Only when selected value is like "uXX"
+            if (!is_string($selected) || !preg_match('/^u\d+$/', $selected)) {
+                continue;
+            }
+
+            // Inject language into contactdetails
+            if (!empty($params['language']) && isset($params['contactdetails'][$role]) && is_array($params['contactdetails'][$role])) {
+                $params['contactdetails'][$role]['language'] = $params['language'];
+            }
+        }
+
+        return $params;
+    }
+
+    /**
+     * @param $params
+     * @return array
+     *
+     * @throws \Exception
+     */
+    private function getContactDetails($params): array
+    {
+        $domainOp = $this->apiHelper->getDomain($this->domain);
+
+        if (empty($domainOp)) {
+            return [];
+        }
+
+        $tldMetaData = $this->getTldMetaData($this->domain->extension);
+
+        $handlesToFetch = [];
+        foreach (APIConfig::$handlesNames as $key => $name) {
+            $handleSupportedKey = $key . 'Supported';
+
+            if (
+                isset($tldMetaData[$handleSupportedKey]) &&
+                $tldMetaData[$handleSupportedKey] &&
+                !empty($domainOp[$key])
+            ) {
+                $handlesToFetch[$name] = $domainOp[$key];
+            }
+        }
+
+        if (empty($handlesToFetch)) {
+            return [];
+        }
+
+        // Parallel contacts fetch
+        $contacts = $this->apiHelper->getCustomersAsync($handlesToFetch);
+
+        unset($contacts['Reseller']);
+        unset($contacts['reseller']);
+
+        return $contacts;
+    }
+
+    /**
+     * Fall back to all supported handles when TLD metadata is missing owner handle support.
+     *
+     * @param string $extension
+     * @return array
+     */
+    private function getTldMetaData(string $extension): array
+    {
+        $tldMetaData = $this->apiHelper->getTldMeta($extension);
+
+        if (empty($tldMetaData['ownerHandleSupported'])) {
+            return array_merge($tldMetaData, [
+                'ownerHandleSupported'   => true,
+                'adminHandleSupported'   => true,
+                'techHandleSupported'    => true,
+                'billingHandleSupported' => true,
+            ]);
+        }
+
+        return $tldMetaData;
+    }
+}

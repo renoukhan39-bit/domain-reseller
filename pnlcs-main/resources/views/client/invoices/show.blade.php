@@ -1,0 +1,335 @@
+@extends("client.layouts.app")
+@section("title", __($invoice->isProforma() ? "client.invoices.proforma_prefix" : "client.invoices.invoice_prefix", ["id" => $invoice->invoice_num ?? $invoice->id]))
+@section("content")
+
+<a href="{{ route("client.invoices.index") }}" class="pn-back">
+    <svg fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/></svg>
+    {{ __('client.invoices.back_to_invoices') }}
+</a>
+
+<div class="pn-page-header">
+    <div>
+        <h1 class="pn-page-title">{{ __($invoice->isProforma() ? 'client.invoices.proforma_prefix' : 'client.invoices.invoice_prefix', ['id' => $invoice->invoice_num ?? $invoice->id]) }}</h1>
+        <p class="pn-page-subtitle">{{ __('client.invoices.issued') }} {{ $invoice->date?->format(date_fmt()) ?? "N/A" }}</p>
+        @if($invoice->sourceInvoice)
+        <p class="pn-page-subtitle" style="color:var(--muted);">{{ __('admin.invoices.source_proforma') }}: <strong>{{ $invoice->sourceInvoice->invoice_num }}</strong></p>
+        @endif
+    </div>
+    <a href="{{ route('client.invoices.pdf', $invoice) }}" class="pn-btn" style="background:var(--primary);color:#fff;padding:6px 14px;border-radius:6px;text-decoration:none;font-size:13px;margin-right:8px;">{{ __('client.invoices.download_pdf') }}</a>
+    <span class="badge badge-{{ strtolower($invoice->status) }}" style="font-size:13px;padding:5px 14px">{{ invoice_status_label($invoice->status) }}</span>
+</div>
+
+<div class="pn-card mb-24">
+    <div class="pn-card-header">
+        <span class="pn-card-title">{{ __('client.invoices.invoice_details') }}</span>
+        <div style="font-size:13px;color:var(--muted)">
+            {{ __('client.invoices.due') }}: <strong>{{ $invoice->due_date?->format(date_fmt()) ?? "N/A" }}</strong>
+            @if($invoice->payment_method) &nbsp;·&nbsp; {{ __('client.invoices.paid_via') }} {{ payment_method_label((string) $invoice->payment_method) }} @endif
+        </div>
+    </div>
+    <div class="pn-card-body-flush">
+        <table class="pn-table">
+            <thead>
+                <tr>
+                    <th>{{ __('common.table.description') }}</th>
+                    <th style="text-align:right;width:70px">{{ __('common.table.qty') }}</th>
+                    <th style="text-align:right;width:110px">{{ __('common.table.price') }}</th>
+                    <th style="text-align:right;width:120px">{{ __('common.table.amount') }}</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach($invoice->items as $item)
+                <tr>
+                    <td>{{ $item->description }}</td>
+                    <td style="text-align:right">{{ (int) $item->qty }}</td>
+                    <td style="text-align:right">{{ invoice_money_fmt($item->amount, $invoice) }}</td>
+                    <td style="text-align:right;font-weight:600">{{ invoice_money_fmt($item->amount * (int) $item->qty, $invoice) }}</td>
+                </tr>
+                @endforeach
+            </tbody>
+        </table>
+    </div>
+    <div class="pn-card-body" style="border-top:1px solid var(--border)">
+        <div style="max-width:280px;margin-left:auto">
+            @php
+            // One computation for every invoice document (Invoice::vatBreakdown): the line rates, the tax mode it was
+            // issued under (on top, included, none), each rate's net and VAT rounded once.
+            $vatGroups = $invoice->vatBreakdown();
+            @endphp
+            @if($invoice->subtotal && $invoice->subtotal != $invoice->total)
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-bottom:1px solid #f1f5f9">
+                <span class="text-muted">{{ __('client.cart.subtotal') }}</span>
+                <span>{{ invoice_money_fmt($invoice->subtotal, $invoice) }}</span>
+            </div>
+            @endif
+            @foreach($vatGroups as $label => $g)
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-bottom:1px solid #f1f5f9">
+                <span class="text-muted">{{ $label }}</span>
+                <span style="display:flex;gap:24px">
+                    <span>{{ invoice_money_fmt($g['amount'], $invoice) }}</span>
+                    <span>{{ invoice_money_fmt($g['net'], $invoice) }}</span>
+                </span>
+            </div>
+            @endforeach
+            @if(($invoice->tax2 ?? 0) > 0)
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-bottom:1px solid #f1f5f9">
+                <span class="text-muted">{{ __('client.cart.tax').' 2' }}{{ $invoice->tax_rate2 > 0 ? " (" . rtrim(rtrim(number_format((float) $invoice->tax_rate2, 2), '0'), '.') . "%)" : '' }}</span>
+                <span>{{ invoice_money_fmt($invoice->tax2, $invoice) }}</span>
+            </div>
+            @endif
+            @if((float) ($invoice->credit ?? 0) > 0.009)
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-bottom:1px solid #f1f5f9">
+                <span class="text-muted">{{ __('pdf.vat_gross_total') }}</span>
+                <span>{{ invoice_money_fmt((float) $invoice->total, $invoice) }}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-bottom:1px solid #f1f5f9">
+                <span class="text-muted">{{ __('pdf.credit') }}</span>
+                <span>-{{ invoice_money_fmt((float) $invoice->credit, $invoice) }}</span>
+            </div>
+            @endif
+            <div style="display:flex;justify-content:space-between;padding:12px 0 4px;font-size:17px;font-weight:800;color:var(--primary)">
+                <span>{{ __('client.invoices.total_due') }}</span>
+                <span>{{ invoice_money_fmt($invoice->amountDue(), $invoice) }}</span>
+            </div>
+            @if(billing_rate_note($invoice))
+            <div style="display:flex;justify-content:space-between;gap:16px;font-weight:700;font-size:17px;padding-top:8px;border-top:2px solid var(--border,#e5e7eb);margin-top:6px;">
+                <span>{{ __('pdf.amount_in') }}</span>
+                <span>{{ billing_money_fmt($invoice->amountDue(), $invoice) }}</span>
+            </div>
+            <div class="text-muted" style="font-size:12px;margin-top:8px;line-height:1.5;">{{ billing_rate_note($invoice) }}</div>
+            @endif
+            @if(isset($balance) && $balance > 0 && $balance < (float) $invoice->total && ! in_array(strtolower($invoice->status), \App\Enums\InvoiceStatus::settled(), true))
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:13.5px;border-top:1px solid #f1f5f9">
+                <span class="text-muted">{{ __('client.invoices.amount_paid') }}</span>
+                <span>{{ invoice_money_fmt((float) $invoice->total - $balance, $invoice) }}</span>
+            </div>
+            <div style="display:flex;justify-content:space-between;padding:7px 0;font-size:14px;font-weight:700;color:#dc3545">
+                <span>{{ __('client.invoices.remaining_balance') }}</span>
+                <span>{{ invoice_money_fmt($balance, $invoice) }}</span>
+            </div>
+            @endif
+        </div>
+    </div>
+</div>
+
+@if(strtolower($invoice->status) === "payment_pending" || (isset($pendingNotification) && $pendingNotification))
+<div class="pn-alert pn-alert-info mb-24" style="padding:14px 18px;">
+    <strong>{{ __('client.invoices.payment_notification_pending_title') }}</strong><br>
+    {{ __('client.invoices.payment_notification_pending_text') }}
+    @if(isset($pendingNotification) && $pendingNotification)
+    <br><small class="text-muted">{{ __('client.invoices.reported_on') }} {{ $pendingNotification->created_at->timezone(display_tz())->format(datetime_fmt()) }} — {{ dual_money_fmt((float) $pendingNotification->amount, $invoice) }}</small>
+    @endif
+</div>
+@endif
+
+{{-- What happened when we tried to take this from the card on file.
+     Rendered only where there is something to say and only while the shop
+     collects by card at all: the controller hands over nothing otherwise, so
+     an installation with the feature switched off draws this block never. --}}
+@if(isset($chargeAttempt) && $chargeAttempt && in_array(strtolower($invoice->status), ["unpaid", "overdue", "partially_paid"]))
+    @if($chargeAttempt->state === \App\Enums\ChargeAttemptState::ActionRequired)
+    <div class="pn-alert pn-alert-warning mb-24" style="padding:14px 18px;">
+        <div>
+            <strong>{{ __('client.invoices.charge_action_required_title') }}</strong><br>
+            {{ __('client.invoices.charge_action_required_text') }}
+            <div style="margin-top:10px">
+                <button type="button" id="pn-authenticate-btn" class="btn btn-primary btn-sm"
+                        onclick="pnAuthenticate({{ $invoice->id }})">
+                    {{ __('client.invoices.charge_authenticate_button') }}
+                </button>
+                <span id="pn-authenticate-error" class="text-sm" style="margin-left:10px"></span>
+            </div>
+        </div>
+    </div>
+    @elseif($chargeAttempt->state === \App\Enums\ChargeAttemptState::Scheduled)
+    <div class="pn-alert pn-alert-warning mb-24" style="padding:14px 18px;">
+        <div>
+            <strong>{{ __('client.invoices.charge_failed_title') }}</strong><br>
+            @if($chargeAttempt->next_attempt_at)
+                {{ __('client.invoices.charge_retry_text', ['date' => $chargeAttempt->next_attempt_at->timezone(display_tz())->format(date_fmt())]) }}
+            @else
+                {{ __('client.invoices.charge_failed_text') }}
+            @endif
+        </div>
+    </div>
+    @elseif($chargeAttempt->state === \App\Enums\ChargeAttemptState::Exhausted)
+    <div class="pn-alert pn-alert-warning mb-24" style="padding:14px 18px;">
+        <div>
+            <strong>{{ __('client.invoices.charge_failed_title') }}</strong><br>
+            {{ __('client.invoices.charge_failed_text') }}
+        </div>
+    </div>
+    @elseif($chargeAttempt->state === \App\Enums\ChargeAttemptState::NeedsReview)
+    {{-- A charge was sent and we cannot yet say what became of it. Saying so
+         is the point: a customer who pays again on top of a payment that did
+         go through has paid twice for one invoice. --}}
+    <div class="pn-alert pn-alert-info mb-24" style="padding:14px 18px;">
+        <div>
+            <strong>{{ __('client.invoices.charge_checking_title') }}</strong><br>
+            {{ __('client.invoices.charge_checking_text') }}
+        </div>
+    </div>
+    @endif
+@endif
+
+@if(in_array(strtolower($invoice->status), ["unpaid", "overdue", "partially_paid"]))
+<div class="pn-card mb-24">
+    <div class="pn-card-header" style="background:linear-gradient(135deg,var(--primary),#1e5fa0);border-radius:12px 12px 0 0">
+        <span style="font-size:15px;font-weight:700;color:#fff">
+            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="display:inline;vertical-align:-2px;margin-right:6px"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 10h18M7 15h1m4 0h1m-7 4h12a3 3 0 003-3V8a3 3 0 00-3-3H6a3 3 0 00-3 3v8a3 3 0 003 3z"/></svg>
+            {{ __('client.invoices.pay_this_invoice') }} — {{ dual_money_fmt($balance ?? $invoice->amountDue(), $invoice) }}
+        </span>
+    </div>
+    <div class="pn-card-body">
+        @if(($usableCredit ?? 0) > 0)
+        {{-- The account's balance first: it costs the customer nothing to use. --}}
+        <form method="POST" action="{{ route('client.invoices.pay-with-credit', $invoice) }}" class="mb-16">
+            @csrf
+            <button type="submit" class="btn btn-primary">{{ __('client.invoices.pay_with_credit', ['amount' => money_fmt($usableCredit)]) }}</button>
+        </form>
+        @endif
+        @if(isset($storedCards) && $storedCards->isNotEmpty())
+        {{-- A card already stored: one click, charged the way automatic payment
+             charges it (a bank that wants the cardholder is answered above). --}}
+        <div class="mb-16 pn-stored-cards">
+            <p class="text-muted text-sm mb-8">{{ __('client.invoices.pay_with_stored_card') }}</p>
+            @foreach($storedCards as $card)
+            <form method="POST" action="{{ route('client.invoices.pay-with-card', $invoice) }}" style="display:inline-block;margin:0 8px 8px 0">
+                @csrf
+                <input type="hidden" name="payment_method_id" value="{{ $card->id }}">
+                <button type="submit" class="btn {{ $loop->first ? 'btn-primary' : 'btn-outline' }}">{{ __('client.invoices.pay_with_card_button', ['card' => trim(($card->card_brand ? ucfirst($card->card_brand).' ' : '').'•••• '.$card->last_four)]) }}</button>
+            </form>
+            @endforeach
+        </div>
+        @endif
+        @if(!empty($gateways))
+        @if(has_billing_conversion($invoice))
+        {{-- The invoice reads in the customer's currency; most gateways take
+             the shop currency, and a card's own bank converts it. --}}
+        <p class="text-muted text-sm mb-16 pn-currency-note">{{ __('client.invoices.currency_charge_note', [
+            'billing' => strtoupper((string) $invoice->billing_currency),
+            'shop' => strtoupper((string) ($invoice->source_currency ?: currency_code_default())),
+            'amount' => invoice_money_fmt($balance ?? $invoice->amountDue(), $invoice),
+        ]) }}</p>
+        @endif
+        <p class="text-muted text-sm mb-16">{{ __('client.invoices.select_payment_method') }}</p>
+        <div class="gw-tabs">
+            @foreach($gateways as $i => $gw)
+            <div class="gw-tab {{ $i === 0 ? "active" : "" }}" onclick="switchGw(event, '{{ $gw }}')">
+                {{ $gatewayLabels[$gw] ?? ucfirst($gw) }}
+            </div>
+            @endforeach
+        </div>
+        @foreach($gateways as $i => $gw)
+        <div id="gw-{{ $gw }}" class="gw-panel {{ $i === 0 ? "active" : "" }}">
+            @if(isset($gatewayForms[$gw]) && $gatewayForms[$gw])
+                {!! $gatewayForms[$gw] !!}
+                @if($gw === "banktransfer" && !(isset($pendingNotification) && $pendingNotification))
+                    @include("client.invoices.partials.payment-notification-form")
+                @endif
+            @elseif($gw === "stripe")
+                <div class="gw-form-box">
+                    <p class="text-muted text-sm mb-16">{{ __('client.invoices.stripe_desc') }}</p>
+                    <div id="stripe-card-element" style="border:1.5px solid var(--border);padding:12px;border-radius:var(--radius-sm);background:var(--bg);margin-bottom:16px">
+                        <em style="color:var(--muted);font-size:13px">{{ __('client.invoices.stripe_placeholder') }}</em>
+                    </div>
+                    <button type="button" onclick="stripePayNow({{ $invoice->id }})" class="btn btn-primary">
+                        {{ __('client.invoices.pay_with_card', ['amount' => number_format($invoice->amountDue(), 2)]) }}
+                    </button>
+                </div>
+            @elseif($gw === "paypal")
+                <div class="gw-form-box">
+                    <p class="text-muted text-sm mb-16">{{ __('client.invoices.paypal_desc') }}</p>
+                    <div id="paypal-button-container-{{ $invoice->id }}" style="max-width:280px"></div>
+                </div>
+            @else
+                <div class="gw-form-box">
+                    <p class="text-muted text-sm">{{ __('client.invoices.payment_form_for') }} <strong>{{ $gatewayLabels[$gw] ?? ucfirst($gw) }}</strong> {{ __('client.invoices.not_configured') }}</p>
+                </div>
+            @endif
+        </div>
+        @endforeach
+        @else
+        <div class="pn-alert pn-alert-warning">
+            {{ __('client.invoices.no_payment_methods') }}
+        </div>
+        @endif
+    </div>
+</div>
+@endif
+
+@section("scripts")
+<script>
+function switchGw(e, gw) {
+    document.querySelectorAll(".gw-tab").forEach(t => t.classList.remove("active"));
+    document.querySelectorAll(".gw-panel").forEach(p => p.classList.remove("active"));
+    e.currentTarget.classList.add("active");
+    const panel = document.getElementById("gw-" + gw);
+    if (panel) panel.classList.add("active");
+}
+// The cardholder finishing a charge their bank stopped. The intent is not
+// named here: the server reads it from what the charger recorded, hands back
+// only that intent's client secret, and the same confirm endpoint every other
+// card payment goes through credits the invoice.
+function pnAuthenticate(id) {
+    var btn = document.getElementById("pn-authenticate-btn");
+    var msg = document.getElementById("pn-authenticate-error");
+    if (btn) { btn.disabled = true; }
+    if (msg) { msg.textContent = ""; }
+
+    function stop(text) {
+        if (msg) { msg.textContent = text; }
+        if (btn) { btn.disabled = false; }
+    }
+
+    fetch("/gateway/stripe/authenticate/" + id, {
+        method: "POST",
+        headers: {"Content-Type": "application/json", "X-CSRF-TOKEN": @json(csrf_token())}
+    }).then(function (r) { return r.json(); }).then(function (d) {
+        if (!d.success || !d.client_secret) {
+            stop(d.message || @json(__('client.invoices.authenticate_unavailable')));
+            return;
+        }
+
+        if (typeof Stripe === "undefined") {
+            stop(@json(__('client.invoices.authenticate_unavailable')));
+            return;
+        }
+
+        var stripe = Stripe(@json($stripePublishableKey ?? ''));
+
+        return stripe.handleNextAction({ clientSecret: d.client_secret }).then(function (result) {
+            if (result.error) {
+                stop(result.error.message || @json(__('client.invoices.authenticate_unavailable')));
+                return;
+            }
+
+            return fetch("/gateway/stripe/confirm/" + id, {
+                method: "POST",
+                headers: {"Content-Type": "application/json", "X-CSRF-TOKEN": @json(csrf_token())},
+                body: JSON.stringify({ payment_intent_id: result.paymentIntent.id })
+            }).then(function (r) { return r.json(); }).then(function (res) {
+                if (res.success) { window.location.href = res.redirect_url || window.location.href; }
+                else { stop(res.message || @json(__('client.invoices.authenticate_unavailable'))); }
+            });
+        });
+    }).catch(function () {
+        // A label, not a sentence: the other caller appends the browser's
+        // own message to it, and this one left the customer looking at a bare
+        // 'Network error:'.
+        stop(@json(__('client.invoices.network_error_only')));
+    });
+}
+function stripePayNow(id) {
+    fetch("/gateway/stripe/intent/" + id, {
+        method: "POST",
+        headers: {"Content-Type": "application/json","X-CSRF-TOKEN": document.querySelector("meta[name=csrf-token]")?.content || ""}
+    }).then(r => r.json()).then(d => {
+        if (d.success) { pnDialog.alert(@js(__('client.invoices.payment_intent')) + ' ' + d.client_secret, { icon: 'info' }); }
+        else { pnDialog.alert(@js(__('client.invoices.payment_error')) + ' ' + (d.message || @js(__('client.invoices.unknown_error'))), { icon: 'error' }); }
+    }).catch(e => pnDialog.alert(@js(__('client.invoices.network_error')) + ' ' + e.message, { icon: 'error' }));
+}
+</script>
+@endsection
+
+@endsection

@@ -1,0 +1,47 @@
+*.log
+.DS_Store
+.env
+.env.backup
+.env.production
+.phpactor.json
+.phpunit.result.cache
+/.fleet
+/.idea
+/.nova
+/.phpunit.cache
+/.vscode
+/.zed
+/auth.json
+/node_modules
+/public/build
+/public/hot
+/public/storage
+# Nothing from storage/ ships in the repository. The subdirectories carry their
+# own ignore files, but storage/ itself did not, which is how an
+# installed.lock - the "this system is already set up" marker - was committed
+# and then cloned into every new deployment, closing the install wizard on
+# machines nobody had installed. Tracked files stay tracked; this stops new
+# runtime artefacts from being added by accident.
+/storage/*
+!/storage/app/
+!/storage/debugbar/
+!/storage/framework/
+!/storage/logs/
+# Where tools/release/build-package.sh writes a release package by default.
+# These are build output - a 30 MB tarball per release - and two of them were
+# committed by accident on 2026-11-08, taking the repository's tracked content
+# from 28 MB to 88 MB and ending up inside the next release package, which has
+# no business carrying the previous ones. They are published as GitHub release
+# assets, never tracked here.
+/dist
+/vendor
+Homestead.json
+Homestead.yaml
+Thumbs.db
+.env.testing
+AGENTS.md
+
+# merge leftovers (git mergetool, patch)
+*.orig
+*.rej
+*.revbak

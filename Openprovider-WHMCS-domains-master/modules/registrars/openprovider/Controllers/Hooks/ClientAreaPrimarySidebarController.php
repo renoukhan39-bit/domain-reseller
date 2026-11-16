@@ -1,0 +1,205 @@
+<?php
+
+namespace OpenProvider\WhmcsRegistrar\Controllers\Hooks;
+
+use OpenProvider\API\ApiHelper;
+use OpenProvider\WhmcsRegistrar\helpers\DNS;
+use OpenProvider\WhmcsRegistrar\helpers\DomainFullNameToDomainObject;
+use OpenProvider\WhmcsRegistrar\helpers\DnssecManagement;
+use WHMCS\Database\Capsule;
+
+/**
+ * Class DnsAuthController
+ * OpenProvider Registrar module
+ *
+ * @copyright Copyright (c) Openprovider 2018
+ */
+class ClientAreaPrimarySidebarController
+{
+    const DNSSEC_PAGE_NAME = '/dnssec.php';
+    const DNS_MANAGEMENT_PAGE_NAME = '/dnsmanagement.php';
+
+    /**
+     * @var ApiHelper
+     */
+    private $apiHelper;
+    /**
+     * @var DNS
+     */
+    private $dnsHelper;
+    /**
+     * ConfigController constructor.
+     */
+    public function __construct(ApiHelper $apiHelper, DNS $dnsHelper)
+    {
+        $this->apiHelper = $apiHelper;
+        $this->dnsHelper = $dnsHelper;
+    }
+
+    public function show($primarySidebar)
+    {
+        $domainId = $_REQUEST['domainid'] ?? $_REQUEST['id'] ?? null;
+        if (!$domainId) {
+            return;
+        }
+
+        $registrar = Capsule::table('tbldomains')
+            ->where('id', (int) $domainId)
+            ->value('registrar');
+
+        if ((string) $registrar !== 'openprovider') {
+            return;
+        }
+
+        $this->ensureDnsManagementPageExists();
+
+        $this->replaceDnsMenuItem($primarySidebar);
+
+        $this->addDNSSECMenuItem($primarySidebar);
+    }
+
+    private function replaceDnsMenuItem($primarySidebar)
+    {
+        // Filter to the Domain menu
+        if (!$domainDetailsManagement = $primarySidebar->getChild('Domain Details Management'))
+            return;
+
+        if (!$dnsManagement = $domainDetailsManagement->getChild('Manage DNS Host Records'))
+            return;
+
+        $domainId = $_REQUEST['domainid'] ?? $_REQUEST['id'] ?? null;
+        if (!$domainId) {
+            return;
+        }
+
+        if ($url = $this->dnsHelper->getDnsUrlOrFail($domainId)) {
+            // Update the URL.
+            $dnsManagement->setUri($url);
+
+            // WHMCS does not natively support target="_blank".
+            $id    = $dnsManagement->getId();
+            $label = $dnsManagement->getLabel() . '</a>
+<script >
+jQuery( document ).ready(function() {
+    jQuery("#' . $id . '").attr("target", "_blank");
+});
+</script>
+<a href=\'#\' style=\'display:none;\'>';
+            $dnsManagement->setLabel($label);
+            return;
+        }
+        // Fallback to custom DNS Management page if single-domain DNS URL is not available
+        $dnsManagement->setUri("dnsmanagement.php?domainid={$domainId}");
+    }
+
+    private function addDNSSECMenuItem($primarySidebar)
+    {
+        // Check if dnssec.php file exists in the root directory
+        if(
+            !file_exists($GLOBALS['whmcsAppConfig']->getRootDir() . self::DNSSEC_PAGE_NAME) ||
+            empty(file_get_contents($GLOBALS['whmcsAppConfig']->getRootDir() . self::DNSSEC_PAGE_NAME))
+        ){
+            $source_location = $GLOBALS['whmcsAppConfig']->getRootDir()."/modules/registrars/openprovider/custom-pages" . self::DNSSEC_PAGE_NAME;
+            $destination_location = $GLOBALS['whmcsAppConfig']->getRootDir() . self::DNSSEC_PAGE_NAME;
+            // Attempt to copy dnssec.php file into the root file
+            if (!copy($source_location, $destination_location)) {
+                logModuleCall('openprovider', 'copydnssecfile', null, "DNSSEC page error! Failed to add dnssec.php to root directory. Please manually upload the contents of '<Module directory>/registrars/openprovider/custom-pages' to the top level of your WHMCS folder i.e. '<your WHMCS directory>/'" , null, null);
+            }
+        }
+        
+        if (            
+            file_exists($GLOBALS['whmcsAppConfig']->getRootDir() . self::DNSSEC_PAGE_NAME) &&
+            !is_null($primarySidebar->getChild('Domain Details Management'))
+        ) {
+            $domainId        = isset($_REQUEST['domainid']) ? $_REQUEST['domainid'] : $_REQUEST['id'];
+            $isDomainEnabled = Capsule::table('tbldomains')
+                ->where('id', $domainId)
+                ->select('status','domain')
+                ->first();
+            
+            if (!$isDomainEnabled) {
+                return;
+            }
+            
+            $dnssecMgmt = DnssecManagement::getFlag((int)$domainId); // 0/1
+            if ($dnssecMgmt !== 1) {
+                return;
+            }
+
+            $domain = DomainFullNameToDomainObject::convert($isDomainEnabled->domain);
+            $tld = null;
+            if (is_object($domain) && method_exists($domain, 'getExtension')) {
+                $tld = $domain->getExtension(); 
+            } else {
+                $labels = array_values(array_filter(explode('.', strtolower($isDomainEnabled->domain))));
+                if (count($labels) > 1) {
+                    array_shift($labels);
+                    $tld = implode('.', $labels);
+                }
+            }
+
+            if (empty($tld)) {
+                logModuleCall('openprovider', 'supportsDnssec', ['domain' => $isDomainEnabled->domain], null, 'Could not derive TLD', null);
+                return;
+            }
+
+            try {
+                if (!$this->apiHelper->supportsDnssec($tld)) {
+                    return;
+                }
+            } catch (\Exception $e) {
+                return;
+            }
+
+            $dnssecItemClass = '';
+
+            if ($isDomainEnabled->status != 'Active')
+                $dnssecItemClass = 'disabled';
+
+            $primarySidebar->getChild('Domain Details Management')
+                ->addChild('DNSSEC')
+                ->setLabel(\Lang::trans('dnssectabname'))
+                ->setUri("dnssec.php?domainid={$domainId}")
+                ->setClass($dnssecItemClass)
+                ->setOrder(100);
+        }
+    }
+
+    private function ensureDnsManagementPageExists()
+    {
+        $rootDir = $GLOBALS['whmcsAppConfig']->getRootDir();
+        $destination = $rootDir . self::DNS_MANAGEMENT_PAGE_NAME;
+
+        // Check if dnsmanagement.php file exists in the root directory
+        if (file_exists($destination) && !empty(trim((string) @file_get_contents($destination)))) {
+            return;
+        }
+
+        $source = $rootDir . "/modules/registrars/openprovider/custom-pages" . self::DNS_MANAGEMENT_PAGE_NAME;
+
+        // Explicitly check source exists
+        if (!file_exists($source)) {
+            logModuleCall(
+                'openprovider nl',
+                'copydnsmanagementfile',
+                ['source' => $source, 'destination' => $destination],
+                "Source dnsmanagement.php not found. Please upload it manually.",
+                null,
+                null
+            );
+            return;
+        }
+
+        // copy
+        if (!copy($source, $destination)) {
+            logModuleCall(
+                'openprovider nl',
+                'copydnsmanagementfile',
+                ['source' => $source, 'destination' => $destination],
+                "Failed to copy dnsmanagement.php to WHMCS root directory. Please upload it manually.",
+                null,
+                null
+            );
+        }
+    }
+}

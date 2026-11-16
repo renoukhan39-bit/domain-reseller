@@ -1,0 +1,71 @@
+<?php
+
+namespace App\Listeners;
+
+use App\Events\ClientCreated;
+use App\Events\InvoiceCreated;
+use App\Events\InvoicePaid;
+use App\Events\OrderPlaced;
+use App\Events\ServiceActivated;
+use App\Events\ServiceSuspended;
+use App\Events\ServiceTerminated;
+use App\Events\ServiceUnsuspended;
+use App\Events\TicketOpened;
+use App\Events\TicketReplied;
+use App\Models\ActivityLog;
+use Illuminate\Support\Facades\Log;
+
+/**
+ * The activity log the admin area shows.
+ *
+ * This listener is wired to ten business events and only ever wrote a line to
+ * the file log, so the Activity Log page, the dashboard's recent-activity
+ * widget, a customer's Log tab and the getactivitylog API all read a table
+ * nothing had written to since the demo data was seeded.
+ */
+class LogActivityListener
+{
+    public function handle(object $event): void
+    {
+        $className = class_basename($event);
+        [$details, $clientId, $invoiceId] = $this->describe($event);
+
+        Log::info("PNLCS Event: {$className} - {$details}");
+
+        if ($details === null) {
+            return;
+        }
+
+        // Manual actions carry the admin; background jobs (console/queue) have
+        // no authenticated admin, so they fall back to "System".
+        $user = auth('admin')->check()
+            ? (auth('admin')->user()?->full_name ?: 'Admin')
+            : 'System';
+
+        ActivityLog::log($details, $user, $clientId, $invoiceId);
+    }
+
+    /**
+     * @return array{0: ?string, 1: ?int, 2: ?int}
+     */
+    private function describe(object $event): array
+    {
+        return match (true) {
+            $event instanceof ClientCreated => ["Client #{$event->client->id} created", $event->client->id, null],
+            $event instanceof OrderPlaced => ["Order #{$event->order->id} placed", $event->order->client_id, null],
+            $event instanceof InvoiceCreated => ["Invoice #{$event->invoice->id} created", $event->invoice->client_id, $event->invoice->id],
+            $event instanceof InvoicePaid => ["Invoice #{$event->invoice->id} paid", $event->invoice->client_id, $event->invoice->id],
+            $event instanceof TicketOpened => ["Ticket #{$event->ticket->tid} opened", $event->ticket->client_id, null],
+            $event instanceof TicketReplied => ["Ticket #{$event->ticket->tid} replied", $event->ticket->client_id, null],
+            $event instanceof ServiceActivated => ["Service #{$event->service->id} activated", $event->service->client_id, null],
+            $event instanceof ServiceSuspended => ["Service #{$event->service->id} suspended", $event->service->client_id, null],
+            $event instanceof ServiceUnsuspended => ["Service #{$event->service->id} unsuspended", $event->service->client_id, null],
+            $event instanceof \App\Events\DomainRegistered => ["Domain {$event->domain->domain} registered", $event->domain->client_id, null],
+            $event instanceof \App\Events\DomainRenewed => ["Domain {$event->domain->domain} renewed for {$event->years} year(s)", $event->domain->client_id, null],
+            $event instanceof \App\Events\DomainTransferStarted => ["Domain {$event->domain->domain} transfer started", $event->domain->client_id, null],
+            $event instanceof \App\Events\DomainExpired => ["Domain {$event->domain->domain} moved to {$event->status}", $event->domain->client_id, null],
+            $event instanceof ServiceTerminated => ["Service #{$event->service->id} terminated", $event->service->client_id, null],
+            default => [null, null, null],
+        };
+    }
+}

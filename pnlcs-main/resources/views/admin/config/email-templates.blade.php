@@ -1,0 +1,92 @@
+@extends('admin.layouts.app')
+@section('title', __('admin.email_templates.title'))
+@section('content')
+
+<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h1>{{ __('admin.email_templates.title') }}</h1>
+</div>
+
+<div class="card" style="margin-bottom:15px;">
+    <div class="card-body">
+        <form method="GET" action="{{ route('admin.config.email-templates') }}" style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;">
+            <div>
+                <label class="form-label">{{ __('admin.email_templates.language') }}</label>
+                <select name="lang" class="form-control" onchange="this.form.submit()" style="width:220px;">
+                    @foreach($languages ?? [] as $lang)
+                    <option value="{{ $lang->code }}" @selected($lang->code === ($selectedLang ?? 'en'))>{{ $lang->native_name ?? $lang->name }} ({{ $lang->code }})</option>
+                    @endforeach
+                </select>
+            </div>
+        </form>
+    </div>
+</div>
+
+<div class="card">
+    @if(($templates ?? collect())->isEmpty())
+    <div class="card-body" style="text-align:center;padding:40px;color:#999;">{{ __('admin.email_templates.no_templates') }}</div>
+    @else
+    <table class="data-table">
+        <thead><tr><th>{{ __('admin.email_templates.template_name') }}</th><th>{{ __('common.table.subject') }}</th><th>{{ __('common.table.type') }}</th><th>{{ __('common.table.status') }}</th><th style="text-align:right;">{{ __('common.table.actions') }}</th></tr></thead>
+        <tbody>
+        @foreach($templates as $tpl)
+        <tr>
+            <td style="font-weight:600;">{{ $tpl->name }}</td>
+            <td style="font-size:12px;color:#555;">{{ $tpl->subject }}</td>
+            <td style="text-transform:capitalize;">{{ $tpl->type ?? 'general' }}</td>
+            <td><span class="badge-{{ $tpl->disabled ? 'suspended' : 'active' }}">{{ $tpl->disabled ? __('common.status.disabled') : __('common.status.active') }}</span></td>
+            <td style="text-align:right;">
+                <button type="button" onclick="openModal('edit-tpl-{{ $loop->index }}')" class="btn btn-default btn-xs">{{ __('common.actions.edit') }}</button>
+            </td>
+        </tr>
+        @endforeach
+        </tbody>
+    </table>
+    @endif
+</div>
+
+@foreach($templates ?? [] as $tpl)
+<x-modal :name="'edit-tpl-' . $loop->index" title="{{ __('admin.email_templates.edit_template_title') }}" maxWidth="xl">
+    <form method="POST" action="{{ route('admin.config.email-templates.update', $tpl) }}">
+        @csrf @method('PUT')
+        <div class="form-group"><label class="form-label">{{ __('admin.email_templates.template_name') }}</label><input type="text" name="name" value="{{ $tpl->name }}" required class="form-control"></div>
+        <div class="form-group"><label class="form-label">{{ __('common.form.subject') }}</label><input type="text" name="subject" value="{{ $tpl->subject }}" required class="form-control"></div>
+        <div class="form-group"><label class="form-label">{{ __('admin.email_templates.type') }}</label>
+            <select name="type" class="form-control">
+                <option value="general" @selected(($tpl->type ?? 'general') === 'general')>{{ __('admin.email_templates.type_general') }}</option>
+                <option value="service" @selected($tpl->type === 'service')>{{ __('admin.email_templates.type_service') }}</option>
+                <option value="domain" @selected($tpl->type === 'domain')>{{ __('admin.email_templates.type_domain') }}</option>
+                <option value="invoice" @selected($tpl->type === 'invoice')>{{ __('admin.email_templates.type_invoice') }}</option>
+                <option value="support" @selected($tpl->type === 'support')>{{ __('admin.email_templates.type_support') }}</option>
+            </select>
+        </div>
+        <p class="email-template-source" style="font-size:12px;color:#555;margin:0 0 6px;">{{ $tpl->custom ? __('admin.email_templates.source_custom') : __('admin.email_templates.source_builtin') }}</p>
+        <div class="form-group">
+            <label class="form-label">{{ __('admin.email_templates.body_html') }}</label>
+            <textarea name="message" rows="10" class="form-control" style="font-family:monospace;font-size:12px;">{{ $tpl->message }}</textarea>
+        </div>
+        <div class="form-group">
+            <label class="form-label">{{ __('admin.email_templates.copy_to') }}</label>
+            <input type="text" name="copy_to" value="{{ $tpl->copy_to }}" class="form-control">
+            <div style="font-size:12px;color:#777;margin-top:4px;">{{ __('admin.email_templates.copy_to_hint') }}</div>
+        </div>
+        <div class="form-group">
+            <label style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+                <input type="hidden" name="disabled" value="0">
+                <input type="checkbox" name="disabled" value="1" @checked($tpl->disabled)>
+                <span>{{ __('common.status.disabled') }}</span>
+            </label>
+        </div>
+        <div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px;">
+            @if($tpl->custom)
+            <button type="submit" form="reset-tpl-{{ $loop->index }}" class="btn btn-default btn-sm" style="margin-right:auto;">{{ __('admin.email_templates.use_builtin') }}</button>
+            @endif
+            <button type="button" onclick="closeModal('edit-tpl-{{ $loop->index }}')" class="btn btn-default btn-sm">{{ __('common.actions.cancel') }}</button>
+            <button type="submit" class="btn btn-primary btn-sm">{{ __('admin.email_templates.save_template') }}</button>
+        </div>
+    </form>
+    @if($tpl->custom)
+    <form id="reset-tpl-{{ $loop->index }}" method="POST" action="{{ route('admin.config.email-templates.reset', $tpl) }}">@csrf</form>
+    @endif
+</x-modal>
+@endforeach
+@endsection

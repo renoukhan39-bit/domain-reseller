@@ -1,0 +1,159 @@
+@extends('admin.layouts.app')
+@section('title', __('admin.registrars.title'))
+@section('content')
+
+<div class="page-header" style="display:flex;align-items:center;justify-content:space-between;">
+    <h1>{{ __('admin.registrars.title') }}</h1>
+</div>
+
+@if(($registrars ?? collect())->isEmpty())
+<div class="card"><div class="card-body" style="text-align:center;padding:40px;color:#999;">{{ __('admin.registrars.no_registrars') }}</div></div>
+@else
+<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:15px;align-items:start;">
+@foreach($registrars as $reg)
+    <details class="card gw-card" style="overflow:visible;">
+        <summary style="cursor:pointer;display:flex;align-items:center;gap:10px;padding:12px 16px;list-style:none;">
+            <span class="gw-chevron" style="display:inline-block;transition:transform .2s;color:#999;">&#9656;</span>
+            <span style="flex:1;font-weight:600;display:flex;align-items:center;gap:8px;">
+                {{ $reg->label }}
+                @if($reg->help)
+                <span class="help-badge" tabindex="0">?
+                    <span class="help-tooltip"><span class="help-tooltip-inner">{{ inline_markup($reg->help) }}</span></span>
+                </span>
+                @endif
+            </span>
+            <span class="badge {{ $reg->active ? 'badge-active' : 'badge-cancelled' }}">{{ $reg->active ? __('common.status.active') : __('common.status.inactive') }}</span>
+        </summary>
+        <div style="padding:0 16px 16px;border-top:1px solid #e5e7eb;">
+            <form method="POST" action="{{ route('admin.config.registrars.settings.update', $reg->registrar_name) }}">
+                @csrf
+                <div class="form-group">
+                    <label style="font-size:13px;display:flex;align-items:center;gap:6px;cursor:pointer;">
+                        <input type="checkbox" name="visible" value="1" {{ $reg->active ? 'checked' : '' }}> {{ __('admin.registrars.enable_registrar') }}
+                    </label>
+                </div>
+
+                @forelse($reg->fields as $field)
+                    @php
+                        $key = $field['name'];
+                        $value = $reg->values[$key] ?? ($field['default'] ?? '');
+                        $type = $field['type'] ?? 'text';
+                    @endphp
+                    <div class="form-group">
+                        <label class="form-label">{{ $field['label'] ?? ucfirst(str_replace('_', ' ', $key)) }}</label>
+                        @if($type === 'password')
+                            {{-- A stored secret never travels back to the browser. It used to be
+                                 printed into value=, which put the live registrar password in the
+                                 page source of every visit. The field now ships empty and a blank
+                                 submission means "keep what is saved". --}}
+                            <input type="password" name="settings[{{ $key }}]" value="" class="form-control" autocomplete="new-password" placeholder="{{ (string) $value !== '' ? __('admin.settings.smtp_password_keep') : '' }}">
+                        @elseif($type === 'textarea')
+                            <textarea name="settings[{{ $key }}]" rows="3" class="form-control">{{ $value }}</textarea>
+                        @elseif($type === 'yesno')
+                            <select name="settings[{{ $key }}]" class="form-control">
+                                <option value="0" {{ (string) $value === '0' ? 'selected' : '' }}>{{ __('common.no') }}</option>
+                                <option value="1" {{ (string) $value === '1' ? 'selected' : '' }}>{{ __('common.yes') }}</option>
+                            </select>
+                        @elseif($type === 'select')
+                            <select name="settings[{{ $key }}]" class="form-control">
+                                @foreach(($field['options'] ?? []) as $optValue => $optLabel)
+                                <option value="{{ $optValue }}" {{ (string) $value === (string) $optValue ? 'selected' : '' }}>{{ $optLabel }}</option>
+                                @endforeach
+                            </select>
+                        @else
+                            <input type="text" name="settings[{{ $key }}]" value="{{ $value }}" class="form-control">
+                        @endif
+                    </div>
+                @empty
+                    <div class="form-group">
+                        <label class="form-label">{{ __('admin.registrars.config_json') }}</label>
+                        <textarea name="settings_json" rows="4" class="form-control" placeholder='{"key":"value"}'></textarea>
+                    </div>
+                @endforelse
+
+                <button type="submit" class="btn btn-primary btn-sm" style="margin-top:8px;">{{ __('admin.registrars.save_settings') }}</button>
+            </form>
+            @if($reg->testable || $reg->syncable || $reg->importable)
+            <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap;">
+                @if($reg->testable)
+                <form method="POST" action="{{ route('admin.config.registrars.test', $reg->registrar_name) }}">
+                    @csrf
+                    <button type="submit" class="btn btn-default btn-sm">{{ __('admin.registrars.test') }}</button>
+                </form>
+                @endif
+                @if($reg->importable)
+                <form method="POST" action="{{ route('admin.config.registrars.add-tlds', $reg->registrar_name) }}">
+                    @csrf
+                    <button type="submit" class="btn btn-default btn-sm" onclick="return pnConfirm(event, @js(__('admin.registrars.add_tlds_confirm', ['name' => $reg->label])))">{{ __('admin.registrars.add_tlds') }}</button>
+                </form>
+                @endif
+                @if($reg->syncable)
+                <form method="POST" action="{{ route('admin.config.registrars.sync-prices', $reg->registrar_name) }}">
+                    @csrf
+                    <button type="submit" class="btn btn-default btn-sm" onclick="return pnConfirm(event, @js(__('admin.registrars.sync_prices_confirm', ['name' => $reg->label])))">{{ __('admin.registrars.sync_prices') }}</button>
+                </form>
+                @if(!empty($reg->values['last_price_sync']))
+                <div style="font-size:12px;color:#777;align-self:center;">{{ __('admin.registrars.last_sync', ['date' => \Carbon\Carbon::parse($reg->values['last_price_sync'])->format('d.m.Y H:i')]) }}</div>
+                @endif
+                @endif
+            </div>
+            @endif
+        </div>
+    </details>
+@endforeach
+</div>
+@endif
+
+<style>
+    .gw-card summary::-webkit-details-marker { display: none; }
+    .gw-card[open] .gw-chevron { transform: rotate(90deg); }
+    .gw-card { overflow: visible !important; }
+    .help-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 16px;
+        height: 16px;
+        border-radius: 50%;
+        background: #cbd5e1;
+        color: #334155;
+        font-size: 11px;
+        font-weight: 700;
+        line-height: 1;
+        cursor: help;
+        position: relative;
+        flex: 0 0 auto;
+    }
+    .help-tooltip {
+        visibility: hidden;
+        opacity: 0;
+        position: absolute;
+        top: 100%;
+        left: 50%;
+        transform: translateX(-50%);
+        padding-top: 8px;
+        z-index: 300;
+        transition: opacity .12s ease;
+    }
+    .help-tooltip-inner {
+        display: block;
+        width: 360px;
+        max-width: 80vw;
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 6px;
+        box-shadow: 0 6px 20px rgba(0,0,0,.15);
+        padding: 12px 14px;
+        font-size: 12px;
+        font-weight: 400;
+        line-height: 1.55;
+        color: #374151;
+        text-align: left;
+    }
+    .help-badge:hover .help-tooltip,
+    .help-badge:focus .help-tooltip {
+        visibility: visible;
+        opacity: 1;
+    }
+</style>
+@endsection

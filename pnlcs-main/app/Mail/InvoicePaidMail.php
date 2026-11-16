@@ -1,0 +1,45 @@
+<?php
+
+namespace App\Mail;
+
+use App\Models\Invoice;
+use App\Mail\Concerns\LocalizesToRecipient;
+use App\Models\Setting;
+use Illuminate\Bus\Queueable;
+use Illuminate\Mail\Mailable;
+use Illuminate\Mail\Mailables\Content;
+use Illuminate\Mail\Mailables\Envelope;
+use Illuminate\Queue\SerializesModels;
+use Illuminate\Contracts\Queue\ShouldQueue;
+
+class InvoicePaidMail extends Mailable implements ShouldQueue
+{
+    use Queueable, SerializesModels;
+    use LocalizesToRecipient;
+
+    public function __construct(
+        public Invoice $invoice,
+        public ?string $transactionId = null
+    ) {
+        $this->localizeTo($this->invoice);
+    }
+
+    public function envelope(): Envelope
+    {
+        $num = $this->invoice->invoice_num ?? $this->invoice->id;
+
+        return new Envelope(subject: __('email.invoice.paid_subject', ['number' => $num]));
+    }
+
+    public function content(): Content
+    {
+        return new Content(
+            view: 'emails.invoice-paid',
+            with: [
+                'invoice' => $this->invoice,
+                'transactionId' => $this->transactionId,
+                'companyName' => company_name(),
+            ],
+        );
+    }
+}

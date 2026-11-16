@@ -1,0 +1,403 @@
+// The whole server, tested over its real surface: a child process speaking
+// newline-delimited JSON-RPC on stdio, calling a local HTTP stub that stands
+// in for PNLCS and records exactly what arrived on the wire. Every tool is
+// exercised - the read set and the write set - plus the handshake, the
+// write-gate, and both failure shapes.
+
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+import { toolset, paramsFor } from '../lib/tools.js';
+
+const serverPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'server.js');
+
+// ---- PNLCS stub -----------------------------------------------------------
+
+let stub;
+let stubUrl;
+const seen = [];
+let nextResponse = null; // {status, body} override for one request
+
+before(async () => {
+  stub = createServer(async (req, res) => {
+    const url = new URL(req.url, 'http://localhost');
+    let body = '';
+    for await (const chunk of req) body += chunk;
+    seen.push({
+      method: req.method,
+      path: url.pathname,
+      rawUrl: req.url,
+      rawBody: body,
+      headers: req.headers,
+      query: Object.fromEntries(url.searchParams),
+      json: body ? JSON.parse(body) : null,
+    });
+    const answer = nextResponse ?? { status: 200, body: { result: 'success', echo: true } };
+    nextResponse = null;
+    res.writeHead(answer.status, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(answer.body));
+  });
+  stub.listen(0, '127.0.0.1');
+  await once(stub, 'listening');
+  stubUrl = `http://127.0.0.1:${stub.address().port}`;
+});
+
+after(() => stub?.close());
+
+// ---- MCP client over stdio ------------------------------------------------
+
+function startMcp(extraEnv = {}) {
+  const child = spawn(process.execPath, [serverPath], {
+    env: {
+      ...process.env,
+      PNLCS_URL: stubUrl,
+      PNLCS_IDENTIFIER: 'stub_id',
+      PNLCS_SECRET: 'stub_secret',
+      ...extraEnv,
+    },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  let buffer = '';
+  const waiting = new Map();
+  child.stdout.on('data', (chunk) => {
+    buffer += chunk;
+    let idx;
+    while ((idx = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, idx);
+      buffer = buffer.slice(idx + 1);
+      if (!line.trim()) continue;
+      const msg = JSON.parse(line);
+      waiting.get(msg.id)?.(msg);
+      waiting.delete(msg.id);
+    }
+  });
+
+  let nextId = 0;
+  const rpc = (method, params) => new Promise((resolve) => {
+    const id = ++nextId;
+    waiting.set(id, resolve);
+    child.stdin.write(JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n');
+  });
+
+  return { child, rpc, stop: () => child.kill() };
+}
+
+// Arguments that satisfy every tool's schema for the wire test.
+const SAMPLE_ARGS = {
+  list_clients: { search: 'ada', sorting: 'DESC', limitnum: 5, limitstart: 10 },
+  get_client: { clientid: 7 },
+  list_client_services: { clientid: 7 },
+  list_client_domains: { clientid: 7 },
+  list_invoices: { status: 'overdue', userid: 7 },
+  get_invoice: { invoiceid: 3 },
+  list_orders: { status: 'fraud' },
+  list_tickets: { status: 'open' },
+  get_ticket: { ticketid: 4 },
+  list_transactions: { clientid: 7 },
+  get_activity_log: { limitnum: 10 },
+  add_client: { firstname: 'Ada', lastname: 'Lovelace', email: 'ada@example.com', password2: 'Str0ngPass!' },
+  create_invoice: { userid: 7, items: [{ description: 'Hosting', amount: 9.9 }] },
+  add_invoice_payment: { invoiceid: 3, transid: 'TX-1', amount: 9.9 },
+  open_ticket: { deptid: 1, subject: 'Help', message: 'It broke', email: 'ada@example.com' },
+  add_ticket_reply: { ticketid: 4, message: 'On it' },
+  suspend_service: { serviceid: 5, reason: 'unpaid' },
+  unsuspend_service: { serviceid: 5 },
+};
+
+// ---- Tests ----------------------------------------------------------------
+
+test('handshake: initialize, ping, tools/list', async () => {
+  const mcp = startMcp({ PNLCS_ALLOW_WRITES: '1' });
+  try {
+    const init = await mcp.rpc('initialize', { protocolVersion: '2025-06-18', capabilities: {} });
+    assert.equal(init.result.serverInfo.name, 'pnlcs-mcp');
+    assert.equal(init.result.protocolVersion, '2025-06-18');
+    assert.ok(init.result.capabilities.tools);
+
+    const ping = await mcp.rpc('ping');
+    assert.deepEqual(ping.result, {});
+
+    const list = await mcp.rpc('tools/list');
+    assert.equal(list.result.tools.length, toolset(true).length);
+    for (const tool of list.result.tools) {
+      assert.ok(tool.description.length > 10, `${tool.name} has a description`);
+      assert.equal(tool.inputSchema.type, 'object');
+    }
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('write tools are invisible and unusable without PNLCS_ALLOW_WRITES', async () => {
+  const mcp = startMcp();
+  try {
+    const list = await mcp.rpc('tools/list');
+    const names = list.result.tools.map((t) => t.name);
+    assert.equal(names.length, toolset(false).length);
+    assert.ok(!names.includes('add_client'));
+    assert.ok(!names.includes('suspend_service'));
+
+    // Not merely hidden: calling one anyway is refused before any HTTP happens.
+    const seenBefore = seen.length;
+    const call = await mcp.rpc('tools/call', { name: 'add_client', arguments: SAMPLE_ARGS.add_client });
+    assert.match(call.error.message, /Unknown tool/);
+    assert.equal(seen.length, seenBefore);
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('every tool reaches its PNLCS action with the right method, auth and params', async () => {
+  const mcp = startMcp({ PNLCS_ALLOW_WRITES: '1' });
+  try {
+    for (const tool of toolset(true)) {
+      const args = SAMPLE_ARGS[tool.name] ?? {};
+      seen.length = 0;
+
+      const answer = await mcp.rpc('tools/call', { name: tool.name, arguments: args });
+      assert.equal(seen.length, 1, `${tool.name} made exactly one request`);
+      const req = seen[0];
+
+      assert.equal(req.path, `/api/v1/${tool.action}`, tool.name);
+      assert.equal(req.method, tool.method ?? 'GET', tool.name);
+
+      const carried = req.method === 'GET' ? req.query : req.json;
+
+      // Credentials in the headers, and nowhere else: a secret in the query
+      // string lands in every access log between here and PNLCS.
+      assert.equal(req.headers['x-api-key'], 'stub_id', `${tool.name} sends the identifier header`);
+      assert.equal(req.headers['x-api-secret'], 'stub_secret', `${tool.name} sends the secret header`);
+      assert.ok(!req.rawUrl.includes('stub_secret'), `${tool.name} keeps the secret out of the URL`);
+      assert.ok(!req.rawUrl.includes('stub_id'), `${tool.name} keeps the identifier out of the URL`);
+      assert.ok(!req.rawBody.includes('stub_secret'), `${tool.name} keeps the secret out of the body`);
+
+      // Everything the tool means to send - the caller's arguments plus the
+      // parameters the tool fixes or copies - arrives as sent.
+      for (const [k, v] of Object.entries(paramsFor(tool, args))) {
+        const sent = carried[k];
+        if (req.method === 'GET') {
+          assert.equal(sent, String(v), `${tool.name} sends ${k}`);
+        } else {
+          assert.deepEqual(sent, v, `${tool.name} sends ${k}`);
+        }
+      }
+
+      assert.ok(!answer.result.isError, `${tool.name} succeeded`);
+      assert.match(answer.result.content[0].text, /"result": "success"/);
+    }
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('a PNLCS error comes back as a readable tool result, not a crash', async () => {
+  const mcp = startMcp();
+  try {
+    nextResponse = { status: 404, body: { result: 'error', message: 'Client Not Found' } };
+    const answer = await mcp.rpc('tools/call', { name: 'get_client', arguments: { clientid: 999999 } });
+    assert.equal(answer.result.isError, true);
+    assert.match(answer.result.content[0].text, /Client Not Found/);
+
+    // And the server is still alive afterwards.
+    const ping = await mcp.rpc('ping');
+    assert.deepEqual(ping.result, {});
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('an unknown method gets a JSON-RPC error', async () => {
+  const mcp = startMcp();
+  try {
+    const answer = await mcp.rpc('resources/list');
+    assert.equal(answer.error.code, -32601);
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('a one-shot pipe still gets every answer before the server exits', async () => {
+  const child = spawn(process.execPath, [serverPath], {
+    env: { ...process.env, PNLCS_URL: stubUrl, PNLCS_IDENTIFIER: 'stub_id', PNLCS_SECRET: 'stub_secret' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stdin.end(
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }) + '\n'
+    + JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'get_stats', arguments: {} } }) + '\n'
+  );
+  let out = '';
+  child.stdout.on('data', (c) => { out += c; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  const answers = out.trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(answers.length, 2);
+  assert.match(answers[1].result.content[0].text, /"result": "success"/);
+});
+
+test('an unknown protocol version is answered with our latest, a known one is echoed', async () => {
+  const mcp = startMcp();
+  try {
+    const future = await mcp.rpc('initialize', { protocolVersion: '2099-01-01' });
+    assert.equal(future.result.protocolVersion, '2025-06-18');
+  } finally {
+    mcp.stop();
+  }
+  const mcp2 = startMcp();
+  try {
+    const old = await mcp2.rpc('initialize', { protocolVersion: '2024-11-05' });
+    assert.equal(old.result.protocolVersion, '2024-11-05');
+  } finally {
+    mcp2.stop();
+  }
+});
+
+test('a JSON-RPC batch from an older client is answered, not swallowed', async () => {
+  const child = spawn(process.execPath, [serverPath], {
+    env: { ...process.env, PNLCS_URL: stubUrl, PNLCS_IDENTIFIER: 'stub_id', PNLCS_SECRET: 'stub_secret' },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stdin.end(JSON.stringify([
+    { jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } },
+    { jsonrpc: '2.0', id: 2, method: 'ping' },
+  ]) + '\n');
+  let out = '';
+  child.stdout.on('data', (c) => { out += c; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  const answers = out.trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(answers.length, 2);
+  assert.equal(answers.find((a) => a.id === 1).result.protocolVersion, '2025-03-26');
+  assert.deepEqual(answers.find((a) => a.id === 2).result, {});
+});
+
+test('a PNLCS that never answers becomes a readable timeout, not a hang', async () => {
+  // A stub that accepts the connection and then says nothing.
+  const silent = createServer(() => { /* never respond */ });
+  silent.listen(0, '127.0.0.1');
+  await once(silent, 'listening');
+
+  const mcp = startMcp({ PNLCS_URL: `http://127.0.0.1:${silent.address().port}` });
+  try {
+    // The 30s production timeout is too slow for a test; prove the wiring by
+    // aborting the socket from the stub side instead - the same catch path.
+    setTimeout(() => silent.closeAllConnections(), 200);
+    const answer = await mcp.rpc('tools/call', { name: 'get_stats', arguments: {} });
+    assert.equal(answer.result.isError, true);
+    assert.ok(answer.result.content[0].text.length > 10);
+  } finally {
+    mcp.stop();
+    silent.close();
+  }
+});
+
+test('with no environment at all, introspection works and a tool call explains itself', async () => {
+  const child = spawn(process.execPath, [serverPath], {
+    env: { PATH: process.env.PATH },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  child.stdin.end(
+    JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-06-18' } }) + '\n'
+    + JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list' }) + '\n'
+    + JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'get_stats', arguments: {} } }) + '\n'
+  );
+  let out = '';
+  child.stdout.on('data', (c) => { out += c; });
+  const [code] = await once(child, 'exit');
+  assert.equal(code, 0);
+  const answers = out.trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(answers.find((a) => a.id === 1).result.serverInfo.name, 'pnlcs-mcp');
+  assert.equal(answers.find((a) => a.id === 2).result.tools.length, toolset(false).length);
+  const call = answers.find((a) => a.id === 3);
+  assert.equal(call.result.isError, true);
+  assert.match(call.result.content[0].text, /PNLCS_URL/);
+});
+
+test('the client-scoped lists also send userid, so older installs still filter', async () => {
+  const mcp = startMcp();
+  try {
+    for (const name of ['list_client_services', 'list_client_domains', 'list_transactions']) {
+      seen.length = 0;
+      await mcp.rpc('tools/call', { name, arguments: { clientid: 42 } });
+      assert.equal(seen[0].query.clientid, '42', `${name} sends clientid`);
+      assert.equal(seen[0].query.userid, '42', `${name} also sends userid`);
+    }
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('a ticket reply and a new ticket are sent as staff', async () => {
+  const mcp = startMcp({ PNLCS_ALLOW_WRITES: '1' });
+  try {
+    for (const name of ['add_ticket_reply', 'open_ticket']) {
+      seen.length = 0;
+      await mcp.rpc('tools/call', { name, arguments: SAMPLE_ARGS[name] });
+      // Without adminusername PNLCS files the reply as the customer's.
+      assert.ok(seen[0].json.adminusername, `${name} is sent as staff`);
+    }
+  } finally {
+    mcp.stop();
+  }
+});
+
+test('docs/mcp/tools.md lists the tools this server offers', async () => {
+  const { readFileSync } = await import('node:fs');
+  const { render } = await import('../scripts/docs.mjs');
+  const page = readFileSync(new URL('../../docs/mcp/tools.md', import.meta.url), 'utf8');
+  assert.equal(page, render(), 'run node mcp/scripts/docs.mjs and commit docs/mcp/tools.md');
+});
+
+test('every tool calls a real API action, with its method and parameters', async () => {
+  // The API reference (docs/api/openapi.json, generated from the route table)
+  // is the contract. A tool that names an action, a method or a parameter the
+  // API does not have fails quietly at run time - PNLCS ignores an unknown
+  // parameter - so it is checked here instead.
+  const { readFileSync } = await import('node:fs');
+  const spec = JSON.parse(readFileSync(new URL('../../docs/api/openapi.json', import.meta.url), 'utf8'));
+  const problems = [];
+
+  for (const tool of toolset(true)) {
+    const path = spec.paths[`/api/v1/${tool.action}`];
+    const method = (tool.method ?? 'GET').toLowerCase();
+    const op = path?.[method];
+    if (!op) {
+      problems.push(`${tool.name}: no ${method.toUpperCase()} /api/v1/${tool.action}`);
+      continue;
+    }
+
+    let known = {};
+    let required = [];
+    if (method === 'get') {
+      for (const p of op.parameters ?? []) known[p.name.replace(/\[\]$/, '')] = p.description ?? '';
+      required = (op.parameters ?? []).filter((p) => p.required).map((p) => p.name);
+    } else {
+      const ref = op.requestBody?.content?.['application/x-www-form-urlencoded']?.schema?.$ref;
+      const schema = ref ? spec.components.schemas[ref.split('/').pop()] : { properties: {} };
+      for (const [name, prop] of Object.entries(schema.properties ?? {})) known[name] = prop.description ?? '';
+      required = schema.required ?? [];
+    }
+
+    const sent = [...Object.keys(tool.args), ...Object.keys(tool.fixed ?? {})];
+    for (const name of sent) {
+      if (!(name in known)) problems.push(`${tool.name}: ${tool.action} has no parameter ${name}`);
+    }
+    // A second name the tool also sends must be one the reference says the
+    // action accepts ("userid is accepted too").
+    for (const [from, alias] of Object.entries(tool.also ?? {})) {
+      if (!(known[from] ?? '').includes(`${alias} is accepted too`)) problems.push(`${tool.name}: ${tool.action} does not accept ${alias} for ${from}`);
+    }
+    for (const name of required) {
+      if (!(tool.required ?? []).includes(name) && !(name in (tool.fixed ?? {}))) {
+        problems.push(`${tool.name}: ${tool.action} requires ${name}, the tool does not`);
+      }
+    }
+  }
+
+  assert.deepEqual(problems, []);
+});

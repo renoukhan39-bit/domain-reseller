@@ -1,0 +1,194 @@
+<?php
+
+namespace App\Console\Commands;
+
+use App\Models\Setting;
+use App\Services\NotificationService;
+use App\Support\SqlDump;
+use Illuminate\Console\Command;
+use Illuminate\Support\Facades\Log;
+use Symfony\Component\Process\Process;
+
+class DbBackupCommand extends Command
+{
+    protected $signature = 'pnlcs:db-backup
+        {--dir= : Target directory (default: storage/app/backups/db)}
+        {--retention= : Number of backups to keep (default: setting db_backup_retention or 7)}
+        {--php : Dump over the PHP connection even when a dump binary exists}';
+
+    protected $description = 'Dump the database to a gzip file with rotation';
+
+    public function handle(): int
+    {
+        if (Setting::get('db_backup_enabled', '1') !== '1') {
+            $this->info('Database backups are disabled (setting db_backup_enabled).');
+            return self::SUCCESS;
+        }
+
+        $dir = rtrim($this->option('dir') ?: storage_path('app/backups/db'), '/');
+        if (!is_dir($dir) && !mkdir($dir, 0750, true) && !is_dir($dir)) {
+            $this->error("Cannot create backup directory: {$dir}");
+            return self::FAILURE;
+        }
+
+        $db = config('database.connections.mysql');
+        $file = $dir . '/pnlcs-' . now()->format('Ymd-His') . '.sql.gz';
+
+        $cnf = $this->writeCredentialFile($db);
+
+        try {
+            $dumpBin = $this->option('php') ? null : $this->findMysqldump();
+            if (!$dumpBin) {
+                // The billing container ships without a client toolset, so this
+                // command failed silently every night since the install - the
+                // knowledge base written by hand died with the database and
+                // there was not one backup to restore it from. No binary means
+                // PHP dumps the database itself over the connection it already
+                // has: slower, but a backup that exists.
+                $this->warn('mysqldump not found - falling back to a PHP dump over the DB connection.');
+
+                if (! $this->phpDump($file)) {
+                    Log::error('DB backup failed', ['error' => 'php fallback dump failed']);
+                    app(NotificationService::class)->dispatch('backup.failed', [
+                        'event_type' => 'backup.failed',
+                        'subject'    => 'Database backup FAILED',
+                        'message'    => 'Database backup failed: php fallback dump failed',
+                    ]);
+                    $this->error('Backup failed: php fallback dump failed.');
+                    return self::FAILURE;
+                }
+
+                $removed = $this->rotate($dir, (int) ($this->option('retention') ?: Setting::get('db_backup_retention', '7')));
+                run_hook('AfterDatabaseBackup', ['file' => $file, 'size' => filesize($file)]);
+                Log::info('DB backup completed', ['file' => $file, 'size' => filesize($file), 'rotated' => $removed, 'method' => 'php']);
+                $this->info(sprintf('Backup written (php dump): %s (%s KB)', $file, (int) (filesize($file) / 1024)));
+
+                return self::SUCCESS;
+            }
+
+            $cmd = sprintf(
+                'set -o pipefail; %s --defaults-extra-file=%s --single-transaction --quick --routines --triggers --no-tablespaces %s | gzip > %s',
+                escapeshellarg($dumpBin),
+                escapeshellarg($cnf),
+                escapeshellarg($db['database']),
+                escapeshellarg($file)
+            );
+
+            // pipefail needs bash — /bin/sh is dash on Debian/Ubuntu.
+            $process = new Process(['bash', '-c', $cmd], null, null, null, 600);
+            $process->run();
+
+            $ok = $process->isSuccessful()
+                && is_file($file)
+                && filesize($file) > 512
+                && str_starts_with((string) file_get_contents($file, false, null, 0, 2), "\x1f\x8b");
+
+            if (!$ok) {
+                @unlink($file);
+                $error = trim($process->getErrorOutput()) ?: 'unknown error';
+
+                // A mysqldump that is installed but cannot talk to this server
+                // - a client a major version away from the daemon, an auth
+                // plugin it does not know - is the same situation as no
+                // mysqldump at all, and gets the same answer: the PHP dump.
+                // Only when that fails too is the night reported as lost.
+                $this->warn('mysqldump failed ('.$error.') - falling back to a PHP dump over the DB connection.');
+
+                if ($this->phpDump($file)) {
+                    $removed = $this->rotate($dir, (int) ($this->option('retention') ?: Setting::get('db_backup_retention', '7')));
+                    run_hook('AfterDatabaseBackup', ['file' => $file, 'size' => filesize($file)]);
+                    Log::warning('DB backup completed by PHP dump after mysqldump failed', ['file' => $file, 'size' => filesize($file), 'rotated' => $removed, 'mysqldump_error' => $error]);
+                    $this->info(sprintf('Backup written (php dump): %s (%s KB)', $file, (int) (filesize($file) / 1024)));
+
+                    return self::SUCCESS;
+                }
+
+                @unlink($file);
+                Log::error('DB backup failed', ['error' => $error]);
+                app(NotificationService::class)->dispatch('backup.failed', [
+                    'event_type' => 'backup.failed',
+                    'subject'    => 'Database backup FAILED',
+                    'message'    => "Database backup failed: {$error}",
+                ]);
+                $this->error("Backup failed: {$error}");
+                return self::FAILURE;
+            }
+        } finally {
+            @unlink($cnf);
+        }
+
+        $removed = $this->rotate($dir, (int) ($this->option('retention') ?: Setting::get('db_backup_retention', '7')));
+
+        run_hook('AfterDatabaseBackup', ['file' => $file, 'size' => filesize($file)]);
+        Log::info('DB backup completed', ['file' => $file, 'size' => filesize($file), 'rotated' => $removed]);
+        $this->info(sprintf('Backup written: %s (%s KB)%s', $file, (int) (filesize($file) / 1024), $removed ? ", rotated out {$removed} old file(s)" : ''));
+
+        return self::SUCCESS;
+    }
+
+
+    /**
+     * A dump produced by PHP itself (App\Support\SqlDump), restorable by
+     * piping into the standard client. Used when no dump binary exists on this
+     * machine.
+     */
+    private function phpDump(string $file): bool
+    {
+        return SqlDump::dump($file);
+    }
+
+    private function findMysqldump(): ?string
+    {
+        foreach (['/opt/panelica/services/mysql/bin/mysqldump', '/usr/local/bin/mysqldump', '/usr/bin/mysqldump'] as $path) {
+            if (is_executable($path)) {
+                return $path;
+            }
+        }
+        $which = trim((string) shell_exec('command -v mysqldump 2>/dev/null'));
+
+        return $which !== '' ? $which : null;
+    }
+
+    /**
+     * Credentials go through a 0600 defaults file — never on the command line.
+     */
+    private function writeCredentialFile(array $db): string
+    {
+        // Not tempnam(sys_get_temp_dir()): under cron the open_basedir in force
+        // makes it fall back to the system temp directory with a warning, and
+        // Laravel turns that warning into an exception - the dump had already
+        // been written, so a good backup was reported as a failed command every
+        // night. Our own storage directory is both writable and private.
+        $dir = storage_path('app/backups/tmp');
+        if (! is_dir($dir)) {
+            mkdir($dir, 0700, true);
+        }
+        $cnf = $dir.'/pnlcs-dump-'.bin2hex(random_bytes(8)).'.cnf';
+        $lines = "[client]\nuser=\"{$db['username']}\"\npassword=\"{$db['password']}\"\n";
+        if (!empty($db['unix_socket'])) {
+            $lines .= "socket=\"{$db['unix_socket']}\"\n";
+        } else {
+            $lines .= "host=\"{$db['host']}\"\nport=\"" . ($db['port'] ?? 3306) . "\"\n";
+        }
+        file_put_contents($cnf, $lines);
+        chmod($cnf, 0600);
+
+        return $cnf;
+    }
+
+    private function rotate(string $dir, int $keep): int
+    {
+        $keep = max(1, $keep);
+        $files = glob($dir . '/pnlcs-*.sql.gz') ?: [];
+        rsort($files); // newest first (timestamped names sort lexically)
+
+        $removed = 0;
+        foreach (array_slice($files, $keep) as $old) {
+            if (@unlink($old)) {
+                $removed++;
+            }
+        }
+
+        return $removed;
+    }
+}
