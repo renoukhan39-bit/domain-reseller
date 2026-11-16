@@ -1,0 +1,59 @@
+# PROJECT SESSION LOG — persistent conversation-to-code handoff
+
+**Purpose:** append new, non-secret facts after **each meaningful engineering or research session** so the team never needs a long ChatGPT conversation to recover project decisions.  
+**Starting source:** [PROJECT_CONTINUITY_MASTER.md](PROJECT_CONTINUITY_MASTER.md).  
+**Policy:** entries describe **observed** GitHub artifacts and accessible conversation summaries only. Do not state that inaccessible prior messages were exported. Do not record personal data, secrets, copied paid/unlicensed code or full sensitive payment webhooks.
+
+## Append-only entry format (copy for every future session)
+
+~~~markdown
+## YYYY-MM-DD — <short topic>
+- Owner request:
+- Starting main SHA and existing open PRs:
+- Task IDs and architecture/ownership decisions:
+- Actual files reviewed and implementation changes:
+- New/updated docs, research sources and upstream commit SHAs:
+- Branch, commits, PR link and review/merge status:
+- Verification: exact environment, commands, test counts, Actions URLs; unrun checks:
+- Real external API/sandbox evidence or blockers:
+- Confirmed findings vs hypotheses and rollback/operational risks:
+- Owner decisions pending:
+- Three next prioritized tasks:
+~~~
+
+Never overwrite earlier entries merely to make a plan look complete; add a dated correction if a conclusion changes. See [TASKS.md](TASKS.md) and [FEATURE_MATRIX.md](FEATURE_MATRIX.md) for authoritative acceptance state.
+
+## 2026-11-13 through 2026-11-14 — project foundation and public repository strategy
+
+- Owner request: build a genuine independently controlled domain reseller/web services platform competitive in ambition with GoDaddy/Namecheap/WHMCS, minimizing Codex credits and avoiding redundant construction; evaluate one application foundation vs multiple public repositories; continue work in one canonical GitHub repo.
+- Canonical repo: https://github.com/renoukhan39-bit/domain-reseller
+- Key decision: existing Django/Python/PostgreSQL remains the starting point; no PNLCS Laravel/MySQL migration without owner-approved ADR. Learn from open-source approaches subject to license conditions, not by combining incompatible apps.
+- Public inventory: [REPOSITORIES_TO_STUDY.txt](REPOSITORIES_TO_STUDY.txt), 13 GitHub projects; secondary notes in [PUBLIC_REPOSITORY_REPORT.md](PUBLIC_REPOSITORY_REPORT.md) and [REUSE_FIRST_STRATEGY.md](REUSE_FIRST_STRATEGY.md).
+- Conversation scope: the dates/titles come from visible project conversation summaries, **not** complete exported transcripts.
+- Next work selected in later sessions: audit actual source, prioritize safe payment/registrar acceptance, preserve default OFF operations.
+
+## 2026-11-15 — two-upstream deep research, code audit and M5-08 safety PR
+
+- Owner request: inspect README, AGENTS, START_HERE, PROJECT_GOAL, ROADMAP, FEATURE_MATRIX, TASKS, ARCHITECTURE, REUSE_FIRST_STRATEGY, PUBLIC_REPOSITORY_REPORT, 13-repo inventory, CODEX_CLOUD, PROVIDER_COMPATIBILITY, PAYMENT_RECONCILIATION and ISSUE_BACKLOG; deep-study exactly PNLCS and official Openprovider WHMCS module; document risks and roadmap; implement one safe P0 fix and create an unmerged PR.
+- Starting main: [6b522210ee47a38abc14868b0f26dcabc910dd83](https://github.com/renoukhan39-bit/domain-reseller/commit/6b522210ee47a38abc14868b0f26dcabc910dd83).
+- PNLCS pinned SHA: [beaa7ea7c91972c3380bbd233610da938c871959](https://github.com/Panelica/pnlcs/tree/beaa7ea7c91972c3380bbd233610da938c871959); upstream MIT; PHP ^8.4 + Laravel ^13, design references for billing, customer area, registrar and gateway adapters, webhook claims, one-shot jobs; old Openprovider /v1beta and HTTP sandbox patterns were not adopted.
+- Official WHMCS domains module pinned SHA: [9bcd5198fa2c09db61faa854d029474013d7464f](https://github.com/openprovider/Openprovider-WHMCS-domains/tree/9bcd5198fa2c09db61faa854d029474013d7464f); PHP/WHMCS, no root LICENSE located in tree; patterns for registrar lifecycle, contacts, prices, EPP, DNS/DNSSEC, sync; no source copied.
+- Confirmed source gaps addressed: shop/views.py nameserver customer POST previously checked local owner/status and only FULFILLMENT_ENABLED; not current registrar identity or full payment/registrar environment pairing.
+- Implementation: shop/views.py now requires fulfillment_ready(), matching provider ID/domain/active state and saved user registrant handle from read-only GET before NS PUT. shop/test_nameserver_safety.py adds **10** targeted offline tests. No new dependencies/migrations. Caveat: remote GET and PUT are not atomic.
+- Research deliverables in [PR #34](https://github.com/renoukhan39-bit/domain-reseller/pull/34): CODEBASE_AUDIT.md, TWO_PRIMARY_REPO_COMPARISON.md, MASTER_BUILD_PLAN.md, plus updates to TASKS, FEATURE_MATRIX, ROADMAP and ARCHITECTURE.
+- Branch/head: fix/M5-08-nameserver-registrar-identity @ [4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a](https://github.com/renoukhan39-bit/domain-reseller/commit/4f65433d27adbffddcc5bfa438cdaaebb4e2ff6a). PR #34 was open/unmerged at consolidation.
+- Verified GitHub Actions: [branch CI 43745054673](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43745054673) successful with **184 application tests, OK**, Django checks, PostgreSQL migrations, compileall and backup recovery; [PR CI 43745160078](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43745160078) completed success.
+- Unrun/unverified: independent local Docker reproduction; real Openprovider HTTPS /v1 sandbox register/renew/NS; actual Razorpay test webhook settlement, production SMTP, legal/finance, offsite backup and public launch. No real payment or domain was made.
+- Owner approvals still needed: merge PR #34, live deployment/credentials/domain purchases, legal/finance sign-off, outbound source licensing [#29](https://github.com/renoukhan39-bit/domain-reseller/issues/29).
+- Next three tasks: independent clean Docker/PG16 foundation M0-09; Openprovider sandbox M4-07; Razorpay test-mode signed webhook/reconciliation M3-08/M3-09.
+
+## 2026-11-16 — persistent documentation and chat continuity
+
+- Owner request: push research, charts, project links, decisions, prior chat context and implementation status into a GitHub document so new ChatGPT or Codex sessions can continue without loading long conversation history.
+- Starting default branch inspected: main remains [6b522210ee47a38abc14868b0f26dcabc910dd83](https://github.com/renoukhan39-bit/domain-reseller/commit/6b522210ee47a38abc14868b0f26dcabc910dd83); PR #34 was still open.
+- Dedicated docs-only branch: docs/project-continuity-master-2026-11-16.
+- Deliverable: [PROJECT_CONTINUITY_MASTER.md](PROJECT_CONTINUITY_MASTER.md), this append-only session log, and onboarding entry-point updates.
+- Scope: full linked document index, 13 upstream URLs, pinned two-repo analysis, architecture/revenue flow diagrams, 66 task source, 20 acceptance tests, code inventory, test evidence, risks, cost/release roadmap, owner approvals and a copy/paste Codex restart prompt.
+- Provenance limitation: full older ChatGPT transcripts are **not available** to reconstruct verbatim. If the owner exports and sanitizes them, add further factual decisions here with links instead of treating summaries as exact raw chat records.
+- Default operational posture unchanged: **SALES_ENABLED=false; FULFILLMENT_ENABLED=false**. No code or production operations changed by this documentation-only work.
+- Next tasks: (1) review PR #34 and confirm any merge only on owner request; (2) execute clean Compose/PG16 testing; (3) obtain explicit isolated sandbox approval for M4-07 and M3-08 integration acceptance.
