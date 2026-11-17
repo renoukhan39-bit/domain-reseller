@@ -5,13 +5,13 @@
   "items": [
     {
       "original_path": "Openprovider-WHMCS-domains-master",
-      "preserved_path": "AnalyseFuture/Openprovider-WHMCS-domains-master",
+      "preserved_path": "AnalyseFuture/references/registrar-integrations/Openprovider-WHMCS-domains-master",
       "original_git_tree": "f73a2e623464ef6ab41de89ea15e06cb65d4db38",
       "kind": "unmodified_upstream_snapshot"
     },
     {
       "original_path": "pnlcs-main",
-      "preserved_path": "AnalyseFuture/pnlcs-main",
+      "preserved_path": "AnalyseFuture/references/billing-platforms/pnlcs-main",
       "original_git_tree": "655e3889f74d2a0ed3fa0f2743c055d85da7c90f",
       "kind": "unmodified_upstream_snapshot"
     },
@@ -45,5 +45,6 @@
       "original_git_blob": "8b6bb08c06e46e3ece1d606d5704ddfab8375dba",
       "kind": "documentation_before_clarification"
     }
-  ]
+  ],
+  "later_layout_note": "Original identities are unchanged; reference containers now follow functional categories. Original manifest version retained in historical-implementations/pre-master/AnalyseFuture."
 }

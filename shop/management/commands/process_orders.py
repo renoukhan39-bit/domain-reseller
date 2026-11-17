@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand
 from shop.models import DomainOrder
-from shop.services import fulfill_one, fulfillment_ready
+from shop.commerce.orders import fulfill_one, fulfillment_ready
 
 class Command(BaseCommand):
     help = "Process captured, paid domain orders using the real registrar integration"

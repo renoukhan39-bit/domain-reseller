@@ -1,0 +1,301 @@
+DOMAIN RESELLER - TECHNICAL DEBT AND RELEASE GAPS
+Inventory date: 17 November 2026
+Scope: active Django/PostgreSQL application and its development/operating model
+
+READ THIS FIRST
+This is an evidence-based backlog, not a statement that every listed item is a
+confirmed defect or an instruction to activate production. Preserve the existing
+implementation. AnalyseFuture upstream snapshots are reference material and must
+not become active dependencies merely because their code is available.
+
+Classification:
+  DEBT = a maintainability/reproducibility constraint in the current foundation.
+  GAP = required capability or operating evidence still missing before release.
+  RESEARCH = a question requiring measurement/contract review before a change.
+  DEFECT = a reproducible violation; record revision, command and actual behavior.
+
+No new runtime checks were executed to author this file. Prior cloud onboarding
+reported 174 application tests on PostgreSQL, 17 backup guards and an isolated
+synthetic restore, with local startup/HTTP checks. Those results are useful prior
+evidence, not fresh verification of this audit revision or real provider behavior.
+No unexplained, newly reproduced application failure is claimed here. The current
+audit/validation records should record new failures separately if they occur.
+
+Priority:
+  P0 = blocks public live-money launch or trustworthy incident containment.
+  P1 = needed for sustainable service, scale or a specific feature's release.
+  P2 = measure and prioritize once the core service is reliable.
+Owners below are required roles, not claims that named people are assigned.
+All entries remain OPEN until their individual exit evidence is recorded.
+
+TD-01 | P0 | GAP | Real registrar sandbox acceptance
+Evidence: shop/domains/openprovider.py; shop/tests/domains/test_openprovider.py;
+          docs/operations/PROVIDER_COMPATIBILITY.md; TASKS M4-07 and AT07/13/16/17.
+Gap: Offline HTTP fixtures validate conservative parsing, not the supplier's
+current acceptance of authentication, registrant fields and domain operations.
+Owner: Backend integration engineer + authorized registrar operator; QA reviews.
+Next safe action: Inventory existing binding names/access, then prepare an
+explicitly authorized sandbox plan. Preserve customer-handle ownership checks.
+Exit test: Actual sandbox availability/contact/register/renew/nameserver and
+pending/error reconciliation evidence, with identifiers redacted in public docs.
+Test status: Prior local tests exist; real-provider acceptance is unverified.
+
+TD-02 | P0 | GAP | Real gateway capture, replay and refund reconciliation
+Evidence: shop/commerce/gateway.py; shop/commerce/events.py; shop/commerce/refunds.py;
+          shop/tests/commerce/test_payments.py; docs/operations/PAYMENT_RECONCILIATION.md;
+          docs/operations/REFUNDS.md; TASKS M3-08/09 and AT10/11/12/18.
+Gap: Synthetic signed events and mocked gateway responses do not prove delivery,
+redelivery, server lookup or settled refunds with the merchant's test account.
+Owner: Payments engineer + finance/payment operator; independent QA.
+Exit test: Authorized Razorpay test-mode webhook flow including duplicate,
+out-of-order, mismatched capture, timeout and refund lookup evidence. Browser
+callbacks must never substitute for capture verification.
+Test status: Prior local fixture/concurrency coverage; external acceptance open.
+
+TD-03 | P0 | GAP | Supplier costs, taxes, invoices and transaction ledger
+Evidence: shop/models.py TLDPrice/DomainOrder; docs/engineering/TASKS.md M2-07/M3-10/M6-02;
+          docs/product/FEATURE_MATRIX.md billing and price-sync rows.
+Gap: The existing order/refund records are not a complete tax invoice, supplier
+cost ledger, payout reconciliation system or verified margin/funding model.
+Owner: Product/finance owner + tax/legal adviser + backend engineer.
+Exit test: Reviewed invoice/credit/refund policy and traceable reconciliation of
+gateway, supplier and internal amounts; verified per-TLD costs and changed-price
+behavior. Use actual commercial data securely; do not seed invented retail prices.
+Test status: This acceptance is not supplied by the local payment tests.
+
+TD-04 | P0 | GAP | Production infrastructure and identity controls
+Evidence: config/settings.py; compose.yaml; docs/engineering/ARCHITECTURE.md;
+          docs/operations/DEPLOYMENT.md; TASKS M0-10/M5-06/M6-03/AT20.
+Gap: Local Compose and secure-by-default settings do not configure a protected
+deployment, trusted TLS proxy, least-privilege identities, managed database
+network/storage encryption, secret rotation or spending alerts.
+Owner: Platform/security operator + owner for budget/service choices.
+Exit test: Reviewed staging deployment with exact host/trust settings, restricted
+database access, secure secret injection and deployment/rollback evidence.
+Test status: Local startup was previously checked; staging/production unverified.
+
+TD-05 | P0 | GAP | Scheduled reconciliation alerts and accountable response
+Evidence: shop/management/commands/check_reconciliation_backlog.py;
+          mark_stale_orders.py; compose.yaml worker command;
+          docs/operations/RECONCILIATION_MONITORING.md; TASKS M5-09.
+Gap: The read-only checker, stale-state transition and SOP already exist. The
+Compose worker polls process_orders but does not establish a scheduled alarm,
+alert deduplication/routing or on-call acknowledgement and escalation.
+Owner: Operations/on-call owner with payments/registrar escalation contacts.
+Exit test: Staging synthetic stuck-order alarm is delivered, acknowledged,
+reconciled safely and resolved, including command/database failure alerts.
+Test status: Local classification/privacy/nonmutation tests exist; actual alarm
+delivery and human response drill remain unverified. Do not rewrite the checker.
+
+TD-06 | P0 | GAP | Offsite backups and full application staging recovery
+Evidence: scripts/backups/database_backup.py; scripts/backups/backup_restore_drill.py;
+          scripts/backups/test_database_backup.py; docs/operations/BACKUP_RESTORE.md; TASKS AT19.
+Gap: Existing encrypted backup and isolated synthetic recovery tooling is useful
+but does not create scheduled offsite/immutable retention, key recovery,
+backup-failure alerts or a full deployed-application restore process.
+Owner: Database/platform operator + business owner for RPO/RTO and retention.
+Exit test: Restore an authorized backup into isolated clean staging; validate
+schema, application workflows, ownership, financial/provider reconciliation,
+key recovery and measured recovery objectives before reconnecting workers.
+Test status: 17 guards and real synthetic PostgreSQL drill previously passed;
+production data recovery and external-state reconciliation remain unverified.
+
+TD-07 | P0 | GAP | GitHub incident investigation and access containment
+Evidence: Owner-reported compromise; repository history/structure audit.
+Gap: File inventory and preserved hashes cannot establish account security,
+attacker identity or revocation of existing sessions/tokens/apps/access.
+Owner: GitHub organization/account owner or authorized security responder.
+Exit evidence: Review account/org audit records, authentication, collaborators,
+tokens, deploy keys, installed apps, workflows and secret exposure; preserve
+incident evidence and rotate/revoke identified exposed access through secure
+settings. Review protections and future approval policy with the owner.
+Test status: Not assessable from source files alone. Repository cleanup is not
+incident closure. This item does not authorize any unrelated account mutation.
+
+TD-08 | P1 | DEBT | Dependency and build reproducibility
+Evidence: pyproject.toml uses dependency ranges with no application lockfile;
+          Dockerfile uses python:3.12-slim; compose.yaml uses postgres:16-alpine;
+          .github/workflows/ci.yml uses tagged Actions and PostgreSQL image.
+Gap: Two installs at different times can resolve different allowed packages and
+images, complicating incident reproduction, vulnerability response and rollback.
+Owner: Backend/platform engineer with security review.
+Next action: Select a supported locking/update process; record resolved artifacts
+and image identities and schedule security updates. Review tradeoffs before
+pinning every artifact; pins require maintenance, not abandonment.
+Exit test: Rebuild known revision from recorded inputs, pass dependency checks,
+PostgreSQL tests and image/runtime smoke checks. No package hashes or TLS checks
+may be weakened to make an install succeed.
+Test status: Current local dependency consistency was previously checked; a
+locked artifact-reproduction workflow is not demonstrated.
+
+TD-09 | P1 | GAP | Strong privileged authentication and access review
+Evidence: config/settings.py INSTALLED_APPS/MIDDLEWARE; shop/admin.py;
+          current Django authentication routes; TASKS M5-06/M5-08.
+Gap: Ordinary Django authentication is present. A selected/validated operator
+MFA or identity-proxy policy, recovery procedure, role design and periodic
+privileged-access review is not established by the current application evidence.
+Owner: Security/platform operator + product owner.
+Exit test: Validate privileged authentication/recovery, session revocation,
+least-privilege roles and attempts to cross customer/operator boundaries.
+Test status: Existing auth/CSRF/tenant tests cover important controls, not a
+complete deployment access-policy audit. No untested MFA implementation is added.
+
+TD-10 | P1 | DEBT/GAP | Synchronous mail and real delivery behavior
+Evidence: shop/accounts/verification.py; shop/forms.py;
+          docs/operations/EMAIL_VERIFICATION.md explicitly documents synchronous SMTP,
+          possible timing differences and superseded links during races.
+Gap: Shared send throttles and safe generic responses exist. Slow provider mail
+can occupy request workers, and inbox delivery/bounce behavior is unverified.
+Owner: Backend engineer + mail/platform operator.
+Next action: First validate provider TLS/sender settings and delivery. Measure
+latency; introduce a durable mail queue only if justified, with nonce semantics,
+deduplication and retry behavior specified before changing the flow.
+Exit test: Real authorized delivery/bounce checks; if queue adopted, tests for
+crashes, stale/superseded links, duplicates, account eligibility and throttles.
+Test status: Prior local transport-failure/token/concurrency coverage; real SMTP
+delivery and load evidence outstanding. This is not a reason to remove safeguards.
+
+TD-11 | P1 | GAP | Renewal lifecycle and expiry-risk operations
+Evidence: ManagedDomain.expires_at and renewal operations exist in shop/models.py,
+          shop/domains/openprovider.py/services.py; TASKS M4-10; feature matrix reminders row.
+Gap: Explicit renewal is distinct from scheduled synchronization, reliable
+notices, cutoff policy, payment failure handling and consent-based auto-renewal.
+Owner: Backend/domain-lifecycle engineer + support/operator owner.
+Exit test: Provider-confirmed expiry, staged reminder schedule, failed-delivery
+and failed-payment escalation, changed-price consent and duplicate-operation
+prevention. Registry cutoffs must be checked per policy rather than invented.
+Test status: Local explicit-renewal checks exist; a full scheduled lifecycle is
+not implemented/accepted. Gate any auto-renewal as a separate approved feature.
+
+TD-12 | P1 | GAP | Privacy export, correction and retention workflow
+Evidence: RegistrantContact and financial/audit records in shop/models.py;
+          docs/engineering/TASKS.md M1-09; existing contact mutation safeguards in shop/views.py.
+Gap: Data minimization/redaction controls are not a complete lawful request
+workflow, supplier-synchronized correction procedure or documented retention map.
+Owner: Privacy/legal adviser + product/backend owner.
+Exit test: Authorized customer export/correction requests, tenant isolation,
+reviewed deletion exceptions and retention, registrar synchronization and audit.
+Test status: Existing ownership/PII-redaction tests are partial evidence only.
+
+TD-13 | P1 | GAP | Adversarial review, abuse controls and capacity evidence
+Evidence: shop/security/throttling.py; shop/middleware.py; test_throttling.py;
+          docs/operations/THROTTLING.md; TASKS M5-05/M5-08.
+Gap: PostgreSQL shared throttles are already implemented and concurrency-tested.
+Production bot/edge rules, adversarial review and sustained-load behavior are
+separate requirements; calling the application limits purely in-memory is stale.
+Owner: Security/QA engineer + platform operator.
+Exit test: Authorized staging abuse/load tests cover NAT/proxy behavior, blocked
+and database-failure behavior, email abuse, staff/customer authentication and
+capacity with acceptable latency and operating cost. Record measured limits.
+Test status: Prior local functional/concurrency coverage; production-load and
+independent security acceptance remain open.
+
+TD-14 | P1 | GAP | Domain and catalog scope beyond the supported subset
+Evidence: shop/forms.py normalize_domain; shop/domains/openprovider.py _domain_parts;
+          TLDPrice fields; TASKS M2-08/09/M4-09/M6-07.
+Gap: Current logic deliberately supports a restricted ASCII/single-suffix path.
+IDNs, multi-part suffixes, premium pricing, transfers, DNS record editing and
+DNSSEC require separate policy, schema and provider-contract work.
+Owner: Domain integration engineer + product/QA.
+Exit test: Add one scope increment with registry-specific fixtures and authorized
+sandbox evidence, including invalid, premium, tenant and uncertain outcomes.
+Test status: Existing conservative rejection is a safeguard, not proof of a
+broken feature. Do not silently advertise unsupported domain capabilities.
+
+TD-15 | P1 | DEBT/GAP | Verification evidence and documentation drift
+Evidence: docs/engineering/TASKS.md combines historical checkboxes and acceptance claims;
+          README/feature matrix/runbooks report different historical test scopes.
+Gap: Written, locally tested, real-sandbox-tested, deployed and operator-approved
+must remain distinct. Older evidence should be preserved as dated history rather
+than overwritten into a timeless universal readiness claim.
+Owner: Technical lead/QA and documentation owner.
+Exit evidence: Current commit/command/environment/result artifacts with pass,
+fail/skip/unrun distinctions, plus links to authoritative status and release
+gates. Never mark current CI green without observing the relevant run.
+Test status: This file performs no new runtime verification. The audit record
+must supersede it when tests or external approvals change.
+
+TD-16 | P2 | RESEARCH | Worker scheduling, throughput and token-auth load
+Evidence: compose.yaml runs a bounded process_orders loop with 30-second sleep;
+          shop/domains/openprovider.py caches tokens using Django's configured cache;
+          durable claims and stale escalation already exist in shop/commerce/orders.py.
+Question: Is polling latency or per-process authentication materially affecting
+the actual deployment? A queue/shared cache is not automatically required.
+Owner: Platform/backend engineer after collecting traffic/provider metrics.
+Exit test: Benchmark representative load and failure recovery. If changing
+scheduling/cache, preserve durable database intent, safe claims and manual
+reconciliation; never replace correctness with an ephemeral queue message.
+Test status: Prior concurrency checks support current safeguards, not a scale SLA.
+
+TD-17 | P2 | GAP | Upstream provenance, license and architecture decisions
+Evidence: AnalyseFuture preserved PNLCS/WHMCS snapshots; their bundled notices;
+          docs/governance/OWNERSHIP_AND_LICENSES.md and docs/research/REUSE_FIRST_STRATEGY.md.
+Gap: Preserving sources does not complete license review, package vulnerability
+assessment, reproducible upstream version attribution or migration approval.
+Owner: Technical lead + project owner + license/security reviewer as needed.
+Exit evidence: Record source/version/license/obligations and reuse classification
+per adopted capability. Keep one active application foundation; require a
+separate owner-approved architecture decision before considering replacement.
+Test status: Preserved contents can be hash-verified; that does not certify
+upstream safety, readiness or compatibility with this project's license.
+
+TD-18 | P0 | DEBT/RESEARCH | Database enforcement of signup email identity
+Evidence: shop/forms.py SignupForm.clean_email uses an email__iexact existence
+          query before User.save; the active application imports Django's
+          built-in User model, whose email field is not uniquely constrained.
+Concern: Simultaneous signups with different usernames can both pass a query-only
+email check. Verification resend selects the first inactive matching address in
+shop/accounts/verification.py. This creates ambiguous account/email identity; it
+is a concurrency risk identified by source review, not a newly executed exploit.
+Owner: Authentication/backend engineer + security reviewer.
+Next action: Confirm desired identity semantics, inspect existing duplicates
+through an authorized privacy-safe process and design a non-destructive migration
+or email-identity table. Do not merge/delete customer accounts automatically.
+Exit test: PostgreSQL concurrent signup/case-normalization tests, existing-account
+migration coverage and deterministic verification/reset behavior without tenant
+or account eligibility regressions.
+Test status: No new race reproduction run for this document. Existing account
+tests do not establish a database uniqueness guarantee that is absent in schema.
+
+TD-19 | P0 | DEBT/RESEARCH | Privileged deletion of financial and audit evidence
+Evidence: shop/admin.py makes DomainOrder, PaymentEvent and AuditEntry fields
+          read-only and blocks adding records, but does not explicitly override
+          has_delete_permission; removing bulk actions alone does not disable
+          object-level deletion or establish immutable database audit storage.
+Concern: The current controls must not be described as a fully append-only
+financial/audit store. Actual deletion availability depends on staff permissions
+and Django admin semantics and should be verified in authorized tests.
+Owner: Backend/security engineer + finance/retention owner.
+Next action: Review delete permissions and object workflows. Define exceptional
+correction/retention procedures and least-privilege database roles; preserve
+existing records and legal requirements rather than deleting them during cleanup.
+Exit test: Staff/superuser object and bulk deletion tests; protected relationships;
+an auditable correction process; separately reviewed operational/database access.
+Test status: Source review concern, not evidence of malicious deletion or proof
+that every deployment exposes these permissions. No fresh deletion test run.
+
+TD-20 | P1 | GAP | Complete branch-history reconciliation and recovered work
+Evidence: This audit's full remote-head discovery found seven remote heads and
+          42 reachable commits after the original checkout's narrower fetch.
+          Root audit is reconciling branch-only documents and nameserver safety
+          work against the current active foundation.
+Gap: Absence from main is not proof that a feature never existed. A branch may
+contain useful prior work, a partial implementation or code superseded by safer
+current logic. A directory cleanup must not silently discard these distinctions.
+Owner: Technical lead/repository maintainer + component reviewer.
+Exit evidence: Branch/commit inventory, per-change adopt/preserve/superseded
+decisions, preserved branch-only artifacts and focused tests for recovered active
+changes. Do not claim a recovered fix tested until its current test run finishes.
+Test status: History discovery informs review only. Use the current recovery and
+verification reports for exact commits, contents, decisions and results.
+
+EXECUTION RULES
+1. Select one high-priority acceptance gap; investigate supported configuration
+   and existing code before implementing replacement systems.
+2. Keep SALES_ENABLED and FULFILLMENT_ENABLED false until explicit approvals.
+3. Record a failed command and diagnosis instead of lowering verification,
+   disabling assertions or claiming an unexecuted test passed.
+4. Keep original evidence and third-party notices intact. Never add credentials,
+   customer data or raw incident logs to the public repository.
+5. Update this backlog with dated, revision-bound evidence. A later planning
+   target is not a deadline, accepted fix or business authorization.

@@ -1,7 +1,7 @@
 from django.core.management.base import BaseCommand, CommandError
 from django.core.exceptions import ValidationError
 from shop.models import DomainOrder
-from shop.payment_events import replay_payment_events
+from shop.commerce.events import replay_payment_events
 
 
 class Command(BaseCommand):

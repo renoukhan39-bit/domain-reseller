@@ -1,6 +1,6 @@
 from django.core.management.base import BaseCommand, CommandError
 
-from shop.refunds import RefundError, reconcile_refund
+from shop.commerce.refunds import RefundError, reconcile_refund
 
 
 class Command(BaseCommand):

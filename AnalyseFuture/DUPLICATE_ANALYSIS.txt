@@ -1,0 +1,179 @@
+REPOSITORY DUPLICATE AND IMPLEMENTATION-COMPATIBILITY ANALYSIS
+Date: 17 November 2026
+Starting commit: 30fe576f25acc1bbf1733f76bc8b610c9e14dbd1
+Repository: https://github.com/renoukhan39-bit/domain-reseller
+
+1. METHOD AND COVERAGE
+
+The starting tracked inventory contained 5,140 paths. Every regular tracked file
+was read and SHA-256 grouped; the relative themes symlink was classified as a
+link, not followed as an additional source tree. Empty files were excluded from
+the nonempty duplicate totals because package markers and keep-files can share
+empty content without duplicating a responsibility.
+
+The scan found 173 nonempty exact-content groups, representing 193 copies beyond
+one copy per group. Five groups/five extra copies were entirely in the active
+Django application. The remaining 168 groups/188 extra copies were entirely in
+preserved material. No exact-content group mixed active and archived paths.
+These are baseline scan counts, not a claim that every identical file should
+be removed. The final inventory and migration mapping record later additions.
+
+All 5,018 regular files in the two upstream snapshots were read for hashes and
+structural/dependency/execution markers; their one symlink was inspected separately.
+Representative high-impact source files were read in depth: module registries,
+Composer/Node manifests, provider adapter, payment controller and Razorpay adapter,
+WHMCS registrar entry point/API/Composer hooks, installer and updater boundaries.
+This is not a line-by-line semantic or independent security audit of every
+vendored PHP dependency, Blade template, translation, generated API model or asset.
+Binary assets were classified and hashed, not visually or semantically certified.
+No unreadable tracked file was encountered in this scan. No upstream code ran.
+
+2. FIVE EXACT DUPLICATES THAT BELONG TO ONE ACTIVE FEATURE
+
+The following pairs have byte-identical baseline contents:
+
+  135 bytes: shop/templates/registration/password_reset_complete.html
+             shop/templates/shop/accounts/password_reset_complete.html
+  272 bytes: shop/templates/registration/password_reset_confirm.html
+             shop/templates/shop/accounts/password_reset_confirm.html
+  145 bytes: shop/templates/registration/password_reset_done.html
+             shop/templates/shop/accounts/password_reset_done.html
+  149 bytes: shop/templates/registration/password_reset_email.html
+             shop/templates/shop/accounts/password_reset_email.html
+  192 bytes: shop/templates/registration/password_reset_form.html
+             shop/templates/shop/accounts/password_reset_form.html
+
+All belong to Django password recovery. config/urls.py explicitly selects the
+shop/ variants for the password-reset form, email, confirmation and completion
+views. SafePasswordResetForm supplies the mail behavior. The registration/ copies
+do not provide a second supported customer journey or unique functionality.
+
+Decision: keep shop/ variants as the canonical customer templates, preserving the
+explicit routes that avoid Django admin/default registration-template collisions.
+Preserve the five unused registration/ copies under AnalyseFuture with their
+original paths, blob identities and reasons in the path mapping/manifest. Do not
+replace the canonical templates with the registration/ directory merely because
+that name resembles Django's default convention. Existing reset-flow and abuse
+tests must still run after the preservation moves.
+
+3. COMPATIBLE LOGIC OVERLAP: GATEWAY IDENTIFIER VALIDATION
+
+shop/commerce/gateway.py defines valid_gateway_id(value, prefix), with a bounded string
+and escaped prefix followed by an alphanumeric/underscore suffix. Its private
+_identifier wrapper raises PaymentError before an identifier enters an HTTP path.
+shop/commerce/events.py defines gateway_identifier(value, prefix), using the same
+bounded identifier responsibility with a different prefix convention: callers
+supply 'pay' or 'order', while the payments helper receives 'pay_' or 'order_'.
+
+Decision: reuse valid_gateway_id for the predicate while keeping the event
+wrapper and its existing caller signature. Add the underscore in the wrapper,
+retain the raising HTTP-path wrapper, and preserve the original event module
+before consolidation. This removes one competing validator body without a public
+API, database schema or payment-state transition change. Existing malformed-ID,
+captured-payment, replay, refund and race tests provide meaningful regression
+coverage. The consolidation report records the implementation and test result.
+
+4. BYTE DUPLICATES THAT MUST REMAIN SEPARATE
+
+Most preserved duplicates are dependencies installed in independent WHMCS addon
+and registrar trees, including PHP-DI, Composer metadata, psr/container, closures
+and notices. Composer autoloaders and package paths expect their own copies.
+Deduplicating these into a new shared vendor directory would change an upstream
+snapshot, its autoload layout and possibly versions. Neither snapshot is an
+active dependency of Django, so such a change provides no current runtime value.
+
+Examples include duplicate wpower composer.lock files (102,409 bytes) in the
+addon and registrar vendor trees, and ContainerBuilder.php copies (11,401 bytes).
+Vendor notices are not redundant legal material to delete.
+
+PNLCS also intentionally reuses app images: pgadmin/postgres, WordPress variants,
+Grafana variants and eight Panelica desktop/browser icon names can share bytes
+while callers require different asset paths. Nine cache/storage .gitignore files
+share a small keep-directory pattern. PHPUnit distribution templates and static
+analysis configurations likewise may be copied by upstream packaging.
+
+Decision: retain all these files unchanged in their preserved snapshots. A
+content hash proves byte equality, not interchangeable runtime responsibility.
+
+5. CROSS-APPLICATION FEATURE OVERLAP IS NOT CODE COMPATIBILITY
+
+The active application is Django/Python/PostgreSQL. Its account, domain-order,
+payment, provider, throttling and reconciliation modules are already implemented
+and covered by the local PostgreSQL suite. They remain the production candidate.
+
+PNLCS is a separate Laravel/PHP/MySQL application. Its registry registers eight
+gateway modules (AuthorizeNet, BankTransfer, Iyzico, Mollie, PayPal, Razorpay,
+Stripe, Tpay), eight registrar modules (DomainNameApi, Enom, HRD, Manual,
+Namecheap, OVH, OpenProvider, ResellerClub), ten concrete hosting/server modules
+and a GoGetSSL integration. Models/services/routes additionally implement invoice,
+credit, tax, affiliate, ticket, quote, product/service, domain-transfer, API,
+organization/permission, reporting, company-lookup and KSeF responsibilities.
+
+Those are useful comparison capabilities, not features currently delivered by
+Django. PNLCS depends on Laravel 13/PHP 8.4 and its own Eloquent schemas, events,
+facades, service providers, queues, views and frontend build. This snapshot has
+Composer development test commands and factories but no tests/ directory. It was
+not installed or tested, and its broad feature list is not readiness evidence.
+
+The Openprovider WHMCS tree contains 199 non-vendor PHP files. Its registrar
+entry point and classes depend on WHMCS APIs/Database Capsule, two Composer
+autoload contexts and bundled/renamespaced Guzzle clients. It contains six own
+*Test.php files across registrar/addon test folders; those were not executed.
+It includes transfer, DNS/DNSSEC, contact fields, pricing/import/synchronization,
+renewal/restore and owner/nameserver operations beyond the active Django subset.
+
+Decision: preserve unique PHP behavior for future design/contract research;
+do not copy PHP classes into Python, activate a second backend, or claim an
+integration by moving directories. A Laravel migration needs the explicit ADR
+and owner decision required by AGENTS.md. No such migration was assumed here.
+
+6. WHY THE EXISTING DJANGO SAFEGUARDS TAKE PRIORITY
+
+Concrete archived OpenProvider differences prevent treating the larger PHP
+implementation as automatically superior:
+
+- PNLCS modules/Registrars/OpenProvider/OpenProviderRegistrar.php:42 uses plain
+  HTTP sandbox traffic on port 8480 with /v1beta; line 43 also uses legacy /v1beta
+  for live requests. The active adapter uses trusted HTTPS origins and /v1.
+- That PHP adapter's register() can report success with a missing provider ID;
+  its renew() at lines 153-159 adds local years instead of confirming the
+  registrar expiry. These conflict with active Django validation invariants.
+- WHMCS modules/registrars/openprovider/OpenProvider/API/API.php:176-180 disables
+  TLS peer/hostname verification and follows redirects in a legacy request path.
+  Its downloadPHPfile() at lines 231-241 writes a caller-selected URL response
+  with peer verification disabled and no helper checksum/signature check. Only
+  the helper definition was found; runtime reachability has not been established.
+- WHMCS modules/registrars/openprovider/openprovider.php:386 disables hostname
+  verification during credential validation.
+
+These are confirmed source behaviors in preserved code, not evidence naming an
+attacker or proof that they are reachable through the current Django application.
+The snapshots are excluded from the active package/build paths and must not be
+installed/executed during Django setup. See SECURITY_AUDIT.txt for full scope.
+
+PNLCS also contains real safeguards worth studying: its Razorpay webhook refuses
+missing secrets/raw payload/signatures and verifies HMAC before captured events;
+the updater verifies release signatures, expected package size and SHA-256.
+Shell, tar and Artisan use in its updater is intended operational code, not by
+itself evidence of malicious activity. Its ledger, idempotency and full deployed
+security properties were not exhaustively audited or tested.
+
+7. LICENSE, PROVENANCE AND PRESERVATION
+
+PNLCS retains its MIT notice, copyright Panelica; that notice does not license
+unrelated projects or every external trademark/asset. No top-level license was
+found for the WHMCS snapshot; all bundled dependency notices remain preserved.
+Commercial reuse needs a separate license and provider review.
+
+The previous recovery preserved these subtree IDs, which must remain unchanged:
+  Openprovider-WHMCS-domains-master:
+    f73a2e623464ef6ab41de89ea15e06cb65d4db38
+  pnlcs-main:
+    655e3889f74d2a0ed3fa0f2743c055d85da7c90f
+
+The current consolidation preserves displaced active-source/template originals
+separately; it does not edit the upstream snapshots. ORIGINAL_TO_NEW_PATH_MAPPING,
+ARCHIVED_FILES_MANIFEST and CONSOLIDATION_REPORT record final destinations and
+counts. TEST_AND_VALIDATION_REPORT distinguishes executed regressions from the
+unrun PHP/provider checks. An identical-file scan is an aid to decisions, never
+authorization to remove valuable work or merge incompatible applications.

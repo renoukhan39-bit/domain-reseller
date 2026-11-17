@@ -4,8 +4,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 from shop.exceptions import OrderError
 from shop.models import AuditEntry, DomainOrder, ManagedDomain, RegistrantContact
-from shop.providers import Openprovider, ProviderError, provider_environment
-from shop.services import _registrar_identity
+from shop.domains.openprovider import Openprovider, ProviderError, provider_environment
+from shop.commerce.orders import _registrar_identity
 
 
 def eligible(order):

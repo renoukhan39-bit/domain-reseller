@@ -1,0 +1,80 @@
+MASTER REPOSITORY RECOVERY AND FUNCTIONAL ORGANIZATION AUDIT
+Date: 17 November 2026. Repository: renoukhan39-bit/domain-reseller.
+URL: https://github.com/renoukhan39-bit/domain-reseller
+Starting main: 30fe576f25acc1bbf1733f76bc8b610c9e14dbd1.
+
+AUTHORIZATION AND RECOVERABILITY
+The owner explicitly requested direct main delivery, no PR, no force push, no
+history rewrite, preservation of existing work, and ultimately NO FURTHER TESTS.
+The initial worktree was clean. Git confirms main is the advertised default.
+The initial fetch refspec covered only main: git fetch --all alone was inadequate.
+An explicit wildcard fetch discovered seven remote heads and 42 reachable commits;
+no tags were advertised. Existing branches/tags were not deleted or rewritten.
+A verified complete Git bundle retaining all fetched refs is saved locally at
+/workspace/domain-reseller-setup/recovery-all-refs-30fe576.bundle. It is outside
+the public checkout, contains Git history, and is not a backup of runtime secrets
+or database volumes. Preserve it separately for recovery. Deleted/unadvertised
+remote refs are not accessible evidence.
+
+DISCOVERY AND COVERAGE
+All5,140 starting tracked paths are classified in COMPLETE_FILE_INVENTORY.txt.
+All bytes were inventoried/scanned; active Python, configuration, routes, tests,
+financial/registrar boundaries and meaningful upstream entrypoints/modules were
+reviewed more deeply. Binary assets were identified, not executed. Dependencies
+were inspected through manifests/autoload boundaries and automated source markers;
+every vendored PHP implementation line was NOT independently security-audited.
+No submodules or Git LFS pointer objects were found. One internal PNLCS themes
+symlink is preserved. The extracted upstream material has5,019 files/links.
+
+RECOVERED EXISTING WORK
+1. Recovered the registrar nameserver identity/environment safeguard from4d4f53b
+   and its original tests from82dc1df. A tenant-owned local row is not sufficient
+   proof of current registrar identity. The guard verifies paired environment,
+   customer handle, exact domain/provider id and active provider status before PUT.
+2. Recovered five substantial absent docs from the continuity and nameserver
+   branches: continuity master, append-only session log, codebase audit, pinned
+   primary-repo comparison and dependency-aware master build plan. Historical
+   text is retained with current status notes; old PR states are not current facts.
+3. Evaluated the webhook branch f903546. Current main already supersedes its
+   digest/redelivery design with durable minimal signed evidence, local replay,
+   constraints and reconciliation. No wholesale merge or financial regression.
+   Exact branch variants are preserved as historical evidence.
+
+ACTUAL FUNCTIONAL CONSOLIDATION
+Five byte-identical reset-template pairs now have one authoritative customer
+implementation, with default-name compatibility delegation. gateway_identifier
+retains its public prefix convention while using the shared gateway validator.
+Seven service implementations now live under accounts, commerce, domains and
+security. Legacy import entrypoints alias the same module rather than duplicate
+business logic. Tests mirror the feature boundaries; templates follow customer
+journeys; backup/GitHub tools and documentation are grouped by responsibility.
+Framework-required Django discovery files/migrations/commands remain in place.
+
+WHY SOME NESTED STRUCTURES REMAIN
+The PHP projects are independent reference products, not interchangeable Python
+libraries. Their versioned vendor/autoload layouts, executable bits, internal
+symlink, notices and source are preserved under functional reference containers.
+Flattening or recombining their internal files would break those upstream products
+and erase provenance. Namespaces, not file extensions, govern those boundaries.
+The archive is excluded from Docker contexts and Python package selection; nested
+GitHub workflow files are not active root workflows. Do not run archived installers.
+
+SECURITY AND LIMITS
+Compromise is unproven. Confirmed dormant upstream TLS/plaintext issues, the
+recovered nameserver gap, code-level concerns, hardening debt and unavailable
+account evidence are separated in SECURITY_AUDIT.txt. The GitHub API metadata and
+protection requests were unavailable even through an approved read-only retry;
+permissions/protection/account sessions could not be independently inspected.
+Normal push must enforce server permissions; no protection bypass is authorized.
+
+VALIDATION STATUS
+The latest user instruction forbids tests now. Four focused consolidation tests
+were run before that instruction; historical174app/17backup results apply only
+to earlier revisions. No post-layout test/build/startup/migration claim is made.
+Only static syntax/path/import/reference and Git preservation checks are used for
+this delivery. See TEST_AND_VALIDATION_REPORT.txt for the precise limits.
+
+PROJECT_STRUCTURE.md at the root is the current directory authority. Historical
+structure reports remain evidence for their own revisions. WORK_PROGRESS.txt,
+NEXT_DEVELOPER_INSTRUCTIONS.txt and the recovered session log prevent restarting
+this investigation. The canonical future idea is PROJECT_VISION_AND_FUTURE_ROADMAP.txt.

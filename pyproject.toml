@@ -19,4 +19,4 @@ dependencies = [
 include = ["config*", "shop*"]
 
 [tool.setuptools.package-data]
-shop = ["templates/shop/*.html", "templates/registration/*.html"]
+shop = ["templates/shop/*.html", "templates/shop/*/*.html", "templates/registration/*.html"]

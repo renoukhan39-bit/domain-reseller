@@ -1,0 +1,57 @@
+MASTER RECOVERY PROGRESS - 17 November 2026
+Starting main:30fe576f25acc1bbf1733f76bc8b610c9e14dbd1.
+
+COMPLETED
+- Full baseline5140path inventory and seven-head/42commit discovery; no tags.
+- Verified complete all-ref Git bundle, original/source/branch preservation.
+- Recovered five prior docs plus nameserver guard and ten original tests.
+- Consolidated five reset-template duplicate pairs and one gateway validator.
+- Functional source, test, template, CLI, documentation and reference grouping.
+- Imports/paths/package-data/CI references repaired; root PROJECT_STRUCTURE.md.
+- Required inventories, security/duplicate/debt/vision/continuation reports.
+
+CURRENT
+Final static integrity/reference/preservation checks completed; normal direct main commit/push and remote SHA verification next.
+No tests/import execution/build/startup after the updated no-tests instruction.
+
+DECISIONS
+Retain Django/PostgreSQL and immutable schema/framework discovery. Preserve old
+module/template entrypoints as aliases; no competing implementation. Do not
+merge incompatible PHP apps or replace stronger payment logic with older branch.
+Upstream internals remain unchanged inside functional quarantine containers.
+No force push, ref deletion, deployment, paid actions or credential exposure.
+
+COUNTS BEFORE DELIVERY
+{
+  "baseline_files": 5140,
+  "final_files": 5355,
+  "moved_baseline_files": 5077,
+  "recovered_docs": 5,
+  "recovered_test_modules": 1,
+  "consolidated_groups": 6,
+  "archive_paths_including_reports": 5199,
+  "new_history_copies": 159
+}
+
+PENDING/EXTERNAL
+Final remote commit verification; remote CI result unobserved. GitHub permissions,
+branch-protection/account metadata inaccessible through attempted API requests.
+Manual vendor-by-vendor security audit, external provider/payment/SMTP acceptance,
+staging/legal/production review and runtime validation of this layout remain open.
+Do not restart inventory; use NEXT_DEVELOPER_INSTRUCTIONS.txt and technical debt.
+
+FINAL STATIC STATUS
+{
+  "python_files_parsed": 71,
+  "local_import_targets_missing": 0,
+  "literal_template_paths_missing": 0,
+  "packaged_templates": 36,
+  "markdown_links_missing": 0,
+  "original_tracked_entries_preserved": 5140,
+  "final_tracked_entries": 5355,
+  "preserved_subtree_identities_match": true,
+  "strong_secret_marker_matches": 0,
+  "tests_run_after_latest_instruction": 0
+}
+No further tests or runtime checks were run. See validation report for the
+repaired initial static finding and explicit unexecuted checks.

@@ -1,0 +1,447 @@
+COMPLETE FEATURE AND RESPONSIBILITY INVENTORY
+Repository: renoukhan39-bit/domain-reseller
+Audit date: 17 November 2026
+Starting main: 30fe576f25acc1bbf1733f76bc8b610c9e14dbd1
+
+COUNTING AND EVIDENCE
+---------------------
+This catalogue contains 48 grouped feature/responsibility records: 30 active
+application/tooling responsibilities, 10 documented future work groups, six
+upstream reference capability groups and two accessible branch-only work groups.
+Provider variants and individual source files are not counted as independent
+production features. COMPLETE_FILE_INVENTORY.txt accounts for their paths.
+
+The active foundation is Django/Python/PostgreSQL. Cross-layer files belonging
+to the same feature are intentionally connected through imports, URL routes,
+models, templates and tests; framework conventions are not accidental scatter.
+Recommended locations retain config/, shop/, scripts/ and docs/ unless stated.
+
+IMPLEMENTED means code exists. LOCAL means existing automated fixture coverage,
+not real provider acceptance. PLANNED means documented but absent from the active
+Django product. REFERENCE means separate archived application code, not integrated
+functionality. RECOVERED identifies work evaluated from an accessible branch.
+The current-run TEST_AND_VALIDATION_REPORT.txt is authoritative for executed test
+counts and results. Prior main passed 174 PostgreSQL application tests and 17
+backup guard tests plus an isolated synthetic-data encrypted restore drill.
+This inventory does not independently rerun those tests or certify production.
+
+GLOBAL DEPENDENCIES AND OWNERSHIP
+---------------------------------
+Backend engineers own Django feature contracts; QA/security independently check
+tenant isolation and financial failure paths. Operators own environment secrets,
+monitoring and recovery. The owner/business advisers own launch, suppliers,
+tax/legal policy and money movement approval. These are responsibility roles,
+not a claim that named personnel are already appointed.
+
+Active Python dependencies: Django 5.2-range, Requests, psycopg[binary], Gunicorn,
+WhiteNoise; see pyproject.toml for the actual supported ranges. PostgreSQL 16 is
+the validated development database. SQLite bootstrap omits row-lock concurrency
+coverage and is not equivalent. Docker Compose starts db/web/guarded worker.
+No new provider SDK or parallel PHP backend is needed for these active features.
+
+ACTIVE APPLICATION AND TOOLING: F01-F30
+--------------------------------------
+F01 - Runtime, schema, configuration and static delivery
+Purpose/implementation: config/settings.py, urls.py, asgi.py, wsgi.py; manage.py;
+pyproject.toml; Dockerfile; compose.yaml; shop/migrations/0001..0003. Establishes
+secure defaults, PostgreSQL schema, Django routing and WhiteNoise static assets.
+Dependencies/services: all active Python dependencies, PostgreSQL, Docker.
+Tests/status: IMPLEMENTED/LOCAL; system/migration/static/build checks and shop
+suite. Migration 0003 rejects unsafe pre-existing financial rows without deleting
+them. Gaps: production secrets/TLS/IAM, pinned dependency lock and staging proof.
+Location/consolidation: retain framework paths; do not merge PHP runtimes here.
+
+F02 - Customer signup and inactive-account creation
+Implementation: shop/forms.py SignupForm, shop/views.py signup, signup.html;
+EmailVerification model. Normalizes unique email, uses Django password policy,
+creates inactive users and pending verification in a transaction.
+Dependencies: Django auth/forms/ORM and F03/F26. Tests: shop/tests/test_core.py AccountTests;
+test_email_verification.py. Status LOCAL; real signup email delivery remains open.
+Location/gaps: existing forms/views/model/template boundary; queue delivery later.
+
+F03 - Single-use verification, resend and send budgets
+Implementation: shop/accounts/verification.py; EmailVerification/Throttle models;
+resend/verify views, registration verification templates, migration 0002,
+cleanup_verification_throttles command. Nonce rotation, expiring signed links,
+GET confirmation plus CSRF POST activation; generic resend response and HMAC
+counter keys. Dependencies: Django signing/mail/transactions, SMTP, PostgreSQL.
+Tests: 22 existing verification tests including races. Status LOCAL; real SMTP,
+inbox/bounce delivery and durable mail queue remain unverified. Keep one service.
+
+F04 - Login, logout, sessions and tenant account authorization
+Implementation: config/urls.py reuses Django LoginView/LogoutView; registration/
+login.html, login_required decorators and owner-filtered querysets in views.py.
+Dependencies: Django auth/session/CSRF plus F26 throttles. Tests: account,
+payment/fulfillment ownership and throttle suites. Status LOCAL, not a complete
+production account-security audit. Gaps: stronger operator auth and takeover drills.
+
+F05 - Trusted-origin password reset and customer reset pages
+Implementation: SafePasswordResetForm in forms.py, explicit shop/* templates in
+config/urls.py, Django reset token/views. Redacts SMTP failures and ignores hostile
+Host headers. Tests: test_throttling.py SafePasswordResetTests. Status LOCAL;
+external delivery and timing equalization remain open. Five byte-identical legacy
+registration/* copies were identified for compatibility-wrapper consolidation;
+keep shop/* authoritative and preserve default template lookup names.
+
+F06 - Registrant profile and customer-specific registrar handle
+Implementation: RegistrantContact model/provider_payload, RegistrantForm,
+contact/contact_locked templates and contact view. The existing profile becomes
+locked for ordinary edits once a provider handle exists. Fulfillment serializes
+handle creation per customer. Dependencies: Django/PostgreSQL/Openprovider.
+Tests: account/contact ownership plus fulfillment concurrency/provider tests.
+Status LOCAL; registry-specific fields and lawful profile correction remain gaps.
+Keep contact payload/model distinct from registrar HTTP transport.
+
+F07 - Domain and nameserver input validation
+Implementation: forms.py normalize_domain, DomainSearchForm, NameServerForm;
+provider boundary validators in providers.py. Supports two-label ASCII domain
+names, normalized hostnames and distinct 2-4 nameservers. Tests: ValidationTests
+and ProviderContractTests. Status LOCAL; IDNs/multi-part suffixes are unsupported.
+Similar form/provider checks defend different trust boundaries; do not remove one
+merely because both validate a hostname.
+
+F08 - Enabled TLD catalogue and INR price presentation
+Implementation: TLDPrice model/admin, shop/home.html/dashboard.html,
+templatetags/money.py inr filter. Integer paise, configured registration/renewal
+prices, enabled catalogue selection. Tests: checkout amount/validation fixtures;
+no invented live catalogue is loaded. Status IMPLEMENTED/LOCAL. Gaps: actual
+supplier costs, tax/fee policy, price synchronization, multi-currency and quotes.
+
+F09 - Real availability lookup with premium-price safeguards
+Implementation: home view and Openprovider.check in providers.py; home.html.
+Checks returned domain/status and requires unambiguous nonpremium fixed pricing.
+Dependencies: configured catalogue, Requests and Openprovider credentials/API.
+Tests: 19 provider contract fixtures and general validation tests. Status LOCAL;
+real sandbox search and registry restrictions remain externally unverified.
+No generated availability or fallback mock is part of the application.
+
+F10 - Priced checkout and idempotent order reservation
+Implementation: services.py create_checkout_order; DomainOrder constraints;
+buy/renew/order_detail views and order.html. Server prices, per-user key binding,
+one unresolved registration/renewal, durable uncertain gateway-initiation review.
+Dependencies: Django/PostgreSQL, Razorpay Orders, F06/F08/F27. Tests:
+CheckoutHardeningTests/PaymentConcurrencyTests and general checkout tests.
+Status LOCAL; real test orders and commercial acceptance remain open.
+
+F11 - Signed captured-payment webhook admission
+Implementation: views.razorpay_webhook body cap/POST boundary, payments.verify_webhook,
+payment_events.receive_razorpay_webhook. Verifies raw bytes, bounded gateway IDs,
+captured status, exact int amount/currency and event identity. Dependencies:
+webhook secret, HMAC, PostgreSQL uniqueness/locks. Tests: captured-payment,
+signature/malformed envelope/race suites. Status LOCAL; real webhook delivery open.
+The browser callback never marks an order paid; no registrar call occurs here.
+
+F12 - Durable signed evidence and local replay
+Implementation: payment_events.py, PaymentEvent minimal evidence fields,
+reconcile_payment_events command and migration 0003. waiting_order events replay
+after order binding; legacy digest-only events require authentic redelivery.
+Dependencies: F11/Django transactions. Tests: early capture, collision, duplicate,
+cross-customer and concurrency cases. Status LOCAL, stronger than older F47.
+Keep one event service; do not restore the older digest-only branch implementation.
+
+F13 - Read-only uncertain gateway-order identity recovery
+Implementation: reconcile_payment command, Razorpay fetch_order, replay service.
+Verifies receipt, amount, currency and gateway identity before local binding;
+GET status alone cannot invent signed capture. Dependencies: gateway credentials.
+Tests: PaymentReconciliationTests. Status LOCAL; real operator sandbox recovery
+unverified. Live reads require explicit option and separate operator approval.
+
+F14 - Conservative registration fulfillment and durable claim
+Implementation: services.fulfill_one, process_orders command, ManagedDomain,
+DomainOrder/AuditEntry. Commits paid->processing before writes; serializes contact
+creation, retains returned IDs and reads back identity/status/expiry. Dependencies:
+F06/F17/F27/PostgreSQL. Tests: fulfillment safety/concurrency and general tests.
+Status LOCAL; actual sandbox registration is open. Pending/uncertain results stay
+review; no auto retry. Keep one fulfillment state machine, not an upstream import.
+
+F15 - Verified renewal and expiry advancement
+Implementation: renew view, services.fulfill_one renewal path, Openprovider.renew,
+ManagedDomain and renewal uniqueness constraint. Compares a verified remote
+pre-renewal date with the returned remote completion date, never a guessed year.
+Tests: renewal ownership, baseline, malformed date and race fixtures. Status
+LOCAL; real sandbox renewal and reminders/autorenew remain unfinished.
+
+F16 - Tenant-scoped nameserver management and recovered identity gate
+Implementation: nameservers view/form/template and Openprovider.update_nameservers.
+Before recovery, main checked local ownership and only FULFILLMENT_ENABLED before
+writing, without a registrar ownership read-back. Accessible branch 4d4f53b adds
+full fulfillment_ready pairing and matching registrar ID/domain/owner/ACT status.
+Tests: existing tenant test plus branch test_nameserver_safety.py (recovery work).
+Status IMPLEMENTED with a confirmed pre-recovery gap; recovery acceptance and
+fresh test results are recorded in CONSOLIDATION_REPORT/TEST_AND_VALIDATION_REPORT.
+Real sandbox nameserver propagation remains unverified. Retain view adapter split.
+
+F17 - Registrar transport, environment classification and response contracts
+Implementation: providers.py Openprovider, provider_environment, parse_expiry;
+allowed HTTPS origins, bounded requests, no redirects, cached valid auth token,
+strict ID/domain/contact/envelope/premium/date checks. Dependencies: Requests,
+Django cache, Openprovider account. Tests: ProviderContractTests. Status LOCAL.
+Current default /v1; /v1beta recognized for legacy migration, not a new-integration
+recommendation. External contract proof remains missing; no blind URL replacement.
+
+F18 - Stale worker escalation and late-result preservation
+Implementation: mark_stale_orders command and fulfillment late-result guards.
+Locks only stale processing work, escalates to review, never retries a write;
+late workers cannot clear operator escalation. Dependencies: PostgreSQL locks,
+external scheduler. Tests: StaleOrderRecoveryTests and late completion races.
+Status LOCAL; actual scheduler, paging and on-call drills remain open.
+
+F19 - Read-only registration reconciliation
+Implementation: reconcile_registration command and shared _registrar_identity.
+Requires captured review registration, consistent customer handle/provider ID,
+no refund attempt; confirms active identity/expiry without purchasing again.
+Tests: RegistrationReconciliationTests. Dependencies: Openprovider GET credentials.
+Status LOCAL; uncertain renewals without adequate evidence still need manual SOP.
+Keep shared identity policy; do not add a generic reset-to-paid/retry command.
+
+F20 - Operator-only full refund with durable intent
+Implementation: refunds.request_refund, refund_order command, refund_attempted_at,
+pending/review states. Verifies eligible full captured payment and registrar
+confirmation; commits intent before one POST; uncertainty never reissues POST.
+Dependencies: Razorpay, PostgreSQL durable transactions, approved operator.
+Tests: RefundTests/RefundConcurrencyTests. Status LOCAL; real settlement, partial
+refund accounting and live operator approval remain separate gates.
+
+F21 - Read-only refund completion reconciliation
+Implementation: refunds.reconcile_refund and reconcile_refund command. Matching
+refund/payment/amount/currency identity, supplied ID binding and monotonic completed
+state; GET only. Tests: refund identity, conflict, transport and duplicate fixtures.
+Status LOCAL; actual test-mode refund evidence and accounting integration missing.
+Retain separate request/reconcile responsibilities rather than auto retrying.
+
+F22 - Shared Razorpay transport and gateway identifier validation
+Implementation: payments.py Razorpay, valid_gateway_id; payment_events.py legacy
+gateway_identifier convention; services/refunds use these boundaries. Bounded
+Requests with no redirects, path-segment validation, redacted errors.
+Tests: PaymentAdapterTests/checkout/webhook/refund malformed-ID fixtures.
+Status LOCAL. Consolidation target: one validator with compatibility wrapper for
+the old prefix convention; do not duplicate transports or add a payment SDK.
+
+F23 - Customer order/domain dashboard and state display
+Implementation: dashboard/order_detail views, owner-filtered models,
+dashboard.html/order.html. Shows only customer-owned assets, guarded checkout UI
+and honest stored states. Tests: tenant ownership, disabled checkout script/button,
+browser callback and nameserver ownership cases. Status LOCAL; no full support or
+financial dashboard. Preserve existing URLs and template navigation.
+
+F24 - Operator administration and audit history
+Implementation: admin.py registers prices, contacts, managed domains, read-only
+orders/payment events/audit records; AuditEntry used across workflows. Dependencies:
+Django admin/auth/PostgreSQL. Tests: indirect lifecycle audit assertions and admin
+login throttling. Status IMPLEMENTED; independent admin authorization/security
+review and operational audit retention remain gaps. No unsafe financial edit API.
+
+F25 - Privacy-safe reconciliation backlog monitoring
+Implementation: check_reconciliation_backlog command, nine aggregate categories,
+JSON status/schema/time and nonzero alert exit; --warn-only for inspection.
+Dependencies: ORM only, external monitoring runner for delivery. Tests:
+ReconciliationBacklogMonitorTests (read-only, privacy, staleness/thresholds).
+Status LOCAL; alert transport, deployment scheduling and real on-call drill absent.
+This is existing monitoring logic, not proof of an operational alerting service.
+
+F26 - Shared authentication/customer abuse budgets
+Implementation: throttling.py consume_budget/limit_customer_request,
+SharedThrottleMiddleware, hashed EmailVerificationThrottle storage. Includes
+login/reset/IP/identifier and customer action budgets after CSRF; ignores spoofed
+forwarded headers, redacts DB failures and leaves signed gateway retries reachable.
+Tests: shared throttle, Unicode normalization and PostgreSQL race fixtures.
+Status LOCAL; edge/WAF/bot controls and production contention/load remain untested.
+
+F27 - Financial enablement and environment-pairing safeguards
+Implementation: settings defaults, services.sales_ready/fulfillment_ready,
+provider_environment and checkout/worker gates. Test-payment/live-registrar or
+live-payment/sandbox-registrar pairings cannot enable sales. Tests: validation,
+fulfillment-disabled and recovered nameserver enablement cases. Status LOCAL.
+Owner/operator approval remains required before gates, live keys or purchases.
+This feature must stay shared across state-changing provider paths.
+
+F28 - Encrypted PostgreSQL backup and recovery drill
+Implementation: scripts/backups/database_backup.py, backup_restore_drill.py,
+test_database_backup.py, docs/operations/BACKUP_RESTORE.md. Uses real GnuPG and Docker
+PostgreSQL dump/restore, private transient plaintext, explicit empty-target guard,
+wrong-key/corruption refusal and isolated synthetic ownership/payment fixtures.
+Tests: 17 guard tests plus actual local isolated restore. Status LOCAL;
+offsite retention, production RPO/RTO, clean staging recovery and alerting absent.
+
+F29 - Developer/CI pipeline and database-backed HTTP readiness
+Implementation: .github/workflows/ci.yml, Docker/Compose, health view SELECT 1,
+existing shop test suites and setup docs. Dependencies: Python 3.12, PostgreSQL 16,
+GnuPG and managed Docker for backup job. Status local startup/check/test evidence;
+current remote CI must be checked independently. No formatter/type-checker config
+exists; do not invent passing lint/type results. Preserve root framework commands.
+
+F30 - Backlog import and maintained project/runbook knowledge
+Implementation: scripts/github/import_issues.py, docs/planning/ISSUE_BACKLOG.csv (66 tasks), TASKS,
+FEATURE_MATRIX and operating runbooks. Dry run is default; --apply uses gh to create
+issues and skips known titles. Dependencies: CSV/std library, authenticated gh only
+for approved writes. Status tool present; no issue creation performed here.
+Missing: automatic end-to-end acceptance; checklist content is not execution proof.
+
+DOCUMENTED GAPS AND FUTURE GROUPS: F31-F40
+-----------------------------------------
+These have requirements/research in docs/engineering/TASKS.md, ROADMAP.md and the future-vision
+text, but no corresponding complete active Django implementation. Existing source
+snapshots must not be counted as deployed substitutes. Owners/tests below describe
+the work needed, not completed evidence.
+
+F31 - Automated supplier price/currency sync, quotes and premium/IDN/TLD expansion
+Purpose: accurate margin-safe offers across supported registry rules. Current:
+manual enabled TLD prices and two-label ASCII validation only. Needs supplier
+contracts, real cost/fee/tax data, currency policy, schema fixtures and price-race
+tests. Owner: backend plus finance; proposed location: incremental shop catalogue
+and quote services, current provider adapter. Premium fixed-price bypass rejected.
+
+F32 - Tax invoices, financial ledger, settlement and partial-refund accounting
+Current: orders, captured events and guarded full refunds; no tax-compliant invoice
+or double-entry/subledger reporting. Needs jurisdictional review, gateway/registrar
+reconciliation evidence and immutable audit policy. Owner: finance/legal/backend.
+Tests: future invoice/tax/rounding/settlement acceptance. Location: coherent billing
+modules within the one Django app until size justifies a reviewed separation.
+
+F33 - Expiry synchronization, reminders and approved auto-renewal
+Current: renewal command path and confirmed expiry storage; no scheduler/reminders
+or opt-in recurring charging. Needs supplier lifecycle rules, mail delivery,
+consent, cutoffs and retry/uncertainty designs. Owner: backend/operators/product.
+Tests must cover missed email, failed payment, changed prices, registry cutoffs.
+
+F34 - Transfers, DNS records and DNSSEC
+Current: nameserver changes only; transfer/EPP, zone editor and DNSSEC APIs absent.
+Needs owner authentication, provider capabilities, registry locks/rollover policy
+and real sandbox evidence. Owner: backend/domain specialist/security. Keep future
+adapters separate from nameserver HTTP code; never infer ownership from AI advice.
+
+F35 - Organizations, agency delegation, multi-registrar routing and reseller API
+Current: individual customer ownership, one Openprovider adapter. Needs roles,
+scoped keys, organization isolation, provider routing/idempotency and financial
+contracts. Owner: backend/security/product; tests tenant/race/key-revocation paths.
+An upstream provider module is research, not a compatible Django drop-in.
+
+F36 - Customer support portal, reporting UI and production observability
+Current: Django admin, aggregate backlog command and docs; no full customer ticket
+system, reconciliation dashboard, status service or delivered incident paging.
+Needs approved support/monitoring services, privacy controls and on-call staffing.
+Owner: operations/support/product; validate alert/contact routes and access scopes.
+
+F37 - Hosting/VPS/business email/certificate/website products
+Current: not implemented in Django. Needs supplier terms, quotas, abuse handling,
+backups, billing and exit/migration workflows for each product. Owner: supplier
+partners/operators/backend. PNLCS server/SSL modules are comparisons only.
+Adopt one adjacency after demonstrated core reliability, not a parallel rewrite.
+
+F38 - Privacy export/correction/deletion and account-security lifecycle
+Current: basic auth/profile and security defaults; no lawful self-service privacy
+workflow, operator MFA implementation or documented production takeover exercise.
+Needs retention/legal rules, verified identity, audit/deletion exceptions and
+recovery drills. Owner: legal/security/backend/operators. Do not erase paid records
+or registry data merely to make a deletion request appear successful.
+
+F39 - Production platform, financial/legal/supplier acceptance
+Current: local Compose and guarded code; no verified protected staging/live launch,
+managed TLS/IAM/offsite retention, supplier/merchant approvals or live pilot.
+Owner: owner/operators/security/finance/legal. Tests: existing 20 release criteria
+with real evidence. Public launch and purchases remain explicit owner decisions.
+
+F40 - AI discovery, guided setup, support and operator assistance
+Current: proposals only; no model dependency, AI API or production evaluation.
+Feasible experiments need authorized retrieval, grounded availability checks,
+evaluation, spend limits, privacy review and human approvals for money/domain
+actions. Owner: product/qualified AI engineer/security. See future-vision text;
+no guarantee of future model breakthroughs or autonomous financial authority.
+
+PRESERVED UPSTREAM CAPABILITY GROUPS: F41-F46
+--------------------------------------------
+All paths in these six groups begin AnalyseFuture/. Status is REFERENCE,
+source-present and unexecuted in this audit. Their separate tests/dependencies
+do not demonstrate functionality in this repository's active application.
+
+F41 - PNLCS portal, billing, support and administration
+Source: pnlcs-main/app/{Models,Services,Http,...}, resources/, routes/, tests/.
+Purpose: separate hosting-billing/client/admin application, including invoice,
+ticket/customer/account and service concepts. Dependencies: PHP ^8.4, Laravel ^13,
+MySQL and its Composer/Node manifests; PNLCS MIT and bundled notices retained.
+Consolidation: study domain concepts, never import Laravel controllers into Django.
+
+F42 - PNLCS registrar adapters
+Source: pnlcs-main/modules/Registrars/{DomainNameApi,Enom,HRD,Manual,Namecheap,OVH,
+OpenProvider,ResellerClub}. Purpose: alternative registrar module implementations.
+Missing here: provider credentials, PHP runtime/test validation, API-version and
+ownership reviews. Local Django Openprovider adapter remains the active boundary;
+feature overlap is cross-framework and commercially/security unverified.
+
+F43 - PNLCS payment gateways
+Source: pnlcs-main/modules/Gateways/{AuthorizeNet,BankTransfer,Iyzico,Mollie,PayPal,
+Razorpay,Stripe,Tpay}. Purpose: separate billing-platform payment integrations.
+Dependencies: upstream contracts/framework and gateway accounts. Status REFERENCE;
+no extra gateway available in Django. Reuse ideas after signature/idempotency review,
+not code-copy as a substitute for the existing signed captured-payment policy.
+
+F44 - PNLCS service provisioning, SSL, addons and company/reporting modules
+Source: pnlcs-main/modules/{Servers,Ssl,Addons,CompanyLookup,Ksef,Reports}, themes/.
+Server variants include cPanel, DirectAdmin, HestiaCP, Plesk, Proxmox and Vultr.
+These are adjacent-product/UX comparisons, not active hosting or DNS infrastructure.
+Dependencies and licenses/security/provider contracts need their own audit before
+any adoption; preserve the whole snapshot and internal public/themes symlink.
+
+F45 - Openprovider WHMCS registrar lifecycle integration
+Source: Openprovider-WHMCS-domains-master/modules/registrars/openprovider/,
+including openprovider.php, src/, api/, cron/, hooks and existing tests.
+Purpose: domain lifecycle integration for WHMCS/PHP, not the Django app.
+Dependencies: WHMCS, PHP/Composer/Openprovider and bundled vendor libraries.
+No root project license found; dependency notices do not grant whole-module rights.
+Treat behavior as research until license, contract and isolation reviews pass.
+
+F46 - Openprovider WHMCS auxiliary administration/pricing/DNS guidance
+Source: Openprovider-WHMCS-domains-master/modules/addons/openprovider/, docs/,
+registrar custom-pages/configuration/scripts and related bundled assets.
+Capabilities documented include TLD price sync, DNSSEC, renewal/handle and module
+administration procedures. Status REFERENCE, not runtime tested or production
+certified. No active Django module depends on these files; retain provenance and
+do not execute archived cron/import/install scripts during Django setup.
+
+ACCESSIBLE BRANCH-ONLY WORK: F47-F48
+------------------------------------
+F47 - Older signed-webhook replay experiment (SUPERSEDED)
+Branch: origin/feat/M3-08-webhook-replay-safety, tip f903546; original files
+shop/commerce/orders.py, shop/test_webhook_replay.py and docs/WEBHOOK_REPLAY.md.
+Purpose: redeliver an immutable unmatched captured event after local order binding.
+Comparison: main already implements stricter admission and retains minimal signed
+evidence for local replay/receipt recovery (F11-F13). The branch retains only a
+digest and needs fresh provider redelivery; its outcome names/legacy schema differ.
+Recommendation: preserve unique branch docs/tests as historical evidence; do not
+merge its service implementation over the more complete current event service.
+Its fixtures are source evidence, not executed real Razorpay acceptance.
+
+F48 - Persistent project continuity and session handoff (RECOVERABLE DOCS)
+Branch: origin/docs/project-continuity-master-2026-11-16, tip 8ce7879; files
+docs/continuity/PROJECT_CONTINUITY_MASTER.md, docs/continuity/PROJECT_SESSION_LOG.md plus navigation
+updates. Purpose: retain research, decisions, pinned upstream links and append-only
+session context without relying on inaccessible conversations. Unique docs are
+compatible with the current Django architecture; recover while preserving original
+versions and append dated corrections instead of replacing previous session facts.
+No source/runtime feature is introduced. Old PR/open-main assertions are historical,
+not current statuses; use current Git refs and validation reports for truth.
+
+CONSOLIDATION DECISIONS
+-----------------------
+1. Unify duplicate gateway identifier policy through the current payments module;
+   retain the old event-helper calling convention as a compatibility wrapper.
+2. Keep one authoritative customer password-reset template set; preserve Django
+   default template-name compatibility with wrappers and archive original copies.
+3. Recover the compatible nameserver safety fix and its focused tests instead of
+   rebuilding the feature or continuing the weaker existing local-row-only guard.
+4. Recover unique continuity/research documents with current dated status notes.
+5. Preserve older webhook branch source/docs as superseded evidence; main's more
+   complete minimal-evidence state machine remains authoritative.
+6. Leave upstream PHP applications isolated as references. Their substantial unique
+   billing/hosting features cannot be honestly merged into Django by moving files.
+7. Keep forms, views, models, templates, management commands and tests in their
+   framework-compatible locations; this inventory connects each logical feature
+   across those locations. Avoid arbitrary feature-directory churn or migrations.
+
+UNVERIFIED AND CONTINUATION
+---------------------------
+See TEST_AND_VALIDATION_REPORT.txt for actual current execution outcomes and
+SECURITY_AUDIT.txt for confirmed findings versus unknown compromise. Real provider
+sandbox registration/renewal/NS, gateway test delivery/settlement, SMTP delivery,
+production deployment/account control and legal/financial readiness remain separate
+external acceptance. Do not promote TASKS checkboxes based on this catalogue.

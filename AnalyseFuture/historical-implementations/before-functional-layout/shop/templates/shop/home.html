@@ -1,0 +1,10 @@
+{% extends 'shop/base.html' %}{% load money %}{% block title %}Search domains{% endblock %}{% block content %}
+<h1>Find your next domain</h1><p>Search registration availability directly at our registrar.</p>
+<div class="box"><form method="get" action="{% url 'home' %}">{{ form.as_p }}<button type="submit">Check availability</button></form></div>
+{% if found %}<div class="box"><h2>{{ found.domain }}</h2>
+{% if found.available %}<p>Available when checked. Live availability may change.</p><p>Registration: ₹{{ found.price|inr }} / first year</p>
+{% if not user.is_authenticated %}<a href="{% url 'signup' %}">Create an account to order</a>
+{% elif sales_enabled %}<form method="post" action="{% url 'buy' found.domain %}">{% csrf_token %}<input type="hidden" name="idempotency_key" value="{{ found.checkout_key }}"><button type="submit">Continue to checkout</button></form>
+{% else %}<p class="muted">Live checkout not yet enabled. No charges are being accepted.</p>{% endif %}
+{% else %}<p>This domain is unavailable.</p>{% endif %}</div>{% endif %}
+{% endblock %}

@@ -1,0 +1,48 @@
+CONSOLIDATION DECISIONS AND IMPLEMENTATION
+Baseline: 30fe576. No whole-framework replacement or database migration.
+
+COMBINED COMPATIBLE RESPONSIBILITIES
+- Five reset-page/email duplicate groups: authoritative customer templates now
+  live in shop/templates/shop/accounts/. registration/* and prior shop/* entry
+  names delegate. Customer URLs explicitly use the shop namespace to avoid
+  Django admin's competing default registration template lookup.
+- Payment identifiers: commerce/events.gateway_identifier(value,prefix) delegates
+  to commerce/gateway.valid_gateway_id(value,prefix+'_'). Public prefix callers,
+  strict ASCII/length rules and exception boundaries remain intact.
+- Account verification, payment gateway/events/refunds/order lifecycle, registrar
+  transport and shared throttles now have named feature packages. Old service
+  import names are compatibility aliases to those module objects, including
+  private helpers and monkeypatch targets. There is one implementation per policy.
+- Matching tests, templates and runbooks are collected by their responsibilities.
+  Django models/forms/admin/views/URLs remain thin or conventional shared adapters;
+  migrations retain original app identity and dependency order.
+
+RECOVERED AND CONNECTED
+- Existing nameserver ownership/environment gate plus its original10tests.
+- Five missing documentation artifacts, with provenance notes and current links.
+- Continuity instructions restored into AGENTS/onboarding/session guidance.
+- New canonical future-vision document reuses earlier detailed work; the former
+  docs idea path becomes a pointer, and its entire original is preserved.
+
+DELIBERATELY NOT COMBINED
+- PNLCS Laravel/MySQL, WHMCS PHP and Django/PostgreSQL are incompatible runtime
+  foundations. A commercial/framework migration still needs an explicit decision.
+- The older webhook branch is superseded; importing it would discard stronger
+  durable event evidence/refund constraints. Preserve its unique docs/tests as
+  history; no missing production feature justifies replacing main.
+-168archive-only exact duplicate groups belong to separate Composer roots,
+  versioned packages, required notices or asset aliases. They are not redundant
+  active business logic. Leave their internal paths intact.
+- No business feature was rebuilt from scratch to make the tree look cleaner.
+
+REFERENCES AND COMPATIBILITY
+Imports, relative imports, template inheritance/include targets, route template
+names, test patch targets, package-data patterns, backup tooling commands, GitHub
+issue CSV root and CI paths were repaired. All original contents are retained in
+history/preservation copies. Full old-to-new records are in
+ORIGINAL_TO_NEW_PATH_MAPPING.txt. Source APIs/routes/schema remain stable except
+the intentional fail-closed recovery of registrar ownership checks.
+
+No tests were run after the latest instruction. New/recovered coverage remains
+available for the next authorized verification pass; static checks do not prove
+runtime behavior. See TEST_AND_VALIDATION_REPORT.txt and TECHNICAL_DEBT.txt.

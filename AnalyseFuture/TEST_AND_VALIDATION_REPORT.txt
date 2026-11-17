@@ -1,0 +1,61 @@
+TEST AND STATIC VALIDATION STATUS - 17 November 2026
+Starting revision:30fe576. Final layout follows the owner's later NO TESTS order.
+
+EXECUTED BEFORE THAT ORDER
+- Four focused consolidation tests in the former shop/tests/test_compatibility.py passed
+  after correcting explicit template-loader precedence. Those results preceded
+  the later package/template/test moves and do not validate the final layout.
+- Earlier task revisions passed174PostgreSQL app tests,17backup guards and an
+  isolated synthetic encrypted recovery. They are historical evidence only.
+
+NOT RUN FOR THE FINAL LAYOUT, BY USER INSTRUCTION
+- Full app/unit/integration/concurrency tests and recovered nameserver tests.
+- Backup guard tests or recovery drill.
+- Docker build, dependency reinstall, collectstatic, Django runtime checks,
+  migrations, application startup/restart or HTTP smoke requests.
+- Type checker/linter/security vulnerability tool runs; no configured universal
+  tool is invented. GitHub Actions remote result not requested or observed.
+- Real registrar/payment/SMTP/staging/legal/production acceptance remains unrun.
+
+ALLOWED STATIC CHECKS
+Python AST parsing without imports/execution; static local-import targets and
+feature dependency cycles; literal template/reference/package-data/CLI paths;
+Markdown links; complete Git blob/mode/path preservation, snapshot subtree identity,
+staged scope, sensitive filename/token-pattern scan and whitespace review outside
+unaltered historical evidence. Final outcomes are appended before delivery.
+
+These checks can catch syntax and relocation errors. They cannot establish runtime
+template behavior, import side effects, database semantics, provider contracts or
+service readiness. The task does not claim every feature works after restructuring.
+
+The normal requested push may cause the pre-existing GitHub Actions workflow to
+run automatically. No manual workflow/test run is triggered by this task, and no
+remote passing result is claimed.
+
+FINAL STATIC REVIEW OUTCOME
+{
+  "python_files_parsed": 71,
+  "local_import_targets_missing": 0,
+  "literal_template_paths_missing": 0,
+  "packaged_templates": 36,
+  "markdown_links_missing": 0,
+  "original_tracked_entries_preserved": 5140,
+  "final_tracked_entries": 5355,
+  "preserved_subtree_identities_match": true,
+  "strong_secret_marker_matches": 0,
+  "tests_run_after_latest_instruction": 0
+}
+
+Initial static parsing caught an invalid working copy of the HTTP adapter. It
+was restored from the exact preserved pre-layout source, retaining the reviewed
+nameserver guard and repaired functional references. Final parsing succeeds;
+no unresolved static finding remains. This was not attributed to an attacker.
+
+Active diff whitespace review passed; unchanged historical snapshots retain their
+original whitespace/content. Saved environment startup instructions were updated
+to the functional paths and the no-tests constraint; draft save is not publication
+and does not build/start/test the new revision.
+
+No tests were executed after the owner's no-tests instruction. Runtime behavior
+of this final layout remains unverified. Normal main push and final remote SHA
+verification are reported in the task response rather than asserted in advance.

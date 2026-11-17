@@ -1,5 +1,5 @@
 from django.core.management.base import BaseCommand, CommandError
-from shop.refunds import RefundError, request_refund
+from shop.commerce.refunds import RefundError, request_refund
 
 class Command(BaseCommand):
     help = "MANUAL: refund after verifying registrar has not completed the paid operation"

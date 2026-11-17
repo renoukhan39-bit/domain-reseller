@@ -10,12 +10,13 @@ from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django.views.decorators.cache import never_cache
 from django.db import transaction
-from .email_verification import RESEND_MESSAGE, consume_verification, request_verification, verification_pending
-from .forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerificationForm, SignupForm, normalize_domain
-from .models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
-from .providers import Openprovider, ProviderError
-from .services import OrderError, create_checkout_order, receive_razorpay_webhook, sales_ready
-from .throttling import limit_customer_request
+from shop.accounts.verification import RESEND_MESSAGE, consume_verification, request_verification, verification_pending
+from shop.forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerificationForm, SignupForm, normalize_domain
+from shop.models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
+from shop.domains.openprovider import Openprovider, ProviderError
+from shop.commerce.orders import (OrderError, _registrar_identity, create_checkout_order,
+                       fulfillment_ready, receive_razorpay_webhook, sales_ready)
+from shop.security.throttling import limit_customer_request
 
 
 def rate_limited(request, key_prefix, limit=12):
@@ -42,7 +43,7 @@ def home(request):
                          "checkout_key": secrets.token_hex(24)}
             except ProviderError:
                 messages.error(request, "Registrar search temporarily unavailable; no availability claim made")
-    return render(request, "shop/home.html", {"form": form, "found": found, "sales_enabled": sales_ready()})
+    return render(request, "shop/storefront/home.html", {"form": form, "found": found, "sales_enabled": sales_ready()})
 
 
 @require_http_methods(["GET", "POST"])
@@ -59,7 +60,7 @@ def signup(request):
         request_verification(user.email, request.META.get("REMOTE_ADDR", "unknown"))
         messages.success(request, "Account created. Check your email to activate it.")
         return redirect("login")
-    return render(request, "shop/signup.html", {"form": form})
+    return render(request, "shop/accounts/signup.html", {"form": form})
 
 
 @never_cache
@@ -98,7 +99,7 @@ def contact(request):
     existing = RegistrantContact.objects.filter(owner=request.user).first()
     # Registry owner handle may already exist: mutations require correct API synchronization.
     if existing and existing.openprovider_handle:
-        return render(request, "shop/contact_locked.html", {"contact": existing})
+        return render(request, "shop/domains/contact_locked.html", {"contact": existing})
     form = RegistrantForm(request.POST or None, instance=existing)
     if request.method == "POST" and form.is_valid():
         record = form.save(commit=False)
@@ -106,13 +107,13 @@ def contact(request):
         record.save()
         messages.success(request, "Registrant details saved")
         return redirect("dashboard")
-    return render(request, "shop/contact.html", {"form": form})
+    return render(request, "shop/domains/contact.html", {"form": form})
 
 
 @login_required
 @require_GET
 def dashboard(request):
-    return render(request, "shop/dashboard.html", {
+    return render(request, "shop/portfolio/dashboard.html", {
         "domains": ManagedDomain.objects.filter(owner=request.user).order_by("name"),
         "orders": DomainOrder.objects.filter(owner=request.user)[:30],
         "has_contact": RegistrantContact.objects.filter(owner=request.user).exists(),
@@ -171,7 +172,7 @@ def renew(request, domain_id):
 @require_GET
 def order_detail(request, order_id):
     order = get_object_or_404(DomainOrder, pk=order_id, owner=request.user)
-    return render(request, "shop/order.html", {
+    return render(request, "shop/commerce/order.html", {
         "order": order, "key_id": settings.RAZORPAY_KEY_ID, "checkout_enabled": sales_ready(),
     })
 
@@ -184,19 +185,31 @@ def nameservers(request, domain_id):
         raise Http404()
     form = NameServerForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        if not settings.FULFILLMENT_ENABLED:
+        if not fulfillment_ready():
             messages.error(request, "Registrar management is currently disabled")
         elif rate_limited(request, "nameservers", 5):
             return HttpResponse("Please try again shortly", status=429)
         else:
             try:
-                Openprovider().update_nameservers(domain.provider_id, form.cleaned_data["nameservers"])
+                # A local domain row is not proof of current registrar ownership.
+                # Fail closed if the provider reports another registrant or an inactive domain.
+                contact_handle = RegistrantContact.objects.filter(owner=request.user).values_list(
+                    "openprovider_handle", flat=True).first()
+                if not contact_handle:
+                    raise OrderError("Registrar contact identity is not verified")
+                provider = Openprovider()
+                details = provider.get_domain(domain.provider_id)
+                status, _expiry = _registrar_identity(
+                    details, domain.provider_id, domain.name, contact_handle)
+                if status != "ACT":
+                    raise OrderError("Registrar domain is not active")
+                provider.update_nameservers(domain.provider_id, form.cleaned_data["nameservers"])
                 AuditEntry.objects.create(actor=request.user, domain=domain, action="nameservers_changed")
                 messages.success(request, "Nameserver update sent to registrar")
                 return redirect("dashboard")
-            except ProviderError:
-                messages.error(request, "Update uncertain; check registrar status before retry")
-    return render(request, "shop/nameservers.html", {"domain": domain, "form": form})
+            except (ProviderError, OrderError):
+                messages.error(request, "Registrar identity or update uncertain; check registrar before retry")
+    return render(request, "shop/domains/nameservers.html", {"domain": domain, "form": form})
 
 
 @csrf_exempt

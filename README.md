@@ -1,10 +1,18 @@
 # Domain Reseller
 
+The current functional layout is documented in [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md). See the [complete recovery audit](AnalyseFuture/REPOSITORY_AUDIT.txt), [file inventory](AnalyseFuture/COMPLETE_FILE_INVENTORY.txt), and [canonical project vision (.txt)](AnalyseFuture/PROJECT_VISION_AND_FUTURE_ROADMAP.txt). The latest organization pass has static checks only: the owner requested no further tests, so earlier passing suites do not validate this layout.
+
+See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the functional code, template, test, tooling and documentation collections. The [master recovery report](AnalyseFuture/REPOSITORY_AUDIT.txt) records recovered branch work and preservation. The latest owner instruction paused tests: prior passing counts are historical evidence and do not validate this final layout.
+
 A real Django + PostgreSQL domain reseller codebase designed for a guarded, incremental production rollout. The application implements customer authentication and email verification, registrant profiles, live registrar availability lookups, INR TLD catalog, Razorpay Orders checkout, signed payment-captured webhooks, database-backed paid-order fulfillment, Openprovider registration and renewal, nameserver changes, administration, audit trails, and tests.
 
-The working application remains in `config/` and `shop/`. Existing PNLCS and Openprovider WHMCS source snapshots are preserved unchanged in [`AnalyseFuture/`](AnalyseFuture/README.md) for future study. See the [repository audit and layout](docs/REPOSITORY_STRUCTURE.md) for the structure and preservation evidence, and the [detailed project idea and future roadmap (.txt)](docs/PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) for the product proposal, limits and responsible teams.
+The working application remains in `config/` and `shop/`. Existing PNLCS and Openprovider WHMCS source snapshots are preserved unchanged in [`AnalyseFuture/`](AnalyseFuture/README.md) for future study. See the [repository audit and layout](docs/history/REPOSITORY_STRUCTURE.md) for the structure and preservation evidence, and the [detailed project idea and future roadmap (.txt)](docs/PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) for the product proposal, limits and responsible teams.
 
 **Current status: implementation foundation, NOT a launched or verified live service.** Registrar/payment credentials have not been provided; real sandbox end-to-end testing, billing/legal reviews, transaction reconciliation, deployment and backup drills remain outstanding. There are no simulated checkout paths in the application. Settings fail closed: sales and fulfillment are disabled by default.
+
+## Current functional layout
+
+Read [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the accounts, commerce, domains, security, operations and documentation collections. The [master recovery reports](AnalyseFuture/REPOSITORY_AUDIT.txt) record recovered branch work and preservation. The latest owner instruction excludes tests for this restructuring; earlier passing results below describe their own revisions.
 
 ## New developer / Codex? Start here
 
@@ -27,9 +35,9 @@ With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obta
 ## Production readiness status
 
 - **Implemented:** core Django application, database schema, profile/email verification, authenticated customer pages, registrar API adapter, Razorpay Orders + signed webhook, manual refund command, guarded fulfillment worker, nameserver updates, unit/integration-style tests, PostgreSQL compose, CI workflow.
-- **Verified:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite). Local PostgreSQL 16 and Docker validation with the cloud CA override passed all 166 application tests, including payment/refund reconciliation, registrar recovery and shared throttling; see [verification evidence](docs/THROTTLING.md).
-- **Not verified externally:** registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, production load/edge rate limits, production/staging backup restore, financial and legal compliance. Local PostgreSQL concurrency tests and the isolated synthetic-data recovery drill are separate verified checks; see [current reorganization evidence](docs/RESTRUCTURE_VALIDATION.txt).
-- **Email verification:** [resend and SMTP configuration](docs/EMAIL_VERIFICATION.md) are implemented with single-use expiring links and database send throttles; external provider delivery remains unverified.
+- **Verified:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite). Local PostgreSQL 16 and Docker validation with the cloud CA override passed all 166 application tests, including payment/refund reconciliation, registrar recovery and shared throttling; see [verification evidence](docs/operations/THROTTLING.md).
+- **Not verified externally:** registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, production load/edge rate limits, production/staging backup restore, financial and legal compliance. Local PostgreSQL concurrency tests and the isolated synthetic-data recovery drill are separate verified checks; see [current reorganization evidence](docs/history/RESTRUCTURE_VALIDATION.txt).
+- **Email verification:** [resend and SMTP configuration](docs/operations/EMAIL_VERIFICATION.md) are implemented with single-use expiring links and database send throttles; external provider delivery remains unverified.
 - **Not implemented:** customer invoices/tax calculations, supplier price sync, web-based support/refund system, transfers, automated expiries/renewal reminders, DNS record editor, reconciliation dashboard, reporting/ledger, production edge throttling and bot controls, data deletion/export, observability alerts. These are explicit tasks, **not** silently called complete.
 
 ## Important business safeguards
@@ -42,23 +50,23 @@ With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obta
 
 ## Documents
 
-- [`docs/PROJECT_GOAL.md`](docs/PROJECT_GOAL.md) — scope, user stories, definition of done.
-- [`docs/TASKS.md`](docs/TASKS.md) — developer checklist and acceptance test matrix.
-- [`docs/FREE_RESOURCES.md`](docs/FREE_RESOURCES.md) — credits, limits, remaining unavoidable costs.
-- [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md) — build, cloud rollout, sandbox/live gates.
-- [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) — data flow, security, known risks.
-- [`docs/PR_HANDOFF.md`](docs/PR_HANDOFF.md) — how to commit to GitHub and continue with Codex.
-- [`docs/5_DAY_EXECUTION_PLAN.md`](docs/5_DAY_EXECUTION_PLAN.md) — five-day implementation sprint with test evidence and exit gates.
-- [`docs/PUBLIC_REPOSITORY_REPORT.md`](docs/PUBLIC_REPOSITORY_REPORT.md) — public open-source alternatives and licensing/cost caveats.
+- [`docs/product/PROJECT_GOAL.md`](docs/product/PROJECT_GOAL.md) — scope, user stories, definition of done.
+- [`docs/engineering/TASKS.md`](docs/engineering/TASKS.md) — developer checklist and acceptance test matrix.
+- [`docs/planning/FREE_RESOURCES.md`](docs/planning/FREE_RESOURCES.md) — credits, limits, remaining unavoidable costs.
+- [`docs/operations/DEPLOYMENT.md`](docs/operations/DEPLOYMENT.md) — build, cloud rollout, sandbox/live gates.
+- [`docs/engineering/ARCHITECTURE.md`](docs/engineering/ARCHITECTURE.md) — data flow, security, known risks.
+- [`docs/continuity/PR_HANDOFF.md`](docs/continuity/PR_HANDOFF.md) — how to commit to GitHub and continue with Codex.
+- [`docs/planning/5_DAY_EXECUTION_PLAN.md`](docs/planning/5_DAY_EXECUTION_PLAN.md) — five-day implementation sprint with test evidence and exit gates.
+- [`docs/research/PUBLIC_REPOSITORY_REPORT.md`](docs/research/PUBLIC_REPOSITORY_REPORT.md) — public open-source alternatives and licensing/cost caveats.
 
 **Do not paste passwords, API keys, contact personal data, AWS access keys or subscription tokens into GitHub, pull requests, screenshots, or this chat.**
 
 ## Additional project handoff docs
 
 - [`docs/START_HERE.md`](docs/START_HERE.md) — onboarding and scope
-- [`docs/ROADMAP.md`](docs/ROADMAP.md) — long-term competitive product stages
-- [`docs/FEATURE_MATRIX.md`](docs/FEATURE_MATRIX.md) — written vs missing vs unverified
-- [`docs/CODEX_CLOUD.md`](docs/CODEX_CLOUD.md) — cloud AI instructions
-- [`docs/OWNERSHIP_AND_LICENSES.md`](docs/OWNERSHIP_AND_LICENSES.md) — code ownership and third-party license boundaries
-- [`docs/PROVIDER_SETUP.md`](docs/PROVIDER_SETUP.md) — safe supplier/payment setup
+- [`docs/product/ROADMAP.md`](docs/product/ROADMAP.md) — long-term competitive product stages
+- [`docs/product/FEATURE_MATRIX.md`](docs/product/FEATURE_MATRIX.md) — written vs missing vs unverified
+- [`docs/continuity/CODEX_CLOUD.md`](docs/continuity/CODEX_CLOUD.md) — cloud AI instructions
+- [`docs/governance/OWNERSHIP_AND_LICENSES.md`](docs/governance/OWNERSHIP_AND_LICENSES.md) — code ownership and third-party license boundaries
+- [`docs/operations/PROVIDER_SETUP.md`](docs/operations/PROVIDER_SETUP.md) — safe supplier/payment setup
 - [`CONTRIBUTING.md`](CONTRIBUTING.md) — new developer rules

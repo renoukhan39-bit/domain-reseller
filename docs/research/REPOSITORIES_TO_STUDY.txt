@@ -1,0 +1,150 @@
+DOMAIN RESELLER - OPEN SOURCE REPOSITORIES TO STUDY
+====================================================
+Canonical project: https://github.com/renoukhan39-bit/domain-reseller
+Compiled: 2026-11-15
+Source: repositories previously identified in docs/research/PUBLIC_REPOSITORY_REPORT.md,
+        docs/research/REUSE_FIRST_STRATEGY.md, and docs/START_HERE.md.
+
+PURPOSE
+-------
+Study existing implementations and reuse maintained, license-compatible software.
+This is a reference inventory, NOT an instruction to copy all repositories into
+our Django application. The official project currently uses Django/PostgreSQL.
+A Laravel/PHP migration requires an explicit architecture decision. Check each
+upstream repository's current license, security status and maintenance before use.
+License descriptions below reflect the prior project research, not a fresh audit.
+
+A. CORE DOMAIN-RESELLER / BILLING / PROVIDER REFERENCES
+-------------------------------------------------------
+01. Panelica / PNLCS
+    GitHub: https://github.com/Panelica/pnlcs
+    Covers: domain reseller storefront, cart, customer area, invoices, tickets,
+            affiliates, registrar modules (OpenProvider/Namecheap/ResellerClub),
+            payment modules (including Razorpay), hosting panel integrations.
+    Previous license note: MIT.
+    Recommended use: STUDY / compare a possible single Laravel+MySQL foundation.
+    Warning: different stack from Django; do NOT mix frameworks. Validate the
+             Openprovider API version and HTTPS sandbox configuration.
+
+02. FOSSBilling
+    GitHub: https://github.com/FOSSBilling/FOSSBilling
+    Covers: open-source customer billing, invoices, hosting services, extensions.
+    Previous license note: Apache-2.0; project described itself as beta at review.
+    Recommended use: STUDY billing, customer management and plugin architecture;
+                     evaluate migration only as a separate approved decision.
+    Warning: PHP application; not directly installable as a Django module.
+
+03. Paymenter
+    GitHub: https://github.com/Paymenter/Paymenter
+    Covers: hosting billing/storefront, payments, client area and extensions.
+    Previous license note: MIT.
+    Recommended use: STUDY UI and extension architecture.
+    Warning: verify available domain registrar integrations; PHP stack.
+
+04. Openprovider official WHMCS domains module
+    GitHub: https://github.com/openprovider/Openprovider-WHMCS-domains
+    Covers: provider domain registration/renewal/transfers, nameserver control,
+            wholesale price sync and WHMCS registrar module workflows.
+    Previous license note: no root LICENSE was located during prior research;
+                           inspect repository/module terms before any reuse.
+    Recommended use: STUDY provider API request/response contract and edge cases.
+    Warning: WHMCS is commercial and PHP; this is NOT a drop-in Django package.
+             Check current Openprovider v1 and sandbox contract independently.
+
+05. OSIR's FOSSBilling registrar module
+    GitHub: https://github.com/Osir-Inc/fossbilling-osir
+    Covers: registrar extension for FOSSBilling, domain/DNS controls, pricing.
+    Previous license note: Apache-2.0.
+    Recommended use: STUDY plugin/module integration.
+    Warning: earlier research reported no OSIR sandbox; do not issue live
+             registrar transactions without approval and real funding.
+
+06. Namingo Registrar
+    GitHub: https://github.com/getnamingo/registrar
+    Covers: EPP/RDAP and operations associated with accredited registrars.
+    Previous license note: MIT.
+    Recommended use: STUDY lifecycle, registry policy and compliance concepts.
+    Warning: managing an accredited registrar is not the same as reselling via
+             Openprovider; do not build unnecessary registry infrastructure.
+
+07. Cloudzaro domain reseller API examples
+    GitHub: https://github.com/codemec-com/domain-reseller-api
+    Covers: OpenAPI contract and example Python, Node.js and PHP clients.
+    Previous license note: MIT (examples repository).
+    Recommended use: STUDY public API shape and client SDK ergonomics.
+    Warning: API examples are not a complete reseller storefront; the prior
+             research stated the provider did not offer a sandbox.
+
+08. Upmind domain names provisioning provider
+    GitHub: https://github.com/upmind/provision-provider-domain-names
+    Covers: domain provider/adaptor interfaces and provisioning abstractions.
+    Previous license note: GPL-3.0.
+    Recommended use: STUDY adapter design and domain operation flows.
+    Warning: do not copy GPL-licensed implementation into proprietary source
+             without an explicit compatibility/legal review.
+
+B. OPTIONAL OPERATIONAL / WEB-SERVICES BUILDING BLOCKS
+------------------------------------------------------
+09. Umami
+    GitHub: https://github.com/umami-software/umami
+    Covers: privacy-oriented web analytics and dashboards.
+    Previous license note: MIT.
+    Recommended use: OPTIONAL separate analytics deployment/integration.
+
+10. Uptime Kuma
+    GitHub: https://github.com/louislam/uptime-kuma
+    Covers: availability monitoring and public status pages.
+    Previous license note: MIT.
+    Recommended use: OPTIONAL separately operated status monitor.
+    Warning: it does not replace payment/registrar reconciliation alerts.
+
+11. Chatwoot
+    GitHub: https://github.com/chatwoot/chatwoot
+    Covers: customer support, chat and omnichannel ticket workflows.
+    Previous license note: core MIT; enterprise/ directory has separate terms.
+    Recommended use: OPTIONAL integration if native support tools are insufficient.
+
+12. PowerDNS
+    GitHub: https://github.com/PowerDNS/pdns
+    Covers: DNS server and authoritative DNS management.
+    Previous license note: GPL-2.0.
+    Recommended use: FUTURE separate DNS infrastructure when needed.
+    Warning: do not operate your own DNS just for an initial domain reseller;
+             registrar-managed DNS may already cover the required functions.
+
+13. Certbot
+    GitHub: https://github.com/certbot/certbot
+    Covers: ACME-based TLS certificate issuance and renewal tooling.
+    Previous license note: Apache-2.0.
+    Recommended use: CONFIGURE existing HTTPS automation for hosting/services.
+
+NOT SEPARATE GITHUB RECOMMENDATIONS
+-----------------------------------
+WHMCS (commercial platform), cPanel, HestiaCP, Proxmox, Namecheap,
+ResellerClub, Openprovider API, Razorpay, PostgreSQL and Django were also
+mentioned as commercial services, integration targets, platforms, packages or
+technology choices. They were not additional specific GitHub repositories in
+the prior repository-comparison documents, so no invented project URLs are
+listed here.
+
+OFFICIAL NON-REPOSITORY API REFERENCES
+--------------------------------------
+Openprovider developer portal: https://developer.openprovider.com/
+Openprovider getting started:  https://developer.openprovider.com/get-started.html
+Openprovider WHMCS guidance:   https://developer.openprovider.com/whmcs.html
+Razorpay test integration:     https://razorpay.com/docs/server-integration/python/test-app/
+
+IMPLEMENTATION DECISION RULES
+-----------------------------
+1. Do not combine Django and Laravel/PHP source into one backend by default.
+2. Classify each integration as CONFIGURE, REUSE, ADAPT or BUILD first.
+3. Preserve upstream license/notice terms; reference architecture without
+   copying incompatible code.
+4. Prefer existing authentication, payment, invoicing and DNS integrations
+   rather than inventing a second system.
+5. Verify current release health, security fixes, sandbox support, API
+   compatibility, tenant isolation, webhook signatures and idempotency.
+6. Keep SALES_ENABLED and FULFILLMENT_ENABLED off until provider sandboxes,
+   reviews, finance/compliance requirements and explicit go-live approval pass.
+
+END OF REFERENCE LIST - 13 UNIQUE EXTERNAL GITHUB REPOSITORIES

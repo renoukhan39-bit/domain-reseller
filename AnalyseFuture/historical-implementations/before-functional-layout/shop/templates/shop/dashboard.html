@@ -1,0 +1,10 @@
+{% extends 'shop/base.html' %}{% block title %}My domains{% endblock %}{% block content %}
+<h1>My domains</h1>{% if not has_contact %}<p><a href="{% url 'contact' %}">Complete registrant profile</a> before checkout.</p>{% endif %}
+<div class="box">{% if domains %}<table><thead><tr><th>Domain</th><th>Status</th><th>Expiration</th><th>Actions</th></tr></thead><tbody>
+{% for domain in domains %}<tr><td>{{ domain.name }}</td><td>{{ domain.status }}</td><td>{{ domain.expires_at|date:'Y-m-d'|default:'Pending' }}</td><td>
+{% if domain.status == 'active' %}<a href="{% url 'nameservers' domain.id %}">Nameservers</a>
+<form method="post" class="inline" action="{% url 'renew' domain.id %}">{% csrf_token %}<input type="hidden" name="idempotency_key" value="renew-{{ domain.id }}-{% now 'U' %}"><button type="submit">Renew</button></form>{% endif %}
+</td></tr>{% endfor %}</tbody></table>{% else %}<p>You have no domains yet. <a href="{% url 'home' %}">Search a domain</a>.</p>{% endif %}</div>
+<h2>Orders</h2><div class="box">{% if orders %}<table><tr><th>Domain</th><th>Operation</th><th>Status</th><th>Details</th></tr>
+{% for order in orders %}<tr><td>{{ order.domain }}</td><td>{{ order.operation }}</td><td>{{ order.get_status_display }}</td><td><a href="{% url 'order_detail' order.id %}">View</a></td></tr>{% endfor %}</table>
+{% else %}<p>No orders yet.</p>{% endif %}</div>{% endblock %}

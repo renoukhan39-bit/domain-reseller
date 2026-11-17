@@ -1,0 +1,1 @@
+"""shop tests accounts package."""

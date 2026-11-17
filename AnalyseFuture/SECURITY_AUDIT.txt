@@ -1,0 +1,199 @@
+SECURITY AND ACCESSIBLE-HISTORY AUDIT
+Date: 17 November 2026
+Repository: renoukhan39-bit/domain-reseller
+Starting main: 30fe576f25acc1bbf1733f76bc8b610c9e14dbd1
+
+1. SCOPE AND EVIDENCE QUALITY
+
+This is a repository-source and accessible-history investigation. It is not a
+forensic certification, penetration test, deployment review or proof of account
+control. No author or unfamiliar implementation is labeled malicious without
+evidence. Git author fields can be forged; they do not authenticate a person.
+
+The initial origin fetch refspec covered only main. A read-only remote listing
+revealed six additional branch heads. The root task then fetched remote heads
+explicitly. The repository is not shallow. Seven remote branches and 42 reachable
+commits were available at discovery; no tags were advertised. Origin/HEAD is a
+symbolic alias for origin/main, not an eighth branch. Deleted/unadvertised refs,
+GitHub audit events and inaccessible/private history are outside this evidence.
+
+A marker scan covered 5,016 distinct reachable historical blobs, totaling
+47,566,117 bytes. It looked for recognizable private-key headers, AWS access-key
+IDs, GitHub token formats and live provider-key prefixes. No matches were found.
+Compressed historical ZIP bytes were scanned as blobs; this is not a separate
+decompression audit of every historical archive. The current extracted snapshots
+were scanned in readable form. Pattern matching cannot rule out encoded secrets,
+unrecognized credential formats, historical exposure or malicious behavior.
+
+Deep active-code review covered settings/URL boundaries, providers/payments,
+webhooks, email verification/reset, customer authorization, throttles, admin,
+models, fulfillment/reconciliation/refund boundaries, backup tooling, issue-import
+behavior, Docker/Compose and CI. Related recovery tests and branch diffs were
+examined. The upstream reviewer also assessed selected bootstrap, update,
+provider and payment code. Every source line of bundled PHP dependencies was not
+independently audited. Full path/byte inventory is distinct from manual review.
+
+No upstream install script, Composer/npm lifecycle hook, downloaded helper,
+provider write or production deployment was executed as part of this audit.
+
+2. HISTORY FINDINGS: CONFIRMED FACTS
+
+- Initial active project import: b3613c3. Subsequent reachable commits implement
+  verification resend, PostgreSQL-backed throttles, durable payment/refund and
+  registrar recovery, monitoring and backup tooling. Their subjects and diffs
+  are consistent with those features; this does not authenticate their authors.
+- The two ZIP uploads are commit 9b21435. Commit 594d290 extracted those archives
+  under the user's earlier instruction. Commit 30fe576 preserved them under
+  AnalyseFuture and documented the project. Those changes explain root clutter;
+  they do not by themselves establish hostile access.
+- At the starting main, config/, shop/, scripts/, .github/, dependency manifest,
+  Dockerfile and Compose match pre-upload merge 6b52221. Later documentation and
+  preservation changes did not silently replace active Python code.
+- The sole active workflow is .github/workflows/ci.yml. Its accessible history
+  shows the original workflow and later static-build/backup-recovery updates.
+  No unauthorized modification can be inferred solely from those commits.
+- Baseline Git modes include 35 executable files, all inside the archived
+  Openprovider snapshot; no active tracked executable-mode files were present.
+  The sole tracked symlink is PNLCS public/themes -> ../themes, contained within
+  its preserved snapshot. Executable bits are not by themselves malicious.
+
+3. CONFIRMED BASELINE SECURITY GAP RECOVERED FROM AN EXISTING BRANCH
+
+At starting main, shop/views.py:nameservers checked local ownership and
+FULFILLMENT_ENABLED before using the stored registrar ID for a PUT. It did not
+re-read registrar identity, require the full environment-pairing gate, or compare
+the remote owner handle with the customer's verified handle immediately before
+the write. A local database row is not proof of current external ownership.
+
+Previously disconnected fix 4d4f53b on
+origin/fix/M5-08-nameserver-registrar-identity already implements the stronger
+boundary: fulfillment_ready(), customer contact handle, registrar GET, existing
+_registrar_identity(id/domain/owner) validation, ACT status, then the nameserver
+PUT with sanitized failure handling. Commit 82dc1df supplies dedicated tests.
+This is compatible existing work worth recovering selectively, not a reason to
+replace newer main wholesale. Current integration/test outcome belongs in
+TEST_AND_VALIDATION_REPORT.txt and CONSOLIDATION_REPORT.txt.
+
+The separate webhook-replay branch is older than current main hardening. Its
+immutable redelivery, locking and ID-bound checks are superseded by the current
+durable minimal-evidence event module, strict types/identifiers, waiting-order
+replay, payment constraints and legacy signed-redelivery recovery. Wholesale
+replacement would remove current email/refund/model safeguards. No evidence
+supports treating the older branch as a superior complete application.
+
+4. CONFIRMED UNSAFE PATTERNS IN DORMANT UPSTREAM SNAPSHOTS
+
+These are source findings, not proof that they were executed or inserted by an
+attacker. They are not active Django functionality.
+
+A. Openprovider WHMCS legacy TLS checks
+   AnalyseFuture/references/registrar-integrations/Openprovider-WHMCS-domains-master/modules/registrars/openprovider/
+   OpenProvider/API/API.php, around lines 176-180, disables TLS peer and hostname
+   verification and follows redirects. openprovider.php, around line 386,
+   disables TLS hostname verification during credential validation.
+
+B. Unverified download helper
+   The same API.php:downloadPHPfile(), around lines 231-241, follows redirects,
+   disables TLS peer verification and writes downloaded data without an integrity
+   check in that helper. Only its definition was established by static reference
+   search; a runtime caller or exploit was not established. Do not execute it or
+   treat its output as trusted PHP.
+
+C. PNLCS Openprovider sandbox transport
+   AnalyseFuture/references/billing-platforms/pnlcs-main/modules/Registrars/OpenProvider/
+   OpenProviderRegistrar.php, around lines 42-43, selects plaintext HTTP sandbox
+   transport on port 8480 and legacy /v1beta paths. The active Django adapter uses
+   allowlisted HTTPS origins, keeps verification enabled and disallows redirects.
+   Copying the PHP adapter would regress that boundary without a separate audit.
+
+D. PNLCS renewal evidence
+   The same PHP adapter derives renewal expiry locally with addYears() after a
+   provider request. Active Django recovery instead requires remote date and
+   identity evidence. An upstream feature name does not prove compatible safety.
+
+The Openprovider namespace-maintenance script invokes rm/mkdir/mv with escaped
+paths; this is an intentional Composer maintenance behavior, not by itself a
+backdoor. PNLCS release update code includes signature/checksum verification;
+shell/archive operations in that updater are not sufficient evidence of malware.
+No full upstream runtime or dependency-vulnerability audit is claimed.
+
+5. QUARANTINE AND EXECUTION BOUNDARIES
+
+Moving a file is not a security control on its own. Existing source/build controls
+also exclude these snapshots:
+
+- .dockerignore excludes AnalyseFuture, Git metadata, private environment files
+  and the virtual environment from the normal Docker context.
+- Dockerfile COPY instructions include only pyproject.toml, config/, shop/ and
+  manage.py, rather than copying the whole repository into the running app.
+- Python package discovery includes only config* and shop*; no PHP snapshot is
+  a Python application package or INSTALLED_APPS entry.
+- Nested snapshot .github/workflows files are not root repository workflows.
+- Django URLs and settings do not import or dispatch into archived material.
+
+The preserved files retain original modes and notices as evidence. They are not
+OS-sandboxed against a human explicitly executing them. Do not run installers,
+dependency hooks, update/download helpers or real provider calls from this area
+without a separate trust, license and compatibility review. Future build changes
+must preserve the exclusions. Private credentials/customer data must never be
+published in AnalyseFuture merely to satisfy a preservation requirement.
+
+6. ACTIVE HARDENING DEBT: NOT COMPROMISE EVIDENCE
+
+- Python dependencies use bounded version ranges without a lockfile. The Docker
+  base/PostgreSQL tags and actions/checkout@v4/actions/setup-python@v5 are not
+  immutable digests/commit pins. This is reproducibility/supply-chain debt, not
+  proof of a malicious dependency or action. Plan tested pin/update procedures.
+- CI does not declare an explicit least-privilege permissions block. Actual
+  GITHUB_TOKEN permissions depend on repository/organization defaults; those
+  defaults were not inspected. Avoid claiming an overprivileged token exists.
+- No current dependency-advisory database scan was completed by this source
+  review. A clean marker scan does not mean dependency CVEs are absent.
+- SignupForm.clean_email enforces case-insensitive uniqueness with a query, but
+  Django User.email has no database uniqueness constraint. Concurrent different-
+  username signups can race that check. request_verification selects the first
+  pending match. Record a dedicated concurrency/schema identity task; no exploit
+  or account takeover was reproduced here.
+- Financial and audit admin fields are read-only, but the baseline admin classes
+  do not override has_delete_permission. Privileged users granted deletion rights
+  can still delete those records. Read-only fields are not append-only audit
+  storage. Add reviewed admin/retention controls and tests as a separate task.
+- Production operator MFA/access controls, edge abuse protection, TLS termination,
+  secret lifecycle, logging/data retention and offsite recovery remain deployment
+  responsibilities. Debug/local defaults are not production settings.
+- Real Openprovider, Razorpay and SMTP acceptance is still external work. Local
+  signed fixtures are not evidence of real webhook delivery or registry behavior.
+
+7. GITHUB ACCOUNT, PERMISSION AND BRANCH-PROTECTION LIMITS
+
+The requested repository and main are confirmed through native Git. Read-only
+metadata/API attempts by the root task were unavailable; exact transport outcomes
+are recorded in REPOSITORY_AUDIT.txt. Native Git access does not establish API
+authorization, account ownership, branch-protection settings or organization
+policy. Do not bypass protection or force-push to work around missing evidence.
+
+The user explicitly authorizes direct writes to main. A normal non-force push
+tests the server's current receive policy, and success may be reported only after
+the remote SHA is verified. It does not certify account integrity. Final delivery
+and the recoverable bundle location are recorded by the root task.
+
+An owner-led account response remains necessary if compromise is suspected:
+review security/audit logs, sessions, authentication factors and recovery access;
+review collaborators, deploy keys, tokens, OAuth/GitHub apps, Actions permissions,
+secrets, environments and protected branches; revoke unknown access and rotate
+credentials shown or reasonably suspected to be exposed through secure settings.
+Preserve relevant incident evidence before destructive account/history actions.
+No secret values should enter public reports, issues, chat or this directory.
+
+8. CONCLUSION AND NEXT SECURITY WORK
+
+No confirmed attacker, active exfiltration route or high-confidence credential
+exposure was established from the reviewed source/history. This is a bounded
+negative finding, not a declaration that the repository or account is clean.
+
+Prioritize recovery and regression tests for the existing nameserver identity
+fix; preserve the stronger current payment/refund implementation; complete the
+account access review; then address database identity races, admin deletion/
+audit retention, reproducible dependencies, advisory scanning and independent
+pre-production application/deployment review. Keep sales and fulfillment false
+until their separate explicit approval and acceptance gates pass.

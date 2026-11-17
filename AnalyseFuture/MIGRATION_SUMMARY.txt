@@ -1,0 +1,36 @@
+FUNCTIONAL LAYOUT MIGRATION SUMMARY
+
+This is a normal forward commit on main, not a Git reset. All pre-existing work
+is retained. Full path mappings and preserved blobs are recorded separately.
+
+Application: Django config/ and shop/ remain the framework roots. Account,
+commerce, registrar-domain and security implementations have functional packages.
+Tests mirror these domains, templates follow customer journeys, and framework
+discovery paths remain conventional. Legacy service imports alias canonical
+modules; old customer template names delegate where compatibility is useful.
+
+Tools: scripts/backups owns encrypted DB backup/recovery and their guard suite;
+scripts/github owns issue import. CI and documented commands follow these paths.
+Documentation: product, engineering, operations, governance, research, planning,
+continuity and history collections replace the flat directory. docs/START_HERE.md
+remains the entry point. PROJECT_STRUCTURE.md explains every collection.
+
+References: AnalyseFuture/references/registrar-integrations and billing-platforms
+preserve independent upstream layouts. Historical implementations, original docs,
+branch variants, inventories/security/recovery reports and future vision remain
+separate and are excluded from active builds/packages/deployment.
+
+No database schema migration, model app-label change, live endpoint switch,
+provider credential change, new infrastructure or arbitrary dependency install.
+Sales and fulfillment remain disabled in local runtime configuration.
+
+Operational caveat: existing running containers were built before this layout.
+They were not rebuilt/restarted because the latest instruction limited this pass
+to organization with no tests. They do not demonstrate the new revision works.
+When verification is authorized, rebuild the image and follow the new handoff.
+The normal direct push can trigger pre-existing GitHub Actions automatically;
+this task does not manually trigger CI or claim its result.
+
+Rollback: use a normal revert/recovery change after preserving any later work.
+Do not reset or force-push published history. The verified all-ref local Git bundle
+and exact archived originals preserve the starting state and unmerged branches.

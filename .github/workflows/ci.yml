@@ -46,6 +46,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: command -v gpg
-      - run: python -m unittest scripts.test_database_backup -v
+      - run: python -m unittest scripts.backups.test_database_backup -v
       - run: docker pull postgres:16-alpine
-      - run: python scripts/backup_restore_drill.py
+      - run: python scripts/backups/backup_restore_drill.py

@@ -1,0 +1,58 @@
+# Documentation index
+
+Start with [START_HERE.md](START_HERE.md), then the root [PROJECT_STRUCTURE.md](../PROJECT_STRUCTURE.md).
+
+## Continuity
+
+- [CODEX_CLOUD.md](continuity/CODEX_CLOUD.md)
+- [PROJECT_CONTINUITY_MASTER.md](continuity/PROJECT_CONTINUITY_MASTER.md)
+- [PROJECT_SESSION_LOG.md](continuity/PROJECT_SESSION_LOG.md)
+- [PR_HANDOFF.md](continuity/PR_HANDOFF.md)
+
+## Engineering
+
+- [ARCHITECTURE.md](engineering/ARCHITECTURE.md)
+- [CODEBASE_AUDIT.md](engineering/CODEBASE_AUDIT.md)
+- [MASTER_BUILD_PLAN.md](engineering/MASTER_BUILD_PLAN.md)
+- [TASKS.md](engineering/TASKS.md)
+
+## Governance
+
+- [OWNERSHIP_AND_LICENSES.md](governance/OWNERSHIP_AND_LICENSES.md)
+
+## History
+
+- [REPOSITORY_STRUCTURE.md](history/REPOSITORY_STRUCTURE.md)
+- [RESTRUCTURE_VALIDATION.txt](history/RESTRUCTURE_VALIDATION.txt)
+
+## Operations
+
+- [BACKUP_RESTORE.md](operations/BACKUP_RESTORE.md)
+- [DEPLOYMENT.md](operations/DEPLOYMENT.md)
+- [EMAIL_VERIFICATION.md](operations/EMAIL_VERIFICATION.md)
+- [FULFILLMENT_RECOVERY.md](operations/FULFILLMENT_RECOVERY.md)
+- [PAYMENT_RECONCILIATION.md](operations/PAYMENT_RECONCILIATION.md)
+- [PROVIDER_COMPATIBILITY.md](operations/PROVIDER_COMPATIBILITY.md)
+- [PROVIDER_SETUP.md](operations/PROVIDER_SETUP.md)
+- [RECONCILIATION_MONITORING.md](operations/RECONCILIATION_MONITORING.md)
+- [REFUNDS.md](operations/REFUNDS.md)
+- [THROTTLING.md](operations/THROTTLING.md)
+
+## Planning
+
+- [5_DAY_EXECUTION_PLAN.md](planning/5_DAY_EXECUTION_PLAN.md)
+- [FREE_RESOURCES.md](planning/FREE_RESOURCES.md)
+- [ISSUE_BACKLOG.csv](planning/ISSUE_BACKLOG.csv)
+
+## Product
+
+- [FEATURE_MATRIX.md](product/FEATURE_MATRIX.md)
+- [PROJECT_GOAL.md](product/PROJECT_GOAL.md)
+- [ROADMAP.md](product/ROADMAP.md)
+
+## Research
+
+- [PUBLIC_REPOSITORY_REPORT.md](research/PUBLIC_REPOSITORY_REPORT.md)
+- [REPOSITORIES_TO_STUDY.txt](research/REPOSITORIES_TO_STUDY.txt)
+- [REUSE_FIRST_STRATEGY.md](research/REUSE_FIRST_STRATEGY.md)
+- [TWO_PRIMARY_REPO_COMPARISON.md](research/TWO_PRIMARY_REPO_COMPARISON.md)

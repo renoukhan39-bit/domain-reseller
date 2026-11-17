@@ -1,0 +1,5 @@
+{% extends 'shop/base.html' %}{% block title %}Resend verification{% endblock %}{% block content %}
+<h1>Resend verification email</h1>
+<p>Enter the email address you used to sign up. Verification links expire after a day by default.</p>
+<div class="box"><form method="post">{% csrf_token %}{{ form.as_p }}<button type="submit">Send verification email</button></form></div>
+<p><a href="{% url 'login' %}">Back to sign in</a></p>{% endblock %}

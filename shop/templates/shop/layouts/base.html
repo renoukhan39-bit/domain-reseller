@@ -1,0 +1,12 @@
+<!doctype html><html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}Domain Reseller{% endblock %}</title>
+<style>
+:root{font:16px system-ui,sans-serif;color:#172334;background:#f5f7fb}body{margin:0}header{background:#162f56;color:white;padding:1rem 2rem}nav{display:flex;gap:1rem;flex-wrap:wrap;align-items:center}nav a{color:white}main{max-width:900px;margin:2.5rem auto;padding:0 1rem}.box{background:white;border-radius:12px;padding:1.5rem;margin:1rem 0;box-shadow:0 3px 12px #15273f12}input,select,button{padding:.65rem;border-radius:6px;border:1px solid #9cacc5;font:inherit}button{background:#155cca;color:white;border:0;cursor:pointer}button:disabled{background:#7c8999}label{display:block;margin-top:1rem}label input{display:block;max-width:100%;width:450px}.errorlist,.error{color:#ae182e}.notice{padding:.8rem;border-radius:5px;background:#eaf1ff;margin:1rem 0}table{border-collapse:collapse;width:100%;overflow-wrap:anywhere}td,th{padding:.65rem;border-bottom:1px solid #e3e8f1;text-align:left}small,.muted{color:#5c6980}a{color:#1757b2}form.inline{display:inline} .errorlist{list-style:none;padding:0}
+</style></head><body><header><nav><strong>Domain Reseller</strong>
+<a href="{% url 'home' %}">Search domains</a>
+{% if user.is_authenticated %}<a href="{% url 'dashboard' %}">My domains</a><a href="{% url 'contact' %}">Registrant</a>
+<form class="inline" method="post" action="{% url 'logout' %}">{% csrf_token %}<button type="submit">Sign out</button></form>
+{% else %}<a href="{% url 'login' %}">Sign in</a><a href="{% url 'signup' %}">Create account</a>{% endif %}
+</nav></header><main>{% for message in messages %}<div class="notice" role="status">{{ message }}</div>{% endfor %}
+{% block content %}{% endblock %}</main></body></html>

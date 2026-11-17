@@ -4,8 +4,8 @@ from django.core.management.base import BaseCommand, CommandError
 from django.db import IntegrityError, transaction
 
 from shop.models import AuditEntry, DomainOrder
-from shop.payment_events import gateway_identifier, replay_payment_events
-from shop.payments import PaymentError, Razorpay
+from shop.commerce.events import gateway_identifier, replay_payment_events
+from shop.commerce.gateway import PaymentError, Razorpay
 
 
 class Command(BaseCommand):

@@ -5,7 +5,7 @@ import unicodedata
 from django.http import HttpResponse
 from django.utils.deprecation import MiddlewareMixin
 
-from .throttling import ThrottleUnavailable, consume_budget
+from shop.security.throttling import ThrottleUnavailable, consume_budget
 
 logger = logging.getLogger(__name__)
 

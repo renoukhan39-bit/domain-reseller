@@ -1,6 +1,6 @@
 ---
 name: Implementation task
-about: Pick a task from docs/TASKS.md
+about: Pick a task from docs/engineering/TASKS.md
 labels: []
 ---
 

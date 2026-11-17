@@ -1,0 +1,49 @@
+{
+  "baseline_commit": "594d2907ca3aaf65c1bba3491b0cd72a5c0be083",
+  "preservation_date": "2026-11-17",
+  "purpose": "Preserve every relocated upstream file and original documentation; no application reset or history rewrite. Verify subtree/blob identities using git cat-file and git rev-parse.",
+  "items": [
+    {
+      "original_path": "Openprovider-WHMCS-domains-master",
+      "preserved_path": "AnalyseFuture/Openprovider-WHMCS-domains-master",
+      "original_git_tree": "f73a2e623464ef6ab41de89ea15e06cb65d4db38",
+      "kind": "unmodified_upstream_snapshot"
+    },
+    {
+      "original_path": "pnlcs-main",
+      "preserved_path": "AnalyseFuture/pnlcs-main",
+      "original_git_tree": "655e3889f74d2a0ed3fa0f2743c055d85da7c90f",
+      "kind": "unmodified_upstream_snapshot"
+    },
+    {
+      "original_path": "README.md",
+      "preserved_path": "AnalyseFuture/project-history/2026-11-17/README.md",
+      "original_git_blob": "f0ea63ece1704455ebd42848793fbe72d17fa89c",
+      "kind": "documentation_before_clarification"
+    },
+    {
+      "original_path": "docs/START_HERE.md",
+      "preserved_path": "AnalyseFuture/project-history/2026-11-17/docs/START_HERE.md",
+      "original_git_blob": "187dc5917aebe22ef9702329f564328d25e3e39c",
+      "kind": "documentation_before_clarification"
+    },
+    {
+      "original_path": "docs/TASKS.md",
+      "preserved_path": "AnalyseFuture/project-history/2026-11-17/docs/TASKS.md",
+      "original_git_blob": "5a3aa361b62d7ed5c090e65021cb67a5adc42eb1",
+      "kind": "documentation_before_clarification"
+    },
+    {
+      "original_path": "docs/DEPLOYMENT.md",
+      "preserved_path": "AnalyseFuture/project-history/2026-11-17/docs/DEPLOYMENT.md",
+      "original_git_blob": "21eb61d4deac6c191041b32fad6ccd36cf3e61cf",
+      "kind": "documentation_before_clarification"
+    },
+    {
+      "original_path": "docs/ARCHITECTURE.md",
+      "preserved_path": "AnalyseFuture/project-history/2026-11-17/docs/ARCHITECTURE.md",
+      "original_git_blob": "8b6bb08c06e46e3ece1d606d5704ddfab8375dba",
+      "kind": "documentation_before_clarification"
+    }
+  ]
+}

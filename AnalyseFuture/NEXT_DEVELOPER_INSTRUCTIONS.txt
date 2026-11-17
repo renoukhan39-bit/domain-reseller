@@ -1,0 +1,43 @@
+CONTINUE HERE - DO NOT REPEAT THE RECOVERY FROM SCRATCH
+
+1. Read root PROJECT_STRUCTURE.md, README.md and AGENTS.md, then this folder's
+   REPOSITORY_AUDIT.txt, WORK_PROGRESS.txt, FEATURE_INVENTORY.txt and SECURITY_AUDIT.txt.
+   Read docs/continuity/PROJECT_CONTINUITY_MASTER.md and PROJECT_SESSION_LOG.md.
+   Historical PR states and test counts describe their own revisions.
+2. Start from existing main checkout. Each cloud task is isolated; do not create
+   a worktree or extra branch unless the owner requests one. Preserve dirty work.
+3. All5140starting paths were inventoried. Seven remote heads/42commits were
+   inspected; a narrow main-only fetch initially hid prior work. Fetch all heads
+   explicitly when new historical investigation is necessary. Do not delete refs.
+4. Nameserver guard/tests and5missing docs were recovered. Older webhook logic
+   is superseded; do not merge it wholesale. Use commerce/events durable evidence.
+5. Feature implementations: shop/accounts, commerce, domains, security. Follow
+   imports into shared models/forms/HTTP/commands. Tests mirror these packages.
+   Old service names alias the same module; do not add parallel implementations.
+6. Do not install/execute the archived PHP projects. They have different runtimes,
+   license obligations and confirmed dormant TLS/contract problems. Dockerignore
+   and config*/shop* package selection keep them outside the active product.
+7. The last owner instruction was DO NOT RUN TESTS FOR NOW. This revision received
+   static checks only. Obtain a later instruction permitting runtime verification
+   before invoking tests; do not describe earlier174tests as new-layout evidence.
+8. When verification is authorized: use Python3.12, PostgreSQL16, normal TLS trust,
+   the existing cloud CA BuildKit override if required, and docs/operations setup.
+   Rebuild web/worker first because images copy source. Then Django check,
+   migration dry-run, migrations, static collection, shop suite, backup guard suite
+   and isolated synthetic recovery. Keep sales/fulfillment false outside mocked
+   test settings; no sandbox/live writes without explicit authority.
+9. Current dependency/lock/toolchain limits, email identity race concern, privileged
+   admin deletion semantics, external acceptance and account review are in the20
+   TECHNICAL_DEBT cards. Fix them as scoped reviewed changes with meaningful tests
+   when authorized, rather than changing financial logic opportunistically.
+10. Append outcomes/evidence/decisions to the session log and progress file. Update
+    inventory/mapping when paths change. Canonical planning is
+    PROJECT_VISION_AND_FUTURE_ROADMAP.txt; do not duplicate competing roadmaps.
+
+Useful future commands (NOT executed after the no-tests instruction):
+python manage.py test shop --verbosity 2
+python -m unittest scripts.backups.test_database_backup -v
+python scripts/backups/backup_restore_drill.py
+
+No branch-protection bypass, force push, deployment, credential disclosure, live
+purchase or irreversible registrar retry is authorized by these instructions.

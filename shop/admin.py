@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import TLDPrice, RegistrantContact, ManagedDomain, DomainOrder, PaymentEvent, AuditEntry
+from shop.models import TLDPrice, RegistrantContact, ManagedDomain, DomainOrder, PaymentEvent, AuditEntry
 
 @admin.register(TLDPrice)
 class TLDPriceAdmin(admin.ModelAdmin):

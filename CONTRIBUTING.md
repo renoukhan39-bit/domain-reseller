@@ -1,6 +1,6 @@
 # Contributing
 
-Read [`docs/START_HERE.md`](docs/START_HERE.md), `AGENTS.md`, `SECURITY.md` and `docs/TASKS.md` before editing code. No knowledge of prior conversations is necessary.
+Read [`docs/START_HERE.md`](docs/START_HERE.md), `AGENTS.md`, `SECURITY.md` and `docs/engineering/TASKS.md` before editing code. No knowledge of prior conversations is necessary.
 
 1. Choose one task ID and create a feature branch (`feat/M2-08-price-sync`, `fix/M3-08-webhook`).
 2. Keep PRs focused, test Django authorization and financial/registrar invariants, and document any migration.
