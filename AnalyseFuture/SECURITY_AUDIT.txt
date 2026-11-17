@@ -197,3 +197,44 @@ account access review; then address database identity races, admin deletion/
 audit retention, reproducible dependencies, advisory scanning and independent
 pre-production application/deployment review. Keep sales and fulfillment false
 until their separate explicit approval and acceptance gates pass.
+
+
+18 NOVEMBER 2026 CONTINUATION BASELINE REVIEW
+Baseline commit 4f484241a7c18726adbd3a3845902fd842c5cd7f. These results
+precede the new account, admin and fulfillment changes in the recovery branch.
+
+Accessible history was refreshed from the existing authenticated HTTPS origin.
+Seven remote heads, no tags and 44 reachable commits were observed. Three feature
+heads (email resend, payment/registrar hardening and reconciliation monitoring)
+are already ancestors of main. The continuity and nameserver branches contain
+recovered documents and safeguards. All 20 retained branch-recovery files exactly
+match their advertised source blobs. The nameserver function AST matches its
+original branch after template-path normalization. The older webhook branch's
+digest/redelivery design is superseded by current durable signed evidence and
+local replay in commerce/events.py. Its original source/tests remain preserved.
+
+Every one of the 5,355 tracked baseline paths was inventoried by blob, SHA-256,
+mode, size, type, last-modifying commit and functional classification. Both
+upstream reference tree IDs still match the preservation records. The one themes
+symlink stays inside the PNLCS snapshot. All 35 tracked executable modes belong
+to the archived WHMCS tree. Archived code was read only. No hooks were executed.
+The local hooks directory contains sample files only. A names-only configuration
+review found no core.hooksPath, core.sshCommand, include, credential or http
+override keys. Remote origin configuration keys are present. No active root
+.gitattributes file was found. These observations do not establish GitHub account
+security, collaborator access, branch protections or the safety of deleted refs.
+
+A signature scan read all 5,176 unique reachable Git blobs (56,748,141 bytes),
+plus all 5,019 members of the historical uploaded ZIPs (34,519,226 uncompressed
+bytes) in memory. No archive members were skipped and no candidate locations
+matched the selected GitHub/OpenAI/Slack token, AWS access-key ID, Stripe live
+secret, Razorpay live key ID or complete PEM private-key block patterns. Values
+were never printed. This does not detect every secret format, validate credential
+status or inspect ignored runtime configuration. Source history cannot determine
+whether an account was accessed without authorization.
+
+The complete all-ref Git bundle was verified with no prerequisite history. Its
+local path, SHA-256 and per-file inventory digest are in PRESERVATION_MANIFEST.json.
+These local copies require independent retention when moving environments. No
+archive or license notice was deleted. Known dormant upstream plaintext/TLS
+defects and the unresolved WHMCS source-license scope remain as recorded above.

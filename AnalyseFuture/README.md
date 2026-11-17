@@ -16,6 +16,15 @@ Read `REPOSITORY_AUDIT.txt`, `ARCHIVED_FILES_MANIFEST.txt` and the root
 No evidence here establishes account compromise or intellectual-property rights.
 PNLCS has its upstream MIT notice. The WHMCS snapshot lacks a top-level project
 license; retain dependency notices and obtain a license decision before reuse.
-Runtime secrets, customer data and ignored local environments are not archive
-material to publish. They remain outside Git. Current runtime tests were deferred
-at the owner's explicit request.
+Runtime secrets, customer data and ignored local environments belong outside
+Git. The earlier pause on tests was superseded by owner authorization. Baseline
+`4f48424` passed 189 application tests and 17 backup tests during cloud setup,
+including the isolated encrypted restore drill. Current changes need their own
+verification evidence.
+
+`PRESERVATION_MANIFEST.json` records the 18 November 2026 continuation review
+against 5,355 tracked baseline paths. Both upstream subtree identities match
+the original preservation records. A complete all-ref Git bundle and a full
+per-file hash/type/classification inventory are retained outside this checkout
+at the local paths recorded in that manifest. Those local copies require separate
+retention when moving machines. No archive was removed.

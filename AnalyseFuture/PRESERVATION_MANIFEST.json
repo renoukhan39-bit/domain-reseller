@@ -46,5 +46,143 @@
       "kind": "documentation_before_clarification"
     }
   ],
-  "later_layout_note": "Original identities are unchanged; reference containers now follow functional categories. Original manifest version retained in historical-implementations/pre-master/AnalyseFuture."
+  "later_layout_note": "Original identities are unchanged; reference containers now follow functional categories. Original manifest version retained in historical-implementations/pre-master/AnalyseFuture.",
+  "current_review": {
+    "baseline_commit": "4f484241a7c18726adbd3a3845902fd842c5cd7f",
+    "tracked_paths": 5355,
+    "tracked_bytes": 44504045,
+    "classification_labels": {
+      "A": "active essential",
+      "B": "active misplaced",
+      "C": "duplicate implementation",
+      "D": "compatibility name",
+      "E": "historical evidence",
+      "F": "third-party reference",
+      "G": "generated disposable",
+      "H": "suspicious or unverified",
+      "I": "future planning or research"
+    },
+    "counts_by_classification": {
+      "A": 122,
+      "D": 25,
+      "E": 179,
+      "F": 5019,
+      "I": 10
+    },
+    "bytes_by_classification": {
+      "A": 531870,
+      "D": 2365,
+      "E": 9350375,
+      "F": 34519226,
+      "I": 100209
+    },
+    "inventory_sha256": "b0fbf76d20f28a73a31b4a8c9efc1040cdc4a539eca80d3602c7f564c8807e40",
+    "inventory_file": "/workspace/.domain-reseller-cloud/audit/baseline-4f48424-inventory.jsonl",
+    "nonempty_exact_duplicate_groups": 219,
+    "nonempty_exact_duplicate_excess_copies": 240,
+    "active_only_nonempty_duplicate_groups": [
+      [
+        "shop/templates/registration/password_reset_complete.html",
+        "shop/templates/shop/password_reset_complete.html"
+      ],
+      [
+        "shop/templates/registration/password_reset_confirm.html",
+        "shop/templates/shop/password_reset_confirm.html"
+      ],
+      [
+        "shop/templates/registration/password_reset_done.html",
+        "shop/templates/shop/password_reset_done.html"
+      ],
+      [
+        "shop/templates/registration/password_reset_email.html",
+        "shop/templates/shop/password_reset_email.html"
+      ],
+      [
+        "shop/templates/registration/password_reset_form.html",
+        "shop/templates/shop/password_reset_form.html"
+      ]
+    ],
+    "symlinks": [
+      "AnalyseFuture/references/billing-platforms/pnlcs-main/public/themes"
+    ],
+    "executable_paths": 35,
+    "coverage": "Every tracked baseline Git blob was read and hashed. Current worktree edits and ignored runtime files are outside this baseline snapshot. Classification is a role inventory, not per-line security certification. No files qualified for destructive removal.",
+    "review_date": "2026-11-18",
+    "git_history_scope": {
+      "advertised_remote_heads": 7,
+      "advertised_tags": 0,
+      "reachable_commits_after_fetch": 44,
+      "remote_main_commit": "4f484241a7c18726adbd3a3845902fd842c5cd7f",
+      "bundle_file": "/workspace/.domain-reseller-cloud/audit/baseline-4f48424.bundle",
+      "bundle_sha256": "0ef7d75201eeb7f8abf018ce2520bac20d16cf73c905c8e3c92c807917d99279",
+      "bundle_verify": "passed; complete history, no prerequisite commits",
+      "limits": "Advertised accessible Git refs establish source history only. Account sessions, branch protections and unavailable or deleted refs were not inspected."
+    },
+    "upstream_tree_checks": {
+      "AnalyseFuture/references/billing-platforms/pnlcs-main": "655e3889f74d2a0ed3fa0f2743c055d85da7c90f",
+      "AnalyseFuture/references/registrar-integrations/Openprovider-WHMCS-domains-master": "f73a2e623464ef6ab41de89ea15e06cb65d4db38"
+    },
+    "archive_decisions": [
+      {
+        "path": "AnalyseFuture/references/billing-platforms/pnlcs-main",
+        "decision": "retain",
+        "reason": "Independent PHP/Laravel/MySQL reference with MIT notice. Internal asset aliases and dependencies retain their expected paths. HTTPS/contract defects in the registrar adapter prevent direct activation.",
+        "required_validation_before_integration": "Separate approved architecture/license decision and provider contract tests."
+      },
+      {
+        "path": "AnalyseFuture/references/registrar-integrations/Openprovider-WHMCS-domains-master",
+        "decision": "retain",
+        "reason": "Independent WHMCS reference with bundled dependency notices. No top-level project license was found. Legacy helpers disable TLS verification.",
+        "required_validation_before_integration": "Obtain license permission and review API contracts and request trust before any reuse."
+      },
+      {
+        "path": "AnalyseFuture/historical-implementations",
+        "decision": "retain",
+        "reason": "Pre-recovery and branch snapshots preserve earlier source and unique evidence. Stronger current payment safeguards supersede older webhook logic.",
+        "required_validation_before_integration": "Compare the specific behavior and run current PostgreSQL regressions. No wholesale older-branch merge."
+      },
+      {
+        "path": "AnalyseFuture/COMPLETE_FILE_INVENTORY.txt",
+        "decision": "retain as historical inventory",
+        "reason": "Contains earlier baseline, final-layout and functional supplements. Current exact baseline scan is recorded by this review without adding thousands of duplicate report rows.",
+        "required_validation_before_integration": "Use the recorded commit and complete local inventory SHA-256 when reproducing counts."
+      }
+    ],
+    "inspection_results": {
+      "active_markdown_relative_file_targets": "all found at baseline; HTTP links and anchors were not validated",
+      "snapshot_symlink": "PNLCS public/themes resolves to ../themes within its own snapshot",
+      "executables": "35 tracked executable modes, all inside preserved WHMCS snapshot; no archived execution",
+      "duplicate_decisions": "The five active-only equal-content groups are short template compatibility delegates. Existing canonical templates supply the actual page body. Archived vendor/assets/notices require their paths. No removal follows from byte equality.",
+      "no_new_source_recovery": "Seven current remote heads match the earlier documented recovery scope. Existing historical snapshots and active implementations preserve the known nameserver, payment and continuity work. Detailed current behavior remains subject to the application audit."
+    },
+    "secret_pattern_scan": {
+      "unique_reachable_blobs": 5176,
+      "blob_bytes": 56748141,
+      "zip_members": 5019,
+      "zip_uncompressed_bytes": 34519226,
+      "candidate_locations": 0,
+      "skipped_archive_members": 0,
+      "patterns": [
+        "GitHub tokens",
+        "AWS access-key IDs",
+        "OpenAI tokens",
+        "Stripe live secrets",
+        "Razorpay live key IDs",
+        "complete PEM private-key blocks",
+        "Slack tokens"
+      ],
+      "evidence_file": "/workspace/.domain-reseller-cloud/audit/secret-scan-4f48424.json",
+      "limits": "Pattern-limited scan of accessible source history and in-memory ZIP members. Ignored runtime files, arbitrary secret formats and credential validity are outside this scan."
+    },
+    "remote_branch_evaluation": {
+      "main": "Baseline 4f48424.",
+      "feat/M1-08-email-verification-resend": "Already an ancestor of main. Verification/resend implementation retained and later hardened.",
+      "feat/M5-09-reconciliation-backlog-monitor": "Already an ancestor of main. Existing monitor, tests and runbook retained.",
+      "feat/P0-payment-registrar-hardening": "Already an ancestor of main. Current payment/registrar implementation retained.",
+      "docs/project-continuity-master-2026-11-16": "Five branch-only commits. Substantial continuity documents recovered into docs/continuity and original variants preserved in branch-recovery/8ce7879a1fcb.",
+      "fix/M5-08-nameserver-registrar-identity": "Nine branch-only commits. Guard/tests and unique research/build-plan documents recovered. Baseline nameserver function AST matches original branch after normalizing its template path. Originals preserved in branch-recovery/4f65433d27ad.",
+      "feat/M3-08-webhook-replay-safety": "Six branch-only commits. Original source/tests/runbook preserved in branch-recovery/f9035460fb79. Current commerce/events.py supersedes digest-and-redelivery replay with minimal durable signed evidence, local replay and unique payment constraints. No merge justified."
+    },
+    "preserved_branch_blob_check": "All 20 files in branch-recovery exactly match their source blob at the corresponding current advertised branch commit."
+  }
 }

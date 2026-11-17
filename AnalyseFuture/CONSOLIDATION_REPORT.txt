@@ -43,6 +43,9 @@ history/preservation copies. Full old-to-new records are in
 ORIGINAL_TO_NEW_PATH_MAPPING.txt. Source APIs/routes/schema remain stable except
 the intentional fail-closed recovery of registrar ownership checks.
 
-No tests were run after the latest instruction. New/recovered coverage remains
-available for the next authorized verification pass; static checks do not prove
-runtime behavior. See TEST_AND_VALIDATION_REPORT.txt and TECHNICAL_DEBT.txt.
+At the end of the original restructuring phase the owner had paused tests. The
+subsequent authorized runtime phase passed 189 PostgreSQL application tests, 17
+backup tests and an isolated encrypted restore drill at baseline 4f48424. The
+18 November continuation rechecked all 5,355 baseline paths and both unchanged
+upstream subtree identities. Current source edits require fresh test evidence.
+See TEST_AND_VALIDATION_REPORT.txt and PRESERVATION_MANIFEST.json.
