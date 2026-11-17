@@ -13,6 +13,7 @@ from django.db import transaction
 from django.urls import reverse
 from django.utils import timezone
 
+from shop.accounts.identity import email_users
 from shop.models import AuditEntry, EmailVerification
 from shop.security.throttling import _allow_attempt
 
@@ -31,9 +32,9 @@ def request_verification(email, remote_addr):
         return
     if not _allow_attempt("email-hour", email, 3, 3600):
         return
-    user = get_user_model().objects.filter(email__iexact=email, is_active=False).first()
-    if user is not None:
-        send_verification(user)
+    users = list(email_users(email)[:2])
+    if len(users) == 1 and not users[0].is_active:
+        send_verification(users[0])
 
 
 def send_verification(user):

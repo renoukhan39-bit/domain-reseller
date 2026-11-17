@@ -4,12 +4,14 @@ import secrets
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
+from django.contrib.auth import get_user_model
 from django.http import Http404, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.csrf import csrf_exempt
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 from django.views.decorators.cache import never_cache
-from django.db import transaction
+from django.db import IntegrityError, transaction
+from shop.accounts.identity import email_users
 from shop.accounts.verification import RESEND_MESSAGE, consume_verification, request_verification, verification_pending
 from shop.forms import DomainSearchForm, NameServerForm, RegistrantForm, ResendVerificationForm, SignupForm, normalize_domain
 from shop.models import AuditEntry, DomainOrder, EmailVerification, ManagedDomain, RegistrantContact, TLDPrice
@@ -54,12 +56,23 @@ def signup(request):
         return HttpResponse("Please try again in a minute", status=429)
     form = SignupForm(request.POST or None)
     if request.method == "POST" and form.is_valid():
-        with transaction.atomic():
-            user = form.save()
-            EmailVerification.objects.create(user=user)
-        request_verification(user.email, request.META.get("REMOTE_ADDR", "unknown"))
-        messages.success(request, "Account created. Check your email to activate it.")
-        return redirect("login")
+        try:
+            with transaction.atomic():
+                user = form.save()
+                EmailVerification.objects.create(user=user)
+        except IntegrityError:
+            # A competing signup may commit after form validation. The failed
+            # transaction is rolled back before checking for a friendly error.
+            if email_users(form.cleaned_data["email"]).exists():
+                form.add_error("email", "Email already in use")
+            elif get_user_model().objects.filter(username__iexact=form.cleaned_data["username"]).exists():
+                form.add_error("username", "A user with that username already exists.")
+            else:
+                raise
+        else:
+            request_verification(user.email, request.META.get("REMOTE_ADDR", "unknown"))
+            messages.success(request, "Account created. Check your email to activate it.")
+            return redirect("login")
     return render(request, "shop/accounts/signup.html", {"form": form})
 
 
@@ -98,8 +111,15 @@ def verify_email(request, token):
 
 @login_required
 @require_http_methods(["GET", "POST"])
+@transaction.atomic
 def contact(request):
-    existing = RegistrantContact.objects.filter(owner=request.user).first()
+    contacts = RegistrantContact.objects.filter(owner=request.user)
+    if request.method == "POST":
+        # Serialize initial profile creation and re-read after a worker finishes
+        # assigning the registrar handle. Never save a stale pre-lock instance.
+        get_user_model().objects.select_for_update().get(pk=request.user.pk)
+        contacts = contacts.select_for_update()
+    existing = contacts.first()
     # Registry owner handle may already exist: mutations require correct API synchronization.
     if existing and existing.openprovider_handle:
         return render(request, "shop/domains/contact_locked.html", {"contact": existing})

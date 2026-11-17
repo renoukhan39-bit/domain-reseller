@@ -4,11 +4,12 @@ from smtplib import SMTPException
 from urllib.parse import urlsplit
 from django import forms
 from django.conf import settings
-from django.contrib.auth.forms import PasswordResetForm, UserCreationForm
+from django.contrib.auth.forms import AdminUserCreationForm, PasswordResetForm, UserChangeForm, UserCreationForm
 from django.contrib.auth.models import User
 from django.core.exceptions import ImproperlyConfigured
 from django.core.mail import EmailMultiAlternatives
 from django.template import TemplateDoesNotExist, TemplateSyntaxError, loader
+from shop.accounts.identity import email_users
 from shop.models import RegistrantContact
 
 LABEL_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -17,6 +18,15 @@ logger = logging.getLogger(__name__)
 
 class SafePasswordResetForm(PasswordResetForm):
     """Keep Django's account/token rules, with a trusted origin and redacted failures."""
+    def get_users(self, email):
+        # Fail closed if a legacy database has ambiguous identities, and use the
+        # stored email for Django's active-account and usable-password checks.
+        users = list(email_users(email)[:2])
+        if len(users) != 1:
+            return ()
+        user = users[0]
+        return (candidate for candidate in super().get_users(user.email) if candidate.pk == user.pk)
+
     def save(self, **kwargs):
         try:
             origin = settings.EMAIL_VERIFICATION_BASE_URL.rstrip("/")
@@ -64,18 +74,29 @@ def normalize_domain(value):
     return value
 
 
-class SignupForm(UserCreationForm):
+class UniqueEmailFormMixin:
+    def clean_email(self):
+        email = self.cleaned_data["email"].strip().lower()
+        if email and email_users(email).exclude(pk=self.instance.pk).exists():
+            raise forms.ValidationError("Email already in use")
+        return email
+
+
+class SignupUserAdminForm(UniqueEmailFormMixin, AdminUserCreationForm):
+    class Meta(AdminUserCreationForm.Meta):
+        fields = ("username", "email")
+
+
+class ChangeUserAdminForm(UniqueEmailFormMixin, UserChangeForm):
+    pass
+
+
+class SignupForm(UniqueEmailFormMixin, UserCreationForm):
     email = forms.EmailField(required=True)
 
     class Meta:
         model = User
         fields = ("username", "email", "password1", "password2")
-
-    def clean_email(self):
-        email = self.cleaned_data["email"].strip().lower()
-        if User.objects.filter(email__iexact=email).exists():
-            raise forms.ValidationError("Email already in use")
-        return email
 
     def save(self, commit=True):
         user = super().save(commit=False)
