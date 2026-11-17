@@ -1,5 +1,7 @@
 # START HERE — new developer / Codex onboarding
 
+**Current local validation (17 November 2026):** after the owner authorized runtime tests, the restructured application passed 189 PostgreSQL tests, 17 backup tests, synthetic recovery, installed-wheel checks and live browser account flows. See [the report](../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt) for the verification-page fix, warnings and external acceptance still outstanding. Earlier counts below remain historical onboarding evidence.
+
 **Official repo:** https://github.com/renoukhan39-bit/domain-reseller. This file replaces the need to know any previous chat.
 
 ## Mission

@@ -111,7 +111,7 @@ class EmailVerificationTests(TestCase):
         self.assertFalse(self.user.is_active)
         response = browser.post(url, {"csrfmiddlewaretoken": browser.cookies["csrftoken"].value})
         self.assertRedirects(response, reverse("login"))
-        self.assertEqual(response["Referrer-Policy"], "no-referrer")
+        self.assertEqual(response["Referrer-Policy"], "strict-origin")
         self.assertIn("no-store", response["Cache-Control"])
         self.assertNotIn("_auth_user_id", browser.session)
         self.user.refresh_from_db()
@@ -123,6 +123,31 @@ class EmailVerificationTests(TestCase):
         self.assertEqual(self.client.get(url).status_code, 400)
         self.user.refresh_from_db()
         self.assertFalse(self.user.is_active)
+        self.assertEqual(AuditEntry.objects.filter(action="email_verified").count(), 1)
+
+    def test_confirmation_keeps_same_origin_posts_and_rejects_untrusted_origins(self):
+        url = reverse("verify_email", args=[self.token()])
+        browser = Client(enforce_csrf_checks=True)
+        confirmation = browser.get(url)
+        self.assertEqual(confirmation["Referrer-Policy"], "strict-origin")
+        self.assertIn("no-store", confirmation["Cache-Control"])
+        payload = {"csrfmiddlewaretoken": browser.cookies["csrftoken"].value}
+
+        # Neither an opaque origin nor another site may activate the account,
+        # even if it presents the signed link and a valid CSRF token.
+        for origin in ("null", "https://attacker.example.test"):
+            with self.subTest(origin=origin):
+                self.assertEqual(browser.post(url, payload, HTTP_ORIGIN=origin).status_code, 403)
+                self.user.refresh_from_db()
+                self.assertFalse(self.user.is_active)
+                self.assertTrue(EmailVerification.objects.filter(user=self.user).exists())
+        self.assertFalse(AuditEntry.objects.filter(action="email_verified").exists())
+
+        response = browser.post(url, payload, HTTP_ORIGIN="http://testserver")
+        self.assertRedirects(response, reverse("login"))
+        self.user.refresh_from_db()
+        self.assertTrue(self.user.is_active)
+        self.assertFalse(EmailVerification.objects.filter(user=self.user).exists())
         self.assertEqual(AuditEntry.objects.filter(action="email_verified").count(), 1)
 
     def test_verifying_another_account_does_not_switch_logged_in_customer(self):

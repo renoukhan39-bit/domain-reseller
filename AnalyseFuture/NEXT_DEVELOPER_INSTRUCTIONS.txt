@@ -17,10 +17,11 @@ CONTINUE HERE - DO NOT REPEAT THE RECOVERY FROM SCRATCH
 6. Do not install/execute the archived PHP projects. They have different runtimes,
    license obligations and confirmed dormant TLS/contract problems. Dockerignore
    and config*/shop* package selection keep them outside the active product.
-7. The last owner instruction was DO NOT RUN TESTS FOR NOW. This revision received
-   static checks only. Obtain a later instruction permitting runtime verification
-   before invoking tests; do not describe earlier174tests as new-layout evidence.
-8. When verification is authorized: use Python3.12, PostgreSQL16, normal TLS trust,
+7. On17November2026 the owner authorized testing everything. The local layout
+   now passes189PostgreSQL application tests,17backup tests, encrypted synthetic
+   recovery, installed-wheel/template/alias checks and live browser account flows.
+   Use TEST_AND_VALIDATION_REPORT.txt for details, fixes, warnings and limits.
+8. For subsequent local verification: use Python3.12, PostgreSQL16, normal TLS trust,
    the existing cloud CA BuildKit override if required, and docs/operations setup.
    Rebuild web/worker first because images copy source. Then Django check,
    migration dry-run, migrations, static collection, shop suite, backup guard suite
@@ -34,7 +35,7 @@ CONTINUE HERE - DO NOT REPEAT THE RECOVERY FROM SCRATCH
     inventory/mapping when paths change. Canonical planning is
     PROJECT_VISION_AND_FUTURE_ROADMAP.txt; do not duplicate competing roadmaps.
 
-Useful future commands (NOT executed after the no-tests instruction):
+Verified local workflow commands (run against the rebuilt current image):
 python manage.py test shop --verbosity 2
 python -m unittest scripts.backups.test_database_backup -v
 python scripts/backups/backup_restore_drill.py

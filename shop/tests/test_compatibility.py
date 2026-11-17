@@ -48,17 +48,21 @@ class PasswordResetTemplateCompatibilityTests(SimpleTestCase):
                     values = dict(context, validlink=validlink)
                     name = "password_reset_" + page + ".html"
                     expected = render_to_string("shop/accounts/" + name, values)
-                    actual = render_to_string("registration/" + name, values)
-                    self.assertEqual(actual, expected)
+                    for prefix in ("registration/", "shop/"):
+                        with self.subTest(alias=prefix + name):
+                            actual = render_to_string(prefix + name, values)
+                            self.assertEqual(actual, expected)
                     self.assertIn("Domain Reseller", actual)
 
     def test_default_email_name_keeps_plain_text_and_the_exact_reset_link(self):
         context = {"protocol": "https", "domain": "accounts.example.test",
                    "uid": "fixture-user", "token": "synthetic-reset-token"}
         expected = render_to_string("shop/accounts/password_reset_email.html", context)
-        actual = render_to_string("registration/password_reset_email.html", context)
         reset_path = reverse("password_reset_confirm", kwargs={
             "uidb64": context["uid"], "token": context["token"]})
-        self.assertEqual(actual, expected)
-        self.assertIn("https://accounts.example.test" + reset_path, actual)
-        self.assertNotIn("<html", actual.lower())
+        for prefix in ("registration/", "shop/"):
+            with self.subTest(alias=prefix + "password_reset_email.html"):
+                actual = render_to_string(prefix + "password_reset_email.html", context)
+                self.assertEqual(actual, expected)
+                self.assertIn("https://accounts.example.test" + reset_path, actual)
+                self.assertNotIn("<html", actual.lower())

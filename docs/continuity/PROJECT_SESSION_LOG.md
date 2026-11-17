@@ -65,3 +65,20 @@ Never overwrite earlier entries merely to make a plan look complete; add a dated
 ## 17 November 2026 — owner-authorized master recovery and functional layout
 
 Starting main: `30fe576f25acc1bbf1733f76bc8b610c9e14dbd1`. Expanded the narrow fetch to seven remote heads and 42 commits. Preserved an all-ref Git bundle and exact snapshots. Recovered five prior project documents plus registrar nameserver ownership guards/tests. Kept the stronger current payment replay design. Consolidated reset templates and gateway validation, then grouped source, tests, templates, tools, docs and reference projects by responsibility. See root `PROJECT_STRUCTURE.md` and `AnalyseFuture` recovery reports for complete path records. The owner later explicitly ordered no tests; none were run after that instruction. Prior passing tests do not validate the final layout. Normal direct main delivery is authorized; no force push, branch deletion, deployment or live purchase. Final commit is discoverable from this record’s Git history; remote CI and account compromise status remain unverified.
+
+
+## 17 November 2026 — authorized runtime verification after restructuring
+
+The owner superseded the prior pause by asking to test everything. Starting main
+was `63dc539e768ae8800aafff1e123afe79d24663cf`. A clean build, PostgreSQL checks,
+189 application tests, 17 backup tests, encrypted synthetic recovery, 66-item issue
+import dry run, installed-wheel/template/alias checks and live Chromium account
+flows passed. Chromium exposed `Origin: null` activation failures under
+`no-referrer`; verification pages now use `strict-origin`, with same-origin and
+null/cross-origin regression coverage. Five old reset aliases no longer append a
+newline. Test fixtures were synthetic and cleaned; no external purchases or live
+provider calls occurred. `check --deploy` has the deliberate HSTS-preload warning.
+External registrar/payment/SMTP/staging/production acceptance remains open due to
+missing configuration/credentials. See `AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt`.
+Normal direct main delivery remains the owner's selected workflow; no PR or force
+push. The final commit is discoverable from this entry's Git history.

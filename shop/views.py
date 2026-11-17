@@ -89,7 +89,10 @@ def verify_email(request, token):
         response = redirect("login")
     else:
         response = render(request, "registration/verification_invalid.html", status=400)
-    response["Referrer-Policy"] = "no-referrer"
+    # Suppress the signed token in referrers while retaining a same-origin
+    # Origin header on form POSTs. no-referrer makes Chromium send Origin: null,
+    # which Django correctly rejects even when the CSRF token is present.
+    response["Referrer-Policy"] = "strict-origin"
     return response
 
 

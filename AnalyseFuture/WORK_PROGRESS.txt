@@ -1,3 +1,21 @@
+CURRENT AUTHORIZED RUNTIME VALIDATION COMPLETE - 17 November 2026
+
+The owner superseded the earlier no-tests pause. Starting revision63dc539 has
+now been rebuilt and tested with the source fixes described in the validation
+report:189PostgreSQL app tests,17backup tests, synthetic encrypted recovery,
+installed-wheel and ten live browser checks pass. Restored normal activation by
+using strict-origin rather than no-referrer; null/cross-origin requests remain
+blocked. Removed only extra newlines from five legacy reset aliases.
+
+No real registrar/payment/SMTP/staging/production validation is claimed; provider
+bindings are absent, sales/fulfillment remain false. Production check has only the
+intentional HSTS-preload warning. Prior static-only work is retained below as
+history, not a current prohibition. The verified fixes and evidence accompany the normal direct main delivery; use
+Git history and the final task response for its SHA. Next development work is to
+close external acceptance gates with proper credentials and operator review. Do not restart the recovery or execute archived PHP projects.
+
+HISTORICAL RESTRUCTURING PROGRESS
+-------------------------------
 MASTER RECOVERY PROGRESS - 17 November 2026
 Starting main:30fe576f25acc1bbf1733f76bc8b610c9e14dbd1.
 

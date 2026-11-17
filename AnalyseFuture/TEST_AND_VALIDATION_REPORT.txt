@@ -1,3 +1,96 @@
+CURRENT AUTHORIZED RUNTIME VALIDATION - 17 November 2026
+Tested starting main: 63dc539e768ae8800aafff1e123afe79d24663cf plus the fixes
+and regression coverage described here. The owner subsequently said to test
+everything; this supersedes the earlier no-tests phase preserved below.
+
+OUTCOME: ALL ACTIVE LOCAL CHECKS PASS; EXTERNAL ACCEPTANCE REMAINS OPEN.
+
+PASSED
+- Clean Docker build (--no-cache) with the executor CA mounted as a BuildKit
+  secret. TLS verification stayed enabled. Rebuilt after each source correction;
+  final image:sha256:e46af72762d14159d17cb9ac471d7c17d110c23db82fe66c80d1304df3d59277.
+  The running web image and tested source/test hashes match this build.
+- PostgreSQL16 startup and real empty test-DB migrations. All migrations applied;
+  app DB has no pending migrations; makemigrations --check --dry-run reports no
+  changes. Django checks, static collection, compileall and pip check passed.
+- FINAL application suite:189 tests in34.017s, OK, no skips or expected failures.
+  Includes recovered nameserver ownership gates, CSRF/origin rejection, duplicate
+  payment/refund handling, concurrency, timeouts and tenant-isolation coverage.
+- Backup suite:17 tests in12.348s, OK. Synthetic encrypted PostgreSQL restore
+  matched customer/domain/order/payment/audit ownership, sequences and constraints;
+  wrong-key/corruption/occupied-target refusal and archive preservation passed.
+- Issue-import default dry run:66 proposed issues; no GitHub write operation.
+- Real headless Chromium desktop1280x900/mobile390x844 rendering; no horizontal
+  overflow or browser page exceptions. Live HTTP signup, inactive-login denial,
+  activation GET+POST, verified login, saved registrant profile, logout, password
+  reset and replacement-password login all passed. Email was received through
+  the configured local console backend, not an external SMTP inbox.
+- Browser inspected activation request headers:Origin matches the app origin;
+  Referer contains only the origin, never the signed token. Missing-CSRF signup
+  is rejected. All synthetic customer/contact/owned-audit fixtures were removed.
+- HTTP health200/database SELECT, storefront200, login/reset/resend200,
+  anonymous dashboard/contact302, admin login200 and7admin static assets200,
+  webhook GET405, invalid activation400. An unconfigured webhook returns503;
+  it deliberately fails closed. Invalid-HMAC400 with configured test fixtures
+  is covered by the application suite, not claimed as a real gateway delivery.
+- Read-only reconciliation backlog command returned status ok with zero alerts.
+- Installed wheel tested outside the checkout:104 members,36 templates compile
+  and match source,7legacy/canonical module identities, private helper and patch
+  compatibility,18exact template alias output comparisons, canonical reset URLs.
+  No AnalyseFuture/scripts/ZIP members. Artifact details follow below.
+
+CORRECTED FINDINGS
+1. Live Chromium exposed an application bug missed by the existing unit suite:
+   no-referrer on activation pages yields Origin:null on the form POST, causing
+   Django CSRF403. strict-origin preserves token privacy and permits valid
+   same-origin submission. CSRF/signing/single-use/no-store remain enforced;
+   explicit null/cross-origin regression requests are denied.
+2. Five legacy shop/password_reset_* include aliases added one extra newline.
+   Removed only that shim newline and extended existing tests to cover both
+   alias families with exact HTML/email output. Canonical templates are unchanged.
+3. An initial HTTP probe incorrectly expected400 from an unconfigured webhook;
+   corrected its expectation to the intended503. This was a probe assumption,
+   not an application defect. Final HTTP checks passed.
+
+WARNINGS / NOT CLAIMED
+- Production-settings check --deploy exits0 with only security.W021 because HSTS
+  preload is intentionally false. Preload requires an operator/domain-policy
+  decision; it was not enabled simply to silence the warning. Dev settings
+  intentionally have local-only HTTPS/cookie warnings and are not production.
+- No Openprovider/Razorpay/SMTP credentials are present in environment metadata,
+  host bindings or the running app. Real sandbox registration/renewal/NS,
+  Razorpay webhook delivery/settlement, external SMTP, staging/production recovery,
+  deployment, legal/tax and live financial acceptance remain unrun prerequisites.
+- Archived PHP projects remain dormant and were not executed. Source-level
+  security/vulnerability review of all vendor internals is not certified by tests.
+- No configured type-check/lint/vulnerability-scanner suite was fabricated.
+  Remote GitHub Actions status was not fetched or claimed as passing.
+- Sales and fulfillment remain false; no external purchase/provider mutation,
+  production deployment, live credential or real customer data was used.
+
+ARTIFACT VERIFICATION
+{
+  "wheel_bytes": 97508,
+  "sha256": "6a870aebd2acd117063563e1c007a01af18f23bdfa36e1f78fd1c0c18f5aca6d",
+  "members": 104,
+  "templates_compiled": 36,
+  "legacy_module_identities": 7,
+  "exact_template_alias_comparisons": 18,
+  "source_bytes_match_current_checkout": true,
+  "private_helper_and_patch_target": "passed",
+  "archive_script_or_zip_members": 0,
+  "installed_wheel_independent_of_checkout": true,
+  "database_or_external_requests": false
+}
+
+Local command/browser/wheel logs are outside the checkout under
+/workspace/domain-reseller-setup/. They are current-run evidence, not checked-in
+secrets or synthetic customer credentials. Source/test hashes in the running
+container match the checkout. Documentation-only updates do not alter the tested
+application artifact. Review/push outcome is reported in the final task response.
+
+HISTORICAL STATIC-ONLY PHASE RECORD (superseded by authorization above)
+----------------------------------------------------------------------
 TEST AND STATIC VALIDATION STATUS - 17 November 2026
 Starting revision:30fe576. Final layout follows the owner's later NO TESTS order.
 

@@ -131,24 +131,19 @@ vendored dependency or binary asset.
 
 ## Validation and continuation
 
-The owner's latest instruction was **do not run tests for now**. Final-layout
-checks are static only: AST syntax/import paths, literal template/package/CLI/link
-references, content preservation and staged scope. No build, migration, runtime
-startup or full suite was run for this layout. Four focused checks had run before
-that instruction; historical 174-test results are not evidence for this revision.
+The owner subsequently authorized runtime testing on 17 November 2026. The
+restructured application now passes **189 PostgreSQL tests**, **17 backup tests**,
+the encrypted synthetic recovery drill, installed-wheel checks and live headless
+Chromium account flows. See [the full validation report](AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt)
+for commands, the verification-page fix, template compatibility correction,
+production warning and external prerequisites.
 
-Use `AnalyseFuture/NEXT_DEVELOPER_INSTRUCTIONS.txt` when runtime verification is
-authorized later. Existing running containers reflect their earlier build, not
-this new source layout. Sales and fulfillment remain disabled; reorganization
-does not authorize purchases, deployment or irreversible registrar retries.
+The earlier no-tests restriction applied to the reorganization commit, not this
+later validation phase. Existing source, migration history and preserved upstream
+snapshots remain intact. Real registrar/payment/SMTP/staging and production
+acceptance are still unverified; local test results do not establish those gates.
 
-No force push, history rewrite or branch/tag deletion is part of delivery.
-
-## Verification boundary
-
-The owner explicitly requested no tests during this final organization pass.
-Only static syntax/import-target/path/link/package-boundary and Git preservation
-checks were performed. Existing test files were retained and updated, but their
-post-move execution is unverified. Earlier passing suites describe earlier commits.
-See `AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt` before treating the current
-revision as runnable. No deployment or live financial action was performed.
+Use `AnalyseFuture/NEXT_DEVELOPER_INSTRUCTIONS.txt` to continue. Rebuild images
+after source changes. Sales and fulfillment remain disabled; testing does not
+authorize purchases, deployment or irreversible registrar retries. No force push,
+history rewrite or branch/tag deletion is part of delivery.

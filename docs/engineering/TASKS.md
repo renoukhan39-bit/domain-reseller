@@ -1,5 +1,7 @@
 # Developer checklist — 66 tasks, 20 release acceptance tests
 
+**Current local evidence:** 189 application tests on PostgreSQL, 17 backup tests, synthetic encrypted recovery, packaging and live browser account flows passed after runtime testing was authorized. See [the report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt). This does not close checklist gates requiring real providers, SMTP, deployment, legal or production evidence.
+
 The master recovery restores prior nameserver safeguards/tests and continuity documents, and consolidates compatible reset/identifier duplicates. See [evidence](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt) and [debt](../../AnalyseFuture/TECHNICAL_DEBT.txt). Acceptance checkboxes are unchanged; local recovery does not establish external launch readiness.
 
 **Status legend:** `[x]` = source/configuration written in this package (not equivalent to successful sandbox or production testing); `[ ]` = not complete. Each task has an owner (ENG engineer, OPS operations, BIZ business owner) and a concise exit condition. Priority P0 blocks launch, P1 is needed before scale, P2 is expansion.
