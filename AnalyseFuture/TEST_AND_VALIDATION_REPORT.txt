@@ -97,11 +97,14 @@ INVENTORY, CLEANUP AND REMAINING ACCEPTANCE
 - Container base/PostgreSQL tags and operating-system dependency vulnerability
   review remain open. The Python advisory scan covers the lock's package scope.
 - Branch code was pushed normally through commit 88a00b2. The egress proxy
-  rejects the api.github.com CONNECT tunnel with 403 Forbidden, preventing
-  current Actions inspection and PR creation. The live restricted policy omits
+  rejects the api.github.com CONNECT tunnel with 403 Forbidden, preventing API-based
+  Actions inspection and PR creation. The live restricted policy omits
   that domain. An additive api.github.com allowance was saved in the environment
   draft, preserving package-manager presets. Applying network settings and
-  verifying API authorization remain prerequisites. Final documentation commits
+  verifying API authorization remain prerequisites. The public GitHub workflow
+  page independently confirmed implementation commit 88a00b2 passed Python CI,
+  run https://github.com/renoukhan39-bit/domain-reseller/actions/runs/44194220815.
+  The later documentation commit was still running at this record. Final documentation commits
   and remote SHA are reported in the final response.
   Draft configuration persistence does not establish environment publication.
 

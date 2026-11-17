@@ -124,6 +124,8 @@ delivery, then deployment controls and business requirements for billing.
 The tested implementation commits through 88a00b2 were pushed normally to the
 recovery branch. The egress proxy rejects api.github.com with a 403 CONNECT
 failure. An additive domain allowance was saved in the environment draft for
-review. Current remote Actions status and PR creation remain blocked by live
-API connectivity. Final documentation commits and remote SHA are recorded in
+review. PR creation remains blocked by live API connectivity. The public workflow page
+confirmed Python CI success for implementation commit 88a00b2,
+[run 44194220815](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/44194220815).
+The documentation head was still running when this record was written. Final documentation commits and remote SHA are recorded in
 the final response and prepared PR body.
