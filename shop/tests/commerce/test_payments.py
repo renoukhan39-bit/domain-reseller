@@ -303,6 +303,62 @@ class CheckoutHardeningTests(PaymentFixtures, TestCase):
         self.assertEqual(repeated.pk, original.pk)
         self.assertEqual(repeated.managed_domain_id, managed.pk)
 
+    def test_buy_retry_returns_completed_order_without_rechecking_registered_domain(self):
+        managed = ManagedDomain.objects.create(
+            owner=self.user, name="localexample.com", provider_id=98765, status="active",
+        )
+        original = self.make_order(status=DomainOrder.ACTIVE, managed_domain=managed)
+        self.client.force_login(self.user)
+        with patch("shop.views.Openprovider") as registrar, patch("shop.commerce.orders.Razorpay") as gateway:
+            registrar.return_value.check.return_value = False
+            response = self.client.post(reverse("buy", args=[original.domain]), {
+                "idempotency_key": original.idempotency_key,
+            })
+        self.assertRedirects(response, reverse("order_detail", args=[original.pk]), fetch_redirect_response=False)
+        registrar.assert_not_called()
+        gateway.assert_not_called()
+        self.assertEqual(DomainOrder.objects.count(), 1)
+
+    def test_buy_retry_of_uncertain_checkout_returns_original_without_another_gateway_request(self):
+        original = self.make_order(status=DomainOrder.REVIEW, razorpay_order_id=None)
+        self.client.force_login(self.user)
+        with patch("shop.views.Openprovider") as registrar, patch("shop.commerce.orders.Razorpay") as gateway:
+            response = self.client.post(reverse("buy", args=[original.domain]), {
+                "idempotency_key": original.idempotency_key,
+            })
+        self.assertRedirects(response, reverse("order_detail", args=[original.pk]), fetch_redirect_response=False)
+        registrar.assert_not_called()
+        gateway.assert_not_called()
+        original.refresh_from_db()
+        self.assertEqual(original.status, DomainOrder.REVIEW)
+        self.assertEqual(DomainOrder.objects.count(), 1)
+
+    def test_buy_with_another_customers_key_still_checks_availability(self):
+        original = self.make_order(owner=self.other)
+        self.client.force_login(self.user)
+        with patch("shop.views.Openprovider") as registrar, patch("shop.commerce.orders.Razorpay") as gateway:
+            registrar.return_value.check.return_value = False
+            response = self.client.post(reverse("buy", args=[original.domain]), {
+                "idempotency_key": original.idempotency_key,
+            })
+        self.assertRedirects(response, reverse("home"), fetch_redirect_response=False)
+        registrar.return_value.check.assert_called_once_with(original.domain)
+        gateway.assert_not_called()
+        self.assertFalse(DomainOrder.objects.filter(owner=self.user).exists())
+
+    def test_buy_with_conflicting_key_cannot_return_unrelated_order_or_start_payment(self):
+        original = self.make_order()
+        self.client.force_login(self.user)
+        with patch("shop.views.Openprovider") as registrar, patch("shop.commerce.orders.Razorpay") as gateway:
+            registrar.return_value.check.return_value = True
+            response = self.client.post(reverse("buy", args=["differentexample.com"]), {
+                "idempotency_key": original.idempotency_key,
+            })
+        self.assertRedirects(response, reverse("home"), fetch_redirect_response=False)
+        registrar.return_value.check.assert_called_once_with("differentexample.com")
+        gateway.assert_not_called()
+        self.assertEqual(DomainOrder.objects.count(), 1)
+
     def test_duplicate_registration_cannot_take_another_payment_or_cross_customer(self):
         self.make_order()
         with patch("shop.commerce.orders.Razorpay") as gateway:

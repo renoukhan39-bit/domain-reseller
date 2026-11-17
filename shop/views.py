@@ -159,10 +159,13 @@ def buy(request, domain):
         messages.error(request, "Sales are currently disabled")
         return redirect("home")
     try:
-        if not Openprovider().check(domain):
+        key = request.POST.get("idempotency_key", "")
+        existing = DomainOrder.objects.filter(owner=request.user, domain=domain,
+            operation=DomainOrder.REGISTER, idempotency_key=key).exists()
+        if not existing and not Openprovider().check(domain):
             raise OrderError("Domain is no longer available")
         order = create_checkout_order(owner=request.user, domain=domain, operation=DomainOrder.REGISTER,
-            price=tld.registration_paise, key=request.POST.get("idempotency_key", ""))
+            price=tld.registration_paise, key=key)
         return redirect("order_detail", order_id=order.pk)
     except (ProviderError, OrderError) as exc:
         messages.error(request, str(exc))

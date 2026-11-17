@@ -137,6 +137,12 @@ def fulfill_one(order_id, provider=None):
                         raise OrderError("Invalid registrar contact handle")
                     contact.openprovider_handle = handle
                     contact.save(update_fields=["openprovider_handle", "updated_at"])
+            # Contact creation or its row lock can outlast a worker claim. Respect
+            # an operator escalation before starting a new registrar purchase.
+            with transaction.atomic():
+                current = DomainOrder.objects.select_for_update().get(pk=order.pk)
+                if current.status != DomainOrder.PROCESSING:
+                    return False
             result = provider.register(order.domain, contact.openprovider_handle)
             provider_id = result.get("id") if isinstance(result, dict) else None
             if type(provider_id) is not int or not 0 < provider_id <= 9223372036854775807:

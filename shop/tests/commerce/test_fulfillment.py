@@ -139,6 +139,35 @@ class FulfillmentSafetyTests(FulfillmentFixtures, TestCase):
         self.assertEqual(registrar.calls["register"], 1)
         self.assertFalse(ManagedDomain.objects.exists())
 
+    def test_escalation_during_contact_creation_stops_before_registration(self):
+        self.contact.openprovider_handle = ""
+        self.contact.save(update_fields=["openprovider_handle"])
+        order = self.make_order()
+        registrar = RegistrarDouble()
+        create_contact = registrar.create_contact
+
+        def escalated_contact(payload):
+            handle = create_contact(payload)
+            DomainOrder.objects.filter(pk=order.pk).update(
+                updated_at=timezone.now() - timedelta(hours=2),
+            )
+            call_command("mark_stale_orders", minutes=30, limit=100, stdout=StringIO())
+            return handle
+
+        registrar.create_contact = escalated_contact
+        self.assertFalse(fulfill_one(order.pk, registrar))
+        self.assertFalse(fulfill_one(order.pk, registrar))
+        order.refresh_from_db()
+        self.contact.refresh_from_db()
+        self.assertEqual(order.status, DomainOrder.REVIEW)
+        self.assertIsNone(order.provider_result_id)
+        self.assertEqual(self.contact.openprovider_handle, "LOCAL-OWNER")
+        self.assertEqual(registrar.calls["create_contact"], 1)
+        self.assertEqual(registrar.calls["register"], 0)
+        self.assertEqual(registrar.calls["get_domain"], 0)
+        self.assertFalse(ManagedDomain.objects.exists())
+        self.assertEqual(AuditEntry.objects.filter(order=order, action="stale_fulfillment_review").count(), 1)
+
     def test_pending_registration_does_not_become_active(self):
         order = self.make_order()
         registrar = RegistrarDouble()
