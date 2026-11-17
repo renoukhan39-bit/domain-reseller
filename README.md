@@ -1,18 +1,10 @@
 # Domain Reseller
 
-The current functional layout is documented in [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md). See the [complete recovery audit](AnalyseFuture/REPOSITORY_AUDIT.txt), [file inventory](AnalyseFuture/COMPLETE_FILE_INVENTORY.txt), and [canonical project vision (.txt)](AnalyseFuture/PROJECT_VISION_AND_FUTURE_ROADMAP.txt). The owner subsequently authorized runtime validation: 189 PostgreSQL application tests, 17 backup tests, recovery, packaging and live browser checks now pass; see [current evidence](AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt).
-
-See [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the functional code, template, test, tooling and documentation collections. The [master recovery report](AnalyseFuture/REPOSITORY_AUDIT.txt) records recovered branch work and preservation. Current local results and remaining external acceptance gates are recorded in the validation report.
-
 A real Django + PostgreSQL domain reseller codebase designed for a guarded, incremental production rollout. The application implements customer authentication and email verification, registrant profiles, live registrar availability lookups, INR TLD catalog, Razorpay Orders checkout, signed payment-captured webhooks, database-backed paid-order fulfillment, Openprovider registration and renewal, nameserver changes, administration, audit trails, and tests.
 
 The working application remains in `config/` and `shop/`. Existing PNLCS and Openprovider WHMCS source snapshots are preserved unchanged in [`AnalyseFuture/`](AnalyseFuture/README.md) for future study. See the [repository audit and layout](docs/history/REPOSITORY_STRUCTURE.md) for the structure and preservation evidence, and the [detailed project idea and future roadmap (.txt)](docs/PROJECT_IDEA_AND_FUTURE_ROADMAP.txt) for the product proposal, limits and responsible teams.
 
 **Current status: implementation foundation, NOT a launched or verified live service.** Registrar/payment credentials have not been provided; real sandbox end-to-end testing, billing/legal reviews, transaction reconciliation, deployment and production recovery drills remain outstanding. There are no simulated checkout paths in the application. Settings fail closed: sales and fulfillment are disabled by default.
-
-## Current functional layout
-
-Read [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md) for the accounts, commerce, domains, security, operations and documentation collections. The [master recovery reports](AnalyseFuture/REPOSITORY_AUDIT.txt) record recovered branch work and preservation. The later authorized validation covers this functional layout; earlier results below remain historical evidence for their own revisions.
 
 ## New developer / Codex? Start here
 
@@ -30,12 +22,14 @@ Read **[`docs/START_HERE.md`](docs/START_HERE.md)** for the complete mission, de
 8. Add eligible TLD prices through Django admin. Use **actual** supplier cost + margin + payment fees + taxes; no invented demo pricing is loaded.
 9. Use `docker compose exec web python manage.py test shop` to run the test suite.
 
+Docker and CI install Python runtime and build dependencies from the hash-verified `requirements.lock`. Update it with the command recorded in its header, then audit and test the result. Migration `0004` stops safely if existing accounts share a normalized email address. See [email identity migration guidance](docs/operations/EMAIL_VERIFICATION.md).
+
 With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obtain separate Openprovider sandbox credentials, set `OPENPROVIDER_BASE_URL=https://api.sandbox.openprovider.nl/v1`, and Razorpay **test** keys and webhook secret. Only when setup is correct set `SALES_ENABLED=true` to exercise the payment sandbox. Set `FULFILLMENT_ENABLED=true` only after checking webhook delivery and registrar credentials. Do **not** use live Razorpay keys with sandbox registrar credentials.
 
 ## Production readiness status
 
 - **Implemented:** core Django application, database schema, profile/email verification, authenticated customer pages, registrar API adapter, Razorpay Orders + signed webhook, manual refund command, guarded fulfillment worker, nameserver updates, unit/integration-style tests, PostgreSQL compose, CI workflow.
-- **Verified locally after restructuring:** 189 application tests on PostgreSQL16, 17 backup tests, synthetic encrypted restore, installed wheel and browser signup/verification/profile/reset flows passed. See [current evidence](AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt).
+- **Verified locally on 18 November 2026:** 219 application tests on PostgreSQL 16, 17 backup tests, encrypted synthetic restore, installed wheel and headless Chromium account flows passed. See [current evidence](AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt).
 - **Historical verification:** [GitHub Actions Python CI passed](https://github.com/renoukhan39-bit/domain-reseller/actions/runs/43452225170) on the initial source import (Django checks, migration checks, migrations and test suite). Local PostgreSQL 16 and Docker validation with the cloud CA override passed all 166 application tests, including payment/refund reconciliation, registrar recovery and shared throttling; see [verification evidence](docs/operations/THROTTLING.md).
 - **Not verified externally:** registrar sandbox contract, real Razorpay sandbox webhook, real email delivery, deployment, cloud security, production load/edge rate limits, production/staging backup restore, financial and legal compliance. Local PostgreSQL concurrency tests and the isolated synthetic-data recovery drill are separate verified checks; see [current reorganization evidence](docs/history/RESTRUCTURE_VALIDATION.txt).
 - **Email verification:** [resend and SMTP configuration](docs/operations/EMAIL_VERIFICATION.md) are implemented with single-use expiring links and database send throttles; external provider delivery remains unverified.
@@ -46,7 +40,7 @@ With `SALES_ENABLED=false` all orders are blocked. For **sandbox testing**, obta
 1. Only authenticated users can see their own domains and orders. Customer registry handles are created using each person's own registrant details.
 2. Browser success alone never marks orders paid: only a valid HMAC-verified **payment.captured** webhook with matching gateway order, currency, and amount does that.
 3. The worker never automatically repeats a registrar call with an uncertain outcome. A human must reconcile any `needs_review` order with Openprovider before retrying or refunding.
-4. In admin, order and payment records are read-only. Use `python manage.py refund_order <order-uuid> --confirmed-not-registered` **only after** verifying that no domain/renewal was processed and gateway state is correct.
+4. In admin, orders, payment events, managed domains and audit records are view-only. Linked registrant profiles require a synchronized correction process. Use `python manage.py refund_order <order-uuid> --confirmed-not-registered` **only after** verifying that no domain/renewal was processed and gateway state is correct.
 5. Use **sandbox** first. The platform can cost ₹0 in software/license fees, but live registrations need supplier balance and checkout carries processing fees.
 
 ## Documents

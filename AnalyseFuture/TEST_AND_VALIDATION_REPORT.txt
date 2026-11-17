@@ -1,3 +1,113 @@
+CURRENT VERIFIED SECURITY IMPLEMENTATION - 18 November 2026 (Asia/Kolkata)
+Baseline 4f484241a7c18726adbd3a3845902fd842c5cd7f
+Branch recovery/security-and-account-hardening
+Task M5-08, with TD-18/TD-19 and dependency reproducibility improvements.
+The earlier evidence below remains specific to its own revisions.
+
+IMPLEMENTED AND VERIFIED
+- Database-only normalized nonblank email uniqueness on the existing auth User
+  table, migration 0004, preserving user IDs and values. Redacted duplicate-group
+  preflight stops without merging or deleting accounts. Forward/reverse/reapply,
+  legacy lookup, direct-write constraints and simultaneous signup/admin writes
+  have PostgreSQL regressions.
+- Customer/admin profile edits lock the current contact before validating and
+  saving, preserving a registrar handle assigned by a concurrent worker.
+- Financial/audit/managed-domain admin records are view-only. Linked contacts
+  reject edits and deletion. Existing contact owners cannot be reassigned.
+  Admin user deletion preserves audit actors. These are admin application
+  controls, with separate direct-database/IAM retention work outstanding.
+- Registration checks that its processing claim remains valid after contact
+  creation and before initiating a purchase. Once HTTP starts, uncertain and
+  late outcomes still require reconciliation.
+- Completed/uncertain checkout retries reach the customer's original order
+  without another registrar availability request. Foreign/conflicting keys
+  retain ownership and server validation.
+- requirements.lock hashes 14 runtime dependencies plus setuptools/wheel.
+  Docker and CI verify hashes and avoid resolving dependencies during package
+  installation. Actions refs are pinned, permissions are contents read-only,
+  checkout credential persistence is disabled and CI has a strict audit job.
+- Gunicorn access logs record method/status/bytes/duration without token paths,
+  queries or referrers. External proxy/error log configuration remains separate.
+
+CURRENT INSTANCE RESULTS
+- Reviewed repository commands, then baseline original image
+    /workspace/.domain-reseller-cloud/compose exec -T web python manage.py test shop --verbosity 1
+  passed 189 tests in 21.822 seconds.
+- New regression checks reproduced the original contact race, privileged
+  mutation/deletion paths, concurrent admin email errors, revoked registration
+  claim and completed checkout retry failure before their respective fixes.
+- Tested revised saved install script
+    bash /tmp/domain-reseller-cloud-install.sh
+  built both images with the executor CA as a BuildKit secret, keeping TLS and
+  package hash checks enabled. The saved environment install_script is updated.
+  The existing start_skill continues to point to the tested local helper.
+- Rebuilt image commands through compose run --rm --no-deps web
+    python -m pip check
+    python manage.py check
+    python manage.py makemigrations --check --dry-run
+    python manage.py migrate --check
+    python manage.py collectstatic --noinput
+    python -m compileall -q config shop
+    python manage.py test shop --verbosity 2
+  passed. All 219 application tests executed in 33.051 seconds, zero skips or
+  expected failures. Tests migrated an empty PostgreSQL 16 database and exercised
+  existing-account migration rollback/duplicate handling. Static collection
+  validated 127 retained files and post-processed 354 assets.
+- python3.12 -m unittest scripts.backups.test_database_backup -v
+  passed 17 tests in 9.552 seconds.
+- python3.12 scripts/backups/backup_restore_drill.py
+  passed encrypted synthetic customer/domain/order/payment/audit restore,
+  ownership/sequence/constraint checks, and wrong-key/corruption/occupied-target
+  refusal plus existing-archive preservation in an isolated local container.
+- pip-audit 2.10.0 --strict --require-hashes --disable-pip -r requirements.lock
+  returned zero known vulnerabilities across all 16 locked Python packages.
+  Fresh hash install, wheel build/install, pip check and installed Django check
+  passed in a separate Python 3.12 environment.
+- Compared 108 code/template/manifest hashes with the running image. All matched.
+  Installed wheel includes all 36 templates and excludes archives/docs/scripts
+  and private environment files.
+- Headless system Chromium via Playwright passed real signup, inactive-login
+  denial, CSRF activation, verified login/profile save, normalized duplicate-email
+  rejection, logout, reset and replacement-password login. Desktop/mobile had no
+  horizontal overflow or page exceptions. Parsed Gunicorn access records omitted
+  token paths. Console email was used, and synthetic customer fixtures were removed.
+  The first browser fixture password was rejected as password_too_similar.
+  An independent fixture password passed, with no application change needed.
+- Stopped and restarted only this task's web/worker/database stack through the
+  saved start helper. Migrations were repeatable, database-backed /health returned
+  ok, and storefront/sign-in/static requests returned expected content.
+- check --deploy with debug disabled returned only security.W021 for HSTS preload,
+  which is disabled intentionally. This check does not supply deployment evidence.
+
+INVENTORY, CLEANUP AND REMAINING ACCEPTANCE
+- 5,355 starting tracked paths, 5,361 final tracked paths. Six added files comprise
+  identity logic, its migration, three regression modules and the dependency lock.
+  Zero tracked files moved or removed. README duplicate navigation paragraphs
+  consolidated. Intentional module/template compatibility aliases retained.
+- 5,019 upstream reference paths retain their exact original tree identities.
+  Existing history/preservation records retained. See PRESERVATION_MANIFEST.json
+  for all-path classification, duplicate decisions, branch comparison, verified
+  Git bundle and fresh history/ZIP-member secret-pattern scan limitations.
+- No confirmed malicious or unauthorized change was established by source/history
+  review. Source inspection cannot establish account-level access provenance.
+- Provider/Razorpay sandbox contracts, SMTP inbox delivery, deployment alert
+  routing, production recovery, infrastructure IAM and legal/tax/cost decisions
+  remain open. Invoices, transfers, DNS/DNSSEC, price sync and lifecycle reminders
+  remain planned. Sales and fulfillment stay disabled in the local runtime.
+- Container base/PostgreSQL tags and operating-system dependency vulnerability
+  review remain open. The Python advisory scan covers the lock's package scope.
+- Branch code was pushed normally through commit 88a00b2. The egress proxy
+  rejects the api.github.com CONNECT tunnel with 403 Forbidden, preventing
+  current Actions inspection and PR creation. The live restricted policy omits
+  that domain. An additive api.github.com allowance was saved in the environment
+  draft, preserving package-manager presets. Applying network settings and
+  verifying API authorization remain prerequisites. Final documentation commits
+  and remote SHA are reported in the final response.
+  Draft configuration persistence does not establish environment publication.
+
+EARLIER VERIFICATION RECORDS
+===========================
+
 CURRENT AUTHORIZED RUNTIME VALIDATION - 17 November 2026
 Tested starting main: 63dc539e768ae8800aafff1e123afe79d24663cf plus the fixes
 and regression coverage described here. The owner subsequently said to test

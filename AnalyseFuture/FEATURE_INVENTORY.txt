@@ -3,6 +3,15 @@ Repository: renoukhan39-bit/domain-reseller
 Audit date: 17 November 2026
 Starting main: 30fe576f25acc1bbf1733f76bc8b610c9e14dbd1
 
+CURRENT REVIEW - 18 November 2026
+Baseline 4f48424 retained the functional layout below. This round passed 219
+application tests on PostgreSQL 16 and 17 backup tests, plus encrypted synthetic
+recovery and headless Chromium account flows. See TEST_AND_VALIDATION_REPORT.txt
+for exact commands and limitations. F01/F02/F06/F10/F14/F24 now additionally cover
+locked dependencies, database email identity, serialized registrar contact edits,
+existing checkout retries, revoked registration claims and protected admin evidence.
+The planned/reference/external acceptance statuses below continue to apply.
+
 COUNTING AND EVIDENCE
 ---------------------
 This catalogue contains 48 grouped feature/responsibility records: 30 active
@@ -43,12 +52,13 @@ ACTIVE APPLICATION AND TOOLING: F01-F30
 --------------------------------------
 F01 - Runtime, schema, configuration and static delivery
 Purpose/implementation: config/settings.py, urls.py, asgi.py, wsgi.py; manage.py;
-pyproject.toml; Dockerfile; compose.yaml; shop/migrations/0001..0003. Establishes
+pyproject.toml; Dockerfile; compose.yaml; shop/migrations/0001..0004. Establishes
 secure defaults, PostgreSQL schema, Django routing and WhiteNoise static assets.
 Dependencies/services: all active Python dependencies, PostgreSQL, Docker.
 Tests/status: IMPLEMENTED/LOCAL; system/migration/static/build checks and shop
 suite. Migration 0003 rejects unsafe pre-existing financial rows without deleting
-them. Gaps: production secrets/TLS/IAM, pinned dependency lock and staging proof.
+them. requirements.lock verifies Python runtime/build hashes. Gaps include production
+secrets/TLS/IAM, container image digest maintenance and staging proof.
 Location/consolidation: retain framework paths; do not merge PHP runtimes here.
 
 F02 - Customer signup and inactive-account creation
@@ -56,7 +66,7 @@ Implementation: shop/forms.py SignupForm, shop/views.py signup, signup.html;
 EmailVerification model. Normalizes unique email, uses Django password policy,
 creates inactive users and pending verification in a transaction.
 Dependencies: Django auth/forms/ORM and F03/F26. Tests: shop/tests/test_core.py AccountTests;
-test_email_verification.py. Status LOCAL; real signup email delivery remains open.
+shop/tests/accounts/test_verification.py and test_identity.py. Status LOCAL; real signup email delivery remains open.
 Location/gaps: existing forms/views/model/template boundary; queue delivery later.
 
 F03 - Single-use verification, resend and send budgets
@@ -78,7 +88,7 @@ production account-security audit. Gaps: stronger operator auth and takeover dri
 F05 - Trusted-origin password reset and customer reset pages
 Implementation: SafePasswordResetForm in forms.py, explicit shop/* templates in
 config/urls.py, Django reset token/views. Redacts SMTP failures and ignores hostile
-Host headers. Tests: test_throttling.py SafePasswordResetTests. Status LOCAL;
+Host headers. Tests: shop/tests/security/test_throttling.py SafePasswordResetTests. Status LOCAL;
 external delivery and timing equalization remain open. Five byte-identical legacy
 registration/* copies were identified for compatibility-wrapper consolidation;
 keep shop/* authoritative and preserve default template lookup names.
@@ -166,7 +176,7 @@ Implementation: nameservers view/form/template and Openprovider.update_nameserve
 Before recovery, main checked local ownership and only FULFILLMENT_ENABLED before
 writing, without a registrar ownership read-back. Accessible branch 4d4f53b adds
 full fulfillment_ready pairing and matching registrar ID/domain/owner/ACT status.
-Tests: existing tenant test plus branch test_nameserver_safety.py (recovery work).
+Tests: tenant tests and shop/tests/domains/test_nameservers.py (recovered).
 Status IMPLEMENTED with a confirmed pre-recovery gap; recovery acceptance and
 fresh test results are recorded in CONSOLIDATION_REPORT/TEST_AND_VALIDATION_REPORT.
 Real sandbox nameserver propagation remains unverified. Retain view adapter split.
@@ -214,8 +224,8 @@ Implementation: payments.py Razorpay, valid_gateway_id; payment_events.py legacy
 gateway_identifier convention; services/refunds use these boundaries. Bounded
 Requests with no redirects, path-segment validation, redacted errors.
 Tests: PaymentAdapterTests/checkout/webhook/refund malformed-ID fixtures.
-Status LOCAL. Consolidation target: one validator with compatibility wrapper for
-the old prefix convention; do not duplicate transports or add a payment SDK.
+Status LOCAL. The old prefix convention delegates to the shared validator in
+shop/commerce/gateway.py, with compatibility regression coverage.
 
 F23 - Customer order/domain dashboard and state display
 Implementation: dashboard/order_detail views, owner-filtered models,
@@ -227,9 +237,11 @@ financial dashboard. Preserve existing URLs and template navigation.
 F24 - Operator administration and audit history
 Implementation: admin.py registers prices, contacts, managed domains, read-only
 orders/payment events/audit records; AuditEntry used across workflows. Dependencies:
-Django admin/auth/PostgreSQL. Tests: indirect lifecycle audit assertions and admin
-login throttling. Status IMPLEMENTED; independent admin authorization/security
-review and operational audit retention remain gaps. No unsafe financial edit API.
+Django admin/auth/PostgreSQL. Tests: 12 admin endpoint/concurrency regressions,
+indirect lifecycle audit assertions and admin login throttling. Status LOCAL.
+Financial/registrar/audit records are view-only, linked contacts reject edits,
+audit actors survive admin deletion attempts and concurrent email conflicts
+roll back. Operational database permissions and retention remain open.
 
 F25 - Privacy-safe reconciliation backlog monitoring
 Implementation: check_reconciliation_backlog command, nine aggregate categories,

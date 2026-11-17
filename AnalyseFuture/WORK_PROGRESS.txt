@@ -73,3 +73,13 @@ FINAL STATIC STATUS
 }
 No further tests or runtime checks were run. See validation report for the
 repaired initial static finding and explicit unexecuted checks.
+
+18 November 2026 - owner-requested continued implementation
+Continued from 4f48424 on recovery/security-and-account-hardening. Existing layout
+and archive history were verified, then email identity, profile/admin races,
+evidence deletion, stale registration claims and checkout retries were repaired.
+Python dependencies are hash locked and audited, CI credentials restricted, and
+Gunicorn token paths omitted. Final local PostgreSQL suite passed 219 tests,
+backup suite passed 17 tests, synthetic restore and Chromium account flows passed.
+Use TEST_AND_VALIDATION_REPORT.txt for commands, limits and current delivery.
+Earlier paused/no-test statements above describe superseded owner instructions.

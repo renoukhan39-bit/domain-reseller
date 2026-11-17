@@ -26,7 +26,27 @@ Priority:
   P1 = needed for sustainable service, scale or a specific feature's release.
   P2 = measure and prioritize once the core service is reliable.
 Owners below are required roles, not claims that named people are assigned.
-All entries remain OPEN until their individual exit evidence is recorded.
+The dated resolutions below qualify the original cards. External release gates
+remain open until their individual exit evidence is recorded.
+
+RESOLUTION UPDATE - 18 November 2026
+Starting commit 4f48424, recovery/security-and-account-hardening.
+TD-18 is repaired locally with migration 0004, normalized identity lookup and
+concurrent signup/admin regressions. Existing duplicate groups stop migration
+without modifying accounts or printing addresses.
+TD-19 is repaired for Django admin routes with explicit add/change/delete denial
+on financial/audit/registrar evidence, linked-contact locking and audit actor
+deletion protection. Privileged direct database access still requires operational
+roles and retention controls.
+TD-08 now has a hash-verified Python runtime/build lock, pinned Actions commits,
+least-privilege CI and a strict audit job. Sixteen locked packages returned zero
+known PyPI advisory findings. Container base/DB tags, OS packages and ongoing
+update policy remain separate work.
+Additional reproduced defects repaired this round include stale contact saves
+overwriting registrar handles, registration continuing after contact-time claim
+revocation, and completed checkout retries being blocked by registrar availability.
+Full current evidence is in TEST_AND_VALIDATION_REPORT.txt. Original cards below
+retain their historical rationale.
 
 TD-01 | P0 | GAP | Real registrar sandbox acceptance
 Evidence: shop/domains/openprovider.py; shop/tests/domains/test_openprovider.py;

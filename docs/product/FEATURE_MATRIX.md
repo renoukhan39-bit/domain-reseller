@@ -1,6 +1,6 @@
 # Feature matrix — truthful implementation status
 
-Current local validation after restructuring: **189 application tests**, **17 backup tests**, encrypted synthetic recovery, installed-wheel checks and live browser account flows passed. See the [current report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt); real external acceptance remains open.
+Current local validation after restructuring: **219 application tests**, **17 backup tests**, encrypted synthetic recovery, installed-wheel checks and live browser account flows passed. See the [current report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt); real external acceptance remains open.
 
 See the [complete feature inventory](../../AnalyseFuture/FEATURE_INVENTORY.txt) for recovered branch work and reference-only PHP modules. This recovery restores existing nameserver registrar-identity safeguards and tests; current-run results are in [the validation report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt).
 
@@ -17,7 +17,9 @@ See the [complete feature inventory](../../AnalyseFuture/FEATURE_INVENTORY.txt) 
 | Payment replay, uncertain checkout/refund reconciliation, duplicate-operation constraints | Implemented; local fixtures; real gateway verification outstanding | `shop/commerce/events.py`, `shop/commerce/refunds.py`, migration `0003`; `docs/operations/PAYMENT_RECONCILIATION.md` |
 | Openprovider register/renew/NS + worker | Local contract/safety/concurrency tests passed; real registrar unverified | `shop/domains/openprovider.py`, `shop/management/commands` |
 | Registrar identity validation, durable claims, stale escalation and read-only registration recovery | Implemented; local fixtures; sandbox acceptance outstanding | `docs/operations/PROVIDER_COMPATIBILITY.md`, `docs/operations/FULFILLMENT_RECOVERY.md` |
-| Basic dashboard and operator admin | Dashboard browser verified; admin login/assets checked; operator acceptance unverified | `shop/templates`, `shop/admin.py` |
+| Basic dashboard and operator admin | Dashboard browser verified; financial evidence and registrar identity are view-only in admin; deletion and concurrent-write regressions passed; deployed operator acceptance open | `shop/templates`, `shop/admin.py` |
+| Database email identity and race handling | Local PostgreSQL migration, duplicate preservation, signup/admin concurrency and legacy lookup tests passed | `shop/accounts/identity.py`, migration `0004`, account/admin tests |
+| Locked Python dependencies and least-privilege CI | Hash-required install and 16-package audit passed; current remote CI pending | `requirements.lock`, `Dockerfile`, `.github/workflows/ci.yml` |
 | Domain transfers, DNS record editor, DNSSEC | Missing | R3 |
 | Premium domains, IDNs, price sync | Missing | R3 |
 | Full tax invoices, automated refunds and reconciliation | Missing | R2 |

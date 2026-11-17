@@ -1,3 +1,15 @@
+CURRENT CONTINUATION - 18 November 2026
+Start from the current branch and TEST_AND_VALIDATION_REPORT.txt. The latest
+owner mission requests a recovery branch and a PR into main, superseding older
+direct-main instructions below. Current local evidence is 219 PostgreSQL app
+tests, 17 backup tests, encrypted synthetic recovery and Chromium account flows.
+Migration 0004 preserves existing users and stops on duplicate normalized email
+groups. Use requirements.lock for hash-verified Python dependencies. The existing
+cloud setup helper and saved install script now support that lock. Real provider,
+SMTP, infrastructure/legal gates and current remote CI remain open. Continue
+with authorized external acceptance or one scoped remaining backlog item.
+The earlier handoff below remains historical context.
+
 CONTINUE HERE - DO NOT REPEAT THE RECOVERY FROM SCRATCH
 
 1. Read root PROJECT_STRUCTURE.md, README.md and AGENTS.md, then this folder's

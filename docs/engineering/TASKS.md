@@ -1,6 +1,6 @@
 # Developer checklist — 66 tasks, 20 release acceptance tests
 
-**Current local evidence:** 189 application tests on PostgreSQL, 17 backup tests, synthetic encrypted recovery, packaging and live browser account flows passed after runtime testing was authorized. See [the report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt). This does not close checklist gates requiring real providers, SMTP, deployment, legal or production evidence.
+**Current local evidence:** 219 application tests on PostgreSQL, 17 backup tests, synthetic encrypted recovery, packaging and live browser account flows passed after runtime testing was authorized. See [the report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt). This does not close checklist gates requiring real providers, SMTP, deployment, legal or production evidence.
 
 The master recovery restores prior nameserver safeguards/tests and continuity documents, and consolidates compatible reset/identifier duplicates. See [evidence](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt) and [debt](../../AnalyseFuture/TECHNICAL_DEBT.txt). Acceptance checkboxes are unchanged; local recovery does not establish external launch readiness.
 
@@ -82,7 +82,7 @@ Use [REPOSITORY_STRUCTURE.md](../history/REPOSITORY_STRUCTURE.md) to locate acti
 - [ ] **M5-05** (OPS/P0) Implement shared Redis/WAF throttling including login, SMTP abuse and bots — shared PostgreSQL application budgets implemented and concurrency-tested for login/reset/verification/customer actions; production edge/bot controls and load acceptance remain outstanding. See `THROTTLING.md`.
 - [ ] **M5-06** (OPS/P0) Configure secret storage, role access, encryption, network rules and TLS — security review passes.
 - [ ] **M5-07** (OPS/P0) Set up encrypted backups, recovery drills, alerts and provider incident monitoring — encrypted local PostgreSQL backup/empty-target restore tooling and isolated synthetic-data recovery drill verified; production offsite retention, alerts and clean staging acceptance remain outstanding. See `BACKUP_RESTORE.md`.
-- [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — no critical findings.
+- [ ] **M5-08** (ENG/P0) Conduct adversarial auth/payment/provider review and dependency scanning — local review repaired email uniqueness, contact/admin races and a stale-worker claim gap; 16 locked Python dependencies have no known advisory findings. Independent deployed-system review remains open.
 - [ ] **M5-09** (OPS/P0) Add multi-worker crash recovery/manual review alerts and a reconciliation SOP — read-only JSON backlog monitor with nonzero alert exit and privacy-safe operator SOP added; deployment alert routing and actual on-call drill remain pending. See `RECONCILIATION_MONITORING.md`.
 
 ## M6 — Production and scale (9)

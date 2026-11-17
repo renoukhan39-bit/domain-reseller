@@ -82,3 +82,48 @@ External registrar/payment/SMTP/staging/production acceptance remains open due t
 missing configuration/credentials. See `AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt`.
 Normal direct main delivery remains the owner's selected workflow; no PR or force
 push. The final commit is discoverable from this entry's Git history.
+
+## 2026-11-18 — continued security implementation on a recovery branch
+
+The owner supplied the full audit/recovery mission and requested implementation.
+Baseline was `4f484241a7c18726adbd3a3845902fd842c5cd7f` with a clean working tree.
+The requested branch `recovery/security-and-account-hardening` supersedes the
+older direct-main delivery choice for this round.
+
+Reviewed all 5,355 tracked path identities and seven advertised remote heads.
+The 5,019 upstream paths retain their original tree identities. All 20 preserved
+branch-recovery blobs match the accessible originals. Selected secret signatures
+produced zero candidates across 5,176 historical blobs and 5,019 decompressed ZIP
+members. GitHub account access cannot be established from these source checks.
+No tracked files were moved or deleted. Repeated README navigation was consolidated.
+
+Implemented M5-08/TD-18/TD-19 improvements with database-enforced normalized email
+identity, nondestructive duplicate preflight, signup/admin race handling, profile
+locking, view-only evidence administration, stale-claim checking and safe
+existing-order retry routing. Hash-locked Python runtime/build dependencies,
+least-privilege pinned CI Actions and privacy-safe Gunicorn access logs are included.
+The approach is ADAPT/REUSE of existing Django auth/forms/admin/transactions
+(BSD-3-Clause) and the existing commerce services. No archived source was adopted.
+Application-specific constraints and guards use the repository's existing models.
+
+The complete rebuilt-image suite passed 219 PostgreSQL application tests with
+zero skips, against baseline 189. All 17 backup tests, encrypted synthetic restore,
+fresh locked wheel install, 16-package advisory scan and real headless Chromium
+account flows passed. The initial browser fixture was rejected by Django's password
+similarity validator, and an independent password completed the flow. Migration
+0004 preserves existing accounts and stops on ambiguous nonblank email groups.
+The deployment check reports the deliberate HSTS preload warning. See
+[the validation report](../../AnalyseFuture/TEST_AND_VALIDATION_REPORT.txt).
+
+The environment install_script draft was updated and tested with the hash-lock
+Dockerfile. Saved startup instructions still use the verified helper. Publication
+and fresh-task restoration were not performed. Real provider/payment/SMTP,
+infrastructure/alerts/recovery, legal/tax and independent review gates remain open.
+Next priorities are authorized registrar/payment sandbox acceptance, real SMTP
+delivery, then deployment controls and business requirements for billing.
+The tested implementation commits through 88a00b2 were pushed normally to the
+recovery branch. The egress proxy rejects api.github.com with a 403 CONNECT
+failure. An additive domain allowance was saved in the environment draft for
+review. Current remote Actions status and PR creation remain blocked by live
+API connectivity. Final documentation commits and remote SHA are recorded in
+the final response and prepared PR body.

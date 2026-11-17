@@ -25,9 +25,37 @@ Reuse Django's maintained SMTP backend; no new application dependency or paid em
 | `EMAIL_VERIFICATION_BASE_URL` | Explicit public origin, e.g. `https://accounts.example.com`; mandatory HTTPS outside debug; no path, credentials, query, or fragment |
 | `EMAIL_VERIFICATION_MAX_AGE` | Link lifetime in seconds, defaults to 86400 |
 
-Links use the configured origin, never the request's Host header. Set that origin before enabling production signup. Use proper CA trust and TLS verification. Configure SPF/DKIM/DMARC and verify delivery/bounce behavior with the chosen provider before accepting M1-08. Configure production access logs/error monitoring to redact `/verify/<token>/` paths and avoid logging mail bodies. Debug console email intentionally prints links and must not be used with real customer data.
+Links use the configured origin, never the request's Host header. Set that origin before enabling production signup. Use proper CA trust and TLS verification. Configure SPF/DKIM/DMARC and verify delivery/bounce behavior with the chosen provider before accepting M1-08. The Docker Gunicorn format records method, status, byte count and duration, omitting URL paths, queries and referrers. Configure external proxies and error monitoring to redact verification/reset token paths and avoid logging mail bodies. Debug console email intentionally prints links and must not be used with real customer data.
 
 Run `python manage.py migrate --noinput` before starting the new version. Schedule `python manage.py cleanup_verification_throttles` daily to remove hashed counters older than a day. It retains every live throttle window.
+
+## Database email identity
+
+Migration `0004_unique_user_email` adds a database-only unique expression index
+on Django's existing user table using `NULLIF(LOWER(TRIM(email)), '')`. This
+preserves the built-in User model, account IDs, passwords, stored addresses and
+migration history. PostgreSQL and local SQLite are supported. Blank addresses
+remain available for administrative accounts. Normalized nonblank addresses
+identify at most one account across signup, admin, shell and bulk writes.
+Signup and admin forms check the same normalization. Competing customer
+signups receive validation errors after the database rejects a duplicate.
+Competing PostgreSQL admin email writes roll back and return a retry message.
+Unrelated database errors still propagate for diagnosis.
+
+The migration locks PostgreSQL account writes while it checks existing addresses
+and creates the index. It stops with a count of duplicate groups if an existing
+address is ambiguous. Addresses and account details stay out of that error, and
+no account is merged, deleted or reassigned. An authorized operator must inspect
+those records securely and resolve ownership before rerunning migrations.
+Resend and password reset fail closed for ambiguous legacy addresses. Existing
+unique addresses with surrounding spaces remain discoverable without rewriting
+their stored values. Password reset retains Django's active-account and usable
+password requirements.
+
+Reversing migration `0004` removes only the index and preserves all user data.
+Rollback removes database identity enforcement, so gate signup and account email
+changes until the fixed migration is reapplied. A future switch away from the
+built-in User model must explicitly replace this database-only constraint.
 
 ## Existing accounts and rollback
 
